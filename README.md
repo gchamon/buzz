@@ -2,6 +2,13 @@
 
 A self-hosted Real-Debrid webdav server written from scratch. Together with [rclone](https://rclone.org/) it can mount your Real-Debrid torrent library into your file system like Dropbox. It's meant to be used with Infuse (webdav server) and Plex (mount zurg webdav with rclone).
 
+## Changes from upstream
+
+- `config.yml` is now `config.dist.yml`. This is to avoid potentially commiting changes to `config.yml` and exposing your token
+- `rclone` mounts the volume with `1000` gid and uid, so that plex can read it
+- `plex` is now a service that integrates with the other services by waiting for rclone to finish before mounting. This way it avoids a race condition to the mount endpoint where if plex is started before rclone finishes, the mountpoint will fail with `Transport endpoint missing`.
+- `healthcheck` is a service that continuously try to access `/mnt/zurg/movies`. If it identifies that it can't access the mountpoint that means `rclone` failed for some reason and it restart both the plex service and itself, so they can pick up the mount point again.
+
 ## Download
 
 [Release Cycle](https://github.com/debridmediamanager/zurg-testing/wiki/Release-cycle)
@@ -84,6 +91,6 @@ Use "zurg [command] --help" for more information about a command.
 
 - [ElfHosted](https://elfhosted.com) - Easy, [open source](https://elfhosted.com/open/), Kubernetes / GitOps driven hosting of popular self-hosted apps - tested, tightly integrated, and secured. Apps start at $0.05/day, and new accounts get $10 credit, no commitment.
 
-## Please read our [wiki](https://github.com/debridmediamanager/zurg-testing/wiki) for more information!
+## Please read our [wiki](https://github.com/debridmediamanager/zurg-testing/wiki) for more information
 
 ## [zurg's version history](https://github.com/debridmediamanager/zurg-testing/wiki/History)
