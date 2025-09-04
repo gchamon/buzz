@@ -47,6 +47,8 @@ services:
       - PLEX_CLAIM= #optional
     volumes:
       - ./config:/config
+      - /media/storage/series:/tv
+      - /media/storage/movies:/movies
       - /mnt:/mnt:ro
     restart: unless-stopped
   healthcheck:
