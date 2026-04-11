@@ -1,14 +1,22 @@
-version: '3.8'
-
 services:
   zurg:
     image: ghcr.io/debridmediamanager/zurg-testing:latest    
     container_name: zurg
     restart: unless-stopped
+    environment:
+      - MEDIA_SERVER=${MEDIA_SERVER:-plex}
+      - PLEX_URL=${PLEX_URL:-}
+      - PLEX_TOKEN=${PLEX_TOKEN:-}
+      - ZURG_MOUNT=${ZURG_MOUNT:-/mnt/zurg}
+      - JELLYFIN_URL=${JELLYFIN_URL:-http://jellyfin:8096}
+      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
+      - JELLYFIN_SCAN_TASK_ID=${JELLYFIN_SCAN_TASK_ID:-}
     ports:
       - 9999:9999
     volumes:
+      - ./scripts/media_update.sh:/app/media_update.sh
       - ./scripts/plex_update.sh:/app/plex_update.sh
+      - ./scripts/jellyfin_update.sh:/app/jellyfin_update.sh
       - ./config.yml:/app/config.yml
       - zurgdata:/app/data
 
@@ -34,6 +42,7 @@ services:
     command: "mount zurg: /data --allow-other --allow-non-empty --dir-cache-time 10s --vfs-cache-mode full --default-permissions --uid 1000 --gid 1000"
 
   plex:
+    profiles: ["plex"]
     image: lscr.io/linuxserver/plex:latest
     container_name: plex
     network_mode: host
@@ -43,17 +52,40 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=America/Sao_Paulo
-      - VERSION=docker
-      - PLEX_CLAIM= #optional
+      - VERSION=${PLEX_VERSION:-docker} # Plex only
+      - PLEX_CLAIM=${PLEX_CLAIM:-} # Plex only
     volumes:
-      - ./config:/config
-      - /media/storage/series:/tv
-      - /media/storage/movies:/movies
+      - ./config/plex:/config
+      # - /media/storage/series:/tv
+      # - /media/storage/movies:/movies
       - /mnt:/mnt:ro
     restart: unless-stopped
-  healthcheck:
+
+  jellyfin:
+    profiles: ["jellyfin"]
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin
+    depends_on:
+      - rclone
+    environment:
+      - TZ=America/Sao_Paulo
+    ports:
+      - 8096:8096/tcp
+      - 7359:7359/udp
+    volumes:
+      - ./config/jellyfin:/config
+      - ./cache/jellyfin:/cache
+      - /mnt:/mnt:ro
+    restart: unless-stopped
+
+  plex-healthcheck:
+    profiles: ["plex"]
     image: docker:dind
     container_name: plex-healthcheck
+    environment:
+      - TARGET_CONTAINER=plex
+      - SELF_CONTAINER=plex-healthcheck
+      - HEALTHCHECK_PATH=${HEALTHCHECK_PATH:-/mnt/zurg/movies}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./healthcheck.sh:/app/healthcheck.sh
@@ -63,6 +95,25 @@ services:
     depends_on:
       - rclone
       - plex
+    restart: unless-stopped
+
+  jellyfin-healthcheck:
+    profiles: ["jellyfin"]
+    image: docker:dind
+    container_name: jellyfin-healthcheck
+    environment:
+      - TARGET_CONTAINER=jellyfin
+      - SELF_CONTAINER=jellyfin-healthcheck
+      - HEALTHCHECK_PATH=${HEALTHCHECK_PATH:-/mnt/zurg/movies}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./healthcheck.sh:/app/healthcheck.sh
+      - /mnt:/mnt:ro
+    entrypoint: []
+    command: "ash /app/healthcheck.sh"
+    depends_on:
+      - rclone
+      - jellyfin
     restart: unless-stopped
         
 
