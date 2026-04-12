@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import traceback
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -68,6 +69,12 @@ class Config:
     jellyfin_scan_task_id: str
     skip_jellyfin_scan: bool
     build_on_start: bool
+
+
+class RebuildError(RuntimeError):
+    def __init__(self, message: str, payload: dict):
+        super().__init__(message)
+        self.payload = payload
 
 
 def env_path(name: str, default: str) -> Path:
@@ -344,6 +351,24 @@ def replace_root(tmp_root: Path, target_root: Path):
         shutil.rmtree(backup_root)
 
 
+def log_mapping_event(mapping: list[dict], report: dict):
+    print(
+        json.dumps(
+            {
+                "event": "presentation_builder_mapping",
+                "mapping_entries": len(mapping),
+                "movies": report["movies"],
+                "show_files": report["show_files"],
+                "anime_files": report["anime_files"],
+                "entries": mapping,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
+
+
 def build_library(config: Config):
     overrides = load_overrides(config.overrides_path)
     movies_source = config.source_root / "movies"
@@ -378,6 +403,7 @@ def build_library(config: Config):
     report["mapping_entries"] = len(mapping)
     (config.state_root / "mapping.json").write_text(json.dumps(mapping, indent=2, sort_keys=True), encoding="utf-8")
     (config.state_root / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    log_mapping_event(mapping, report)
     return report
 
 
@@ -495,8 +521,6 @@ def build_anime(source_root: Path, target_root: Path, mapping: list, report: dic
 def discover_scan_task_id(config: Config) -> str:
     if config.jellyfin_scan_task_id:
         return config.jellyfin_scan_task_id
-    if not config.jellyfin_api_key:
-        raise RuntimeError("JELLYFIN_API_KEY is required to trigger a Jellyfin scan.")
     req = request.Request(
         f"{config.jellyfin_url}/ScheduledTasks?IsHidden=false&IsEnabled=true",
         headers={"Authorization": f"MediaBrowser Token={config.jellyfin_api_key}"},
@@ -524,9 +548,24 @@ def rebuild_and_trigger(config: Config):
     report = build_library(config)
     if config.skip_jellyfin_scan:
         report["jellyfin_scan_triggered"] = False
+        report["jellyfin_scan_status"] = "skipped_configured"
+        report["jellyfin_scan_error"] = None
         return report
-    trigger_jellyfin_scan(config)
+    if not config.jellyfin_api_key:
+        report["jellyfin_scan_triggered"] = False
+        report["jellyfin_scan_status"] = "skipped_missing_auth"
+        report["jellyfin_scan_error"] = None
+        return report
+    try:
+        trigger_jellyfin_scan(config)
+    except Exception as exc:
+        report["jellyfin_scan_triggered"] = False
+        report["jellyfin_scan_status"] = "failed"
+        report["jellyfin_scan_error"] = str(exc)
+        raise RebuildError(str(exc), report) from exc
     report["jellyfin_scan_triggered"] = True
+    report["jellyfin_scan_status"] = "triggered"
+    report["jellyfin_scan_error"] = None
     return report
 
 
@@ -563,7 +602,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             report = self.app.handle_rebuild()
         except Exception as exc:
-            self.respond(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+            payload = {"error": str(exc)}
+            if isinstance(exc, RebuildError):
+                payload.update(exc.payload)
+            print(
+                f"presentation-builder rebuild failed: {exc}\n{traceback.format_exc()}",
+                file=sys.stderr,
+                flush=True,
+            )
+            self.respond(HTTPStatus.INTERNAL_SERVER_ERROR, payload)
             return
         self.respond(HTTPStatus.OK, report)
 
