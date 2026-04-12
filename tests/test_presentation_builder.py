@@ -22,6 +22,7 @@ class PresentationBuilderTests(unittest.TestCase):
             "jellyfin_scan_task_id": "",
             "skip_jellyfin_scan": False,
             "build_on_start": False,
+            "verbose": False,
         }
         base.update(overrides)
         return pb.Config(**base)
@@ -45,6 +46,19 @@ class PresentationBuilderTests(unittest.TestCase):
             self.assertFalse(report["jellyfin_scan_triggered"])
             self.assertEqual(report["jellyfin_scan_status"], "skipped_missing_auth")
             self.assertIsNone(report["jellyfin_scan_error"])
+            self.assertEqual(stdout.getvalue(), "")
+
+    def test_rebuild_logs_mapping_when_verbose_is_enabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self.make_config(root, verbose=True)
+            self.create_source_tree(config.source_root)
+
+            stdout = io.StringIO()
+            with mock.patch("sys.stdout", stdout):
+                report = pb.rebuild_and_trigger(config)
+
+            self.assertEqual(report["movies"], 1)
             lines = [line for line in stdout.getvalue().splitlines() if line]
             mapping_log = json.loads(lines[-1])
             self.assertEqual(mapping_log["event"], "presentation_builder_mapping")

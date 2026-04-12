@@ -69,6 +69,7 @@ class Config:
     jellyfin_scan_task_id: str
     skip_jellyfin_scan: bool
     build_on_start: bool
+    verbose: bool
 
 
 class RebuildError(RuntimeError):
@@ -196,6 +197,7 @@ def load_config() -> Config:
         jellyfin_scan_task_id=os.environ.get("JELLYFIN_SCAN_TASK_ID", ""),
         skip_jellyfin_scan=os.environ.get("PRESENTATION_SKIP_JELLYFIN_SCAN", "").lower() in {"1", "true", "yes"},
         build_on_start=os.environ.get("PRESENTATION_BUILD_ON_START", "true").lower() in {"1", "true", "yes"},
+        verbose=os.environ.get("PRESENTATION_VERBOSE", "").lower() in {"1", "true", "yes"},
     )
 
 
@@ -403,7 +405,8 @@ def build_library(config: Config):
     report["mapping_entries"] = len(mapping)
     (config.state_root / "mapping.json").write_text(json.dumps(mapping, indent=2, sort_keys=True), encoding="utf-8")
     (config.state_root / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
-    log_mapping_event(mapping, report)
+    if config.verbose:
+        log_mapping_event(mapping, report)
     return report
 
 
