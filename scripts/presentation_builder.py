@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import signal
 import shutil
 import sys
 import tempfile
@@ -438,6 +439,10 @@ class App:
         with self.lock:
             return rebuild_and_trigger(self.config)
 
+    def cleanup(self):
+        with self.lock:
+            shutil.rmtree(self.config.target_root, ignore_errors=True)
+
 
 class Handler(BaseHTTPRequestHandler):
     app = None
@@ -490,8 +495,18 @@ def run_server(config: Config):
         except Exception as exc:
             print(f"initial presentation build failed: {exc}", file=sys.stderr, flush=True)
     server = ThreadingHTTPServer((config.bind, config.port), Handler)
+    def stop_handler(signum, frame):
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, stop_handler)
+    signal.signal(signal.SIGINT, stop_handler)
     print(f"presentation-builder listening on {config.bind}:{config.port}", flush=True)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        app.cleanup()
+        server.server_close()
+        print(f"presentation-builder cleaned up {config.target_root}", flush=True)
 
 
 def main():

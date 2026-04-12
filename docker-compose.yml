@@ -83,6 +83,7 @@ services:
     profiles: ["jellyfin"]
     image: python:3.12-slim
     container_name: presentation-builder
+    user: "${PUID:-1000}:${PGID:-1000}"
     depends_on:
       - rclone
       - jellyfin
