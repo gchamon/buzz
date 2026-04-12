@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from buzz.app import BuzzState, Config, LibraryBuilder, normalize_posix_path
+from scripts.migrate_config import buzz_to_zurg, convert, parse_zurg_config, zurg_to_buzz
 
 
 class LibraryBuilderTests(unittest.TestCase):
@@ -119,6 +120,63 @@ class BuzzStateTests(unittest.TestCase):
             self.assertEqual(normalize_posix_path("/movies/Torrent/file.mkv"), "movies/Torrent/file.mkv")
             self.assertIsNotNone(state.lookup("/movies/Torrent/file.mkv"))
             self.assertEqual(state.list_children("/movies"), ["Torrent"])
+
+
+class ConfigMigrationTests(unittest.TestCase):
+    def test_zurg_to_buzz_maps_supported_fields(self):
+        raw = """
+zurg: v1
+token: test-token
+check_for_changes_every_secs: 15
+api_timeout_secs: 12
+on_library_update: sh /app/media_update.sh "$@"
+
+directories:
+  anime:
+    group_order: 10
+    group: media
+    filters:
+      - regex: /\\b[a-fA-F0-9]{8}\\b/
+      - any_file_inside_regex: /custom/
+
+  shows:
+    group_order: 20
+    group: media
+    filters:
+      - has_episodes: true
+"""
+        buzz = zurg_to_buzz(parse_zurg_config(raw))
+        self.assertEqual(buzz["provider"]["token"], "test-token")
+        self.assertEqual(buzz["poll_interval_secs"], 15)
+        self.assertEqual(buzz["request_timeout_secs"], 12)
+        self.assertEqual(buzz["hooks"]["on_library_change"], "sh /app/media_update.sh")
+        self.assertEqual(buzz["directories"]["anime"]["patterns"], [r"\b[a-fA-F0-9]{8}\b", "custom"])
+
+    def test_buzz_to_zurg_emits_usable_defaults(self):
+        buzz = {
+            "provider": {"token": "buzz-token"},
+            "poll_interval_secs": 20,
+            "server": {"port": 9999},
+            "hooks": {"on_library_change": "sh /app/media_update.sh"},
+            "directories": {"anime": {"patterns": ["abc", "def"]}},
+            "request_timeout_secs": 25,
+        }
+        rendered = buzz_to_zurg(buzz)
+        self.assertIn("token: buzz-token", rendered)
+        self.assertIn("check_for_changes_every_secs: 20", rendered)
+        self.assertIn('on_library_update: sh /app/media_update.sh "$@"', rendered)
+        self.assertIn("      - regex: /abc/", rendered)
+        self.assertIn("      - regex: /def/", rendered)
+
+    def test_cli_convert_outputs_json_for_buzz(self):
+        raw = """
+zurg: v1
+token: tok
+check_for_changes_every_secs: 10
+"""
+        converted = convert("zurg", "buzz", raw)
+        payload = json.loads(converted)
+        self.assertEqual(payload["provider"]["token"], "tok")
 
 
 if __name__ == "__main__":

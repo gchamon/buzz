@@ -82,6 +82,19 @@ That script dispatches to Plex or Jellyfin based on `MEDIA_SERVER`.
 - The container image is built from [buzz/Dockerfile](./buzz/Dockerfile).
 - Persisted RD cache and committed library snapshots live under the `buzzdata` volume at `/app/data` in the Buzz container.
 - Tests live in [tests/test_buzz.py](./tests/test_buzz.py).
+- Config migration helper lives in [scripts/migrate_config.py](./scripts/migrate_config.py).
+
+Convert an old Zurg config into Buzz format with:
+
+```sh
+python3 scripts/migrate_config.py --from zurg --to buzz config.yml -o buzz.yml
+```
+
+Convert a Buzz config back into a best-effort Zurg-style config with:
+
+```sh
+python3 scripts/migrate_config.py --from buzz --to zurg buzz.yml -o config.yml
+```
 
 Run tests locally with:
 
