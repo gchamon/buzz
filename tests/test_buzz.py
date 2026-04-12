@@ -1,5 +1,7 @@
 import json
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -198,6 +200,154 @@ class BuzzStateTests(unittest.TestCase):
             self.assertTrue(report["changed"])
             self.assertTrue(state.snapshot_loaded)
             self.assertTrue(state.is_ready())
+
+    def test_sync_does_not_block_on_hook_execution(self):
+        class FakeClient:
+            def list_torrents(self):
+                return [
+                    {
+                        "id": "TORRENT1",
+                        "filename": "Movie.2026.1080p.mkv",
+                        "bytes": 123,
+                        "progress": 100,
+                        "status": "downloaded",
+                        "ended": "2026-01-01T00:00:00Z",
+                        "links": ["https://example.invalid/file"],
+                    }
+                ]
+
+            def torrent_info(self, torrent_id):
+                return {
+                    "id": torrent_id,
+                    "status": "downloaded",
+                    "filename": "Movie.2026.1080p.mkv",
+                    "original_filename": "Movie 2026",
+                    "links": ["https://example.invalid/file"],
+                    "files": [
+                        {
+                            "id": 1,
+                            "path": "/Movie.2026.1080p.mkv",
+                            "bytes": 123,
+                            "selected": 1,
+                        }
+                    ],
+                }
+
+        class HookState(BuzzState):
+            def __init__(self, *args, **kwargs):
+                self.hook_started = threading.Event()
+                self.release_hook = threading.Event()
+                super().__init__(*args, **kwargs)
+
+            def _run_hook(self, changed_roots: list[str]) -> None:
+                self.hook_started.set()
+                self.release_hook.wait(timeout=2)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="test-hook",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+            )
+            state = HookState(config, client=FakeClient())
+            report = state.sync()
+            self.assertTrue(report["changed"])
+            self.assertTrue(state.hook_started.wait(timeout=1))
+            self.assertIsNotNone(state.lookup("movies/Movie 2026/Movie.2026.1080p.mkv"))
+            self.assertTrue(state.status()["hook_in_progress"])
+            state.release_hook.set()
+
+    def test_hook_requests_are_coalesced_while_busy(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="test-hook",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+            )
+            state = BuzzState(config, client=None)
+            runs = []
+            first_started = threading.Event()
+            release_first = threading.Event()
+            second_started = threading.Event()
+
+            def fake_run_hook(changed_roots):
+                runs.append(list(changed_roots))
+                if len(runs) == 1:
+                    first_started.set()
+                    release_first.wait(timeout=2)
+                elif len(runs) == 2:
+                    second_started.set()
+
+            state._run_hook = fake_run_hook
+            state._enqueue_hook(["movies/A"])
+            self.assertTrue(first_started.wait(timeout=1))
+            state._enqueue_hook(["shows/B"])
+            state._enqueue_hook(["movies/A", "movies/C"])
+            self.assertTrue(state.status()["hook_pending"])
+            release_first.set()
+            self.assertTrue(second_started.wait(timeout=1))
+
+            deadline = time.time() + 1
+            while time.time() < deadline and state.status()["hook_in_progress"]:
+                time.sleep(0.01)
+
+            self.assertEqual(runs[0], ["movies/A"])
+            self.assertEqual(runs[1], ["movies/A", "movies/C", "shows/B"])
+            self.assertFalse(state.status()["hook_pending"])
+
+    def test_hook_failure_is_reported_without_affecting_readiness(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="test-hook",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+            )
+            state = BuzzState(config, client=None)
+            state.snapshot_loaded = True
+            done = threading.Event()
+
+            def fake_run_hook(changed_roots):
+                raise RuntimeError("hook failed")
+
+            state._run_hook = fake_run_hook
+            state._enqueue_hook(["movies/A"])
+            deadline = time.time() + 1
+            while time.time() < deadline:
+                if state.status()["hook_last_error"] == "hook failed":
+                    done.set()
+                    break
+                time.sleep(0.01)
+
+            self.assertTrue(done.is_set())
+            self.assertTrue(state.is_ready())
+            self.assertEqual(state.status()["hook_last_error"], "hook failed")
 
 
 class DavHandlerTests(unittest.TestCase):

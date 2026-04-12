@@ -473,6 +473,16 @@ class BuzzState:
         self.last_error = None
         self.sync_in_progress = False
         self.startup_sync_complete = False
+        self.hook_condition = threading.Condition()
+        self.hook_pending_paths: list[str] = []
+        self.hook_in_progress = False
+        self.hook_last_started_at = None
+        self.hook_last_finished_at = None
+        self.hook_last_error = None
+        self.hook_worker = None
+        if self.config.hook_command:
+            self.hook_worker = threading.Thread(target=self._hook_worker_loop, daemon=True)
+            self.hook_worker.start()
 
     def _load_json(self, path: str, default: Any) -> Any:
         try:
@@ -489,6 +499,7 @@ class BuzzState:
         os.replace(tmp, path)
 
     def sync(self, *, trigger_hook: bool = True) -> dict[str, Any]:
+        hook_paths: list[str] = []
         with self.lock:
             self.sync_in_progress = True
         try:
@@ -529,12 +540,14 @@ class BuzzState:
                     self._write_json(self.snapshot_path, self.snapshot)
                     self.snapshot_loaded = True
                     if trigger_hook and self.config.hook_command:
-                        self._run_hook(changed_roots)
+                        hook_paths = changed_roots
 
                 self.last_sync_at = report["timestamp"]
                 self.last_report = report
                 self.last_error = None
-                return report
+            if hook_paths:
+                self._enqueue_hook(hook_paths)
+            return report
         except Exception as exc:
             with self.lock:
                 self.last_error = str(exc)
@@ -542,6 +555,36 @@ class BuzzState:
         finally:
             with self.lock:
                 self.sync_in_progress = False
+
+    def _enqueue_hook(self, changed_roots: list[str]) -> None:
+        pending = set(changed_roots)
+        if not pending:
+            return
+        with self.hook_condition:
+            merged = set(self.hook_pending_paths)
+            merged.update(pending)
+            self.hook_pending_paths = sorted(merged)
+            self.hook_condition.notify()
+
+    def _hook_worker_loop(self) -> None:
+        while True:
+            with self.hook_condition:
+                while not self.hook_pending_paths:
+                    self.hook_condition.wait()
+                paths = self.hook_pending_paths
+                self.hook_pending_paths = []
+                self.hook_in_progress = True
+                self.hook_last_started_at = utc_now_iso()
+                self.hook_last_error = None
+            try:
+                self._run_hook(paths)
+            except Exception as exc:  # noqa: BLE001
+                with self.hook_condition:
+                    self.hook_last_error = str(exc)
+            finally:
+                with self.hook_condition:
+                    self.hook_in_progress = False
+                    self.hook_last_finished_at = utc_now_iso()
 
     def _summary_signature(self, summary: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -590,7 +633,7 @@ class BuzzState:
 
     def status(self) -> dict[str, Any]:
         with self.lock:
-            return {
+            payload = {
                 "last_sync_at": self.last_sync_at,
                 "last_error": self.last_error,
                 "last_report": self.last_report,
@@ -599,6 +642,17 @@ class BuzzState:
                 "snapshot_loaded": self.snapshot_loaded,
                 "ready": self.is_ready(),
             }
+        with self.hook_condition:
+            payload.update(
+                {
+                    "hook_in_progress": self.hook_in_progress,
+                    "hook_pending": bool(self.hook_pending_paths),
+                    "hook_last_started_at": self.hook_last_started_at,
+                    "hook_last_finished_at": self.hook_last_finished_at,
+                    "hook_last_error": self.hook_last_error,
+                }
+            )
+        return payload
 
     def mark_startup_sync_complete(self) -> None:
         with self.lock:
