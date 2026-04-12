@@ -1,6 +1,6 @@
 services:
   zurg:
-    image: ghcr.io/debridmediamanager/zurg-testing:latest    
+    image: ghcr.io/debridmediamanager/zurg-testing:latest
     container_name: zurg
     restart: unless-stopped
     environment:
@@ -57,8 +57,6 @@ services:
       - PLEX_CLAIM=${PLEX_CLAIM:-} # Plex only
     volumes:
       - ./config/plex:/config
-      # - /media/storage/series:/tv
-      # - /media/storage/movies:/movies
       - /mnt:/mnt:ro
     restart: unless-stopped
 
@@ -143,7 +141,6 @@ services:
       - rclone
       - jellyfin
     restart: unless-stopped
-        
 
 volumes:
   zurgdata:
