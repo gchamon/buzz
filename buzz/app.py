@@ -478,7 +478,7 @@ class BuzzState:
             json.dump(payload, handle, indent=2, sort_keys=True)
         os.replace(tmp, path)
 
-    def sync(self) -> dict[str, Any]:
+    def sync(self, *, trigger_hook: bool = True) -> dict[str, Any]:
         with self.lock:
             summaries = self.client.list_torrents()
             new_cache: dict[str, dict[str, Any]] = {}
@@ -512,7 +512,7 @@ class BuzzState:
                 self.snapshot = snapshot
                 self.snapshot_digest = digest
                 self._write_json(self.snapshot_path, self.snapshot)
-                if self.config.hook_command:
+                if trigger_hook and self.config.hook_command:
                     self._run_hook(changed_roots)
 
             self.last_sync_at = report["timestamp"]
@@ -808,7 +808,7 @@ def main() -> None:
     config = Config.load()
     client = RealDebridClient(config)
     state = BuzzState(config, client)
-    initial_report = state.sync()
+    initial_report = state.sync(trigger_hook=False)
     print(json.dumps({"startup_sync": initial_report}, sort_keys=True), flush=True)
     Handler.state = state
     server = ThreadingHTTPServer((config.bind, config.port), Handler)
