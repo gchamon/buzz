@@ -16,6 +16,12 @@ services:
       - PRESENTATION_BUILDER_URL=${PRESENTATION_BUILDER_URL:-http://presentation-builder:8400/rebuild}
     ports:
       - 9999:9999
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9999/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
     volumes:
       - ./scripts/media_update.sh:/app/media_update.sh
       - ./scripts/plex_update.sh:/app/plex_update.sh
@@ -41,8 +47,15 @@ services:
     devices:
       - /dev/fuse:/dev/fuse:rwm
     depends_on:
-      - buzz
+      buzz:
+        condition: service_healthy
     command: "mount buzz: /data --allow-other --allow-non-empty --dir-cache-time 10s --vfs-cache-mode full --default-permissions --uid 1000 --gid 1000"
+    healthcheck:
+      test: ["CMD-SHELL", "ls /data/movies >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
 
   plex:
     profiles: ["plex"]
@@ -50,7 +63,8 @@ services:
     container_name: plex
     network_mode: host
     depends_on:
-      - rclone
+      rclone:
+        condition: service_healthy
     environment:
       - PUID=1000
       - PGID=1000
@@ -67,7 +81,8 @@ services:
     image: jellyfin/jellyfin:latest
     container_name: jellyfin
     depends_on:
-      - rclone
+      rclone:
+        condition: service_healthy
     environment:
       - TZ=America/Sao_Paulo
     ports:
@@ -85,8 +100,10 @@ services:
     container_name: presentation-builder
     user: "${PUID:-1000}:${PGID:-1000}"
     depends_on:
-      - rclone
-      - jellyfin
+      rclone:
+        condition: service_healthy
+      jellyfin:
+        condition: service_started
     environment:
       - PRESENTATION_BIND=0.0.0.0
       - PRESENTATION_PORT=${PRESENTATION_PORT:-8400}
@@ -121,8 +138,10 @@ services:
     entrypoint: []
     command: "ash /app/healthcheck.sh"
     depends_on:
-      - rclone
-      - plex
+      rclone:
+        condition: service_healthy
+      plex:
+        condition: service_started
     restart: unless-stopped
 
   jellyfin-healthcheck:
@@ -140,8 +159,10 @@ services:
     entrypoint: []
     command: "ash /app/healthcheck.sh"
     depends_on:
-      - rclone
-      - jellyfin
+      rclone:
+        condition: service_healthy
+      jellyfin:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
