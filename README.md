@@ -62,6 +62,7 @@ A web server is now running at `localhost:9999`.
 - Point Jellyfin libraries at `/mnt/jellyfin-library/movies`, `/mnt/jellyfin-library/shows`, and `/mnt/jellyfin-library/animes`
 - Manual naming overrides live in [`presentation/overrides.yml`](./presentation/overrides.yml) and currently use JSON-compatible YAML
 - Generator state and reports are written under `./state/jellyfin-library/`
+- `presentation-builder` only exists in the `jellyfin` profile and performs an initial library build when it starts, before serving rebuild requests on port `8400`
 - `.env.dist` documents the supported Compose and update-hook variables
 
 ### Note: when using zurg in a server outside of your home network, ensure that "Use my Remote Traffic automatically when needed" is unchecked on your [Account page](https://real-debrid.com/account)

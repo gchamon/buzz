@@ -66,6 +66,7 @@ class Config:
     jellyfin_api_key: str
     jellyfin_scan_task_id: str
     skip_jellyfin_scan: bool
+    build_on_start: bool
 
 
 def env_path(name: str, default: str) -> Path:
@@ -84,6 +85,7 @@ def load_config() -> Config:
         jellyfin_api_key=os.environ.get("JELLYFIN_API_KEY", ""),
         jellyfin_scan_task_id=os.environ.get("JELLYFIN_SCAN_TASK_ID", ""),
         skip_jellyfin_scan=os.environ.get("PRESENTATION_SKIP_JELLYFIN_SCAN", "").lower() in {"1", "true", "yes"},
+        build_on_start=os.environ.get("PRESENTATION_BUILD_ON_START", "true").lower() in {"1", "true", "yes"},
     )
 
 
@@ -472,6 +474,18 @@ class Handler(BaseHTTPRequestHandler):
 def run_server(config: Config):
     app = App(config)
     Handler.app = app
+    if config.build_on_start:
+        try:
+            startup_report = build_library(config)
+            print(
+                "initial presentation build complete: "
+                f"{startup_report['movies']} movies, "
+                f"{startup_report['show_files']} show files, "
+                f"{startup_report['anime_files']} anime files",
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"initial presentation build failed: {exc}", file=sys.stderr, flush=True)
     server = ThreadingHTTPServer((config.bind, config.port), Handler)
     print(f"presentation-builder listening on {config.bind}:{config.port}", flush=True)
     server.serve_forever()
