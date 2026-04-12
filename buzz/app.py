@@ -85,10 +85,103 @@ def stable_json(value: Any) -> str:
 
 
 def parse_json_compat_yaml(raw: str) -> dict[str, Any]:
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        data = parse_simple_yaml(raw)
     if not isinstance(data, dict):
-        raise ValueError("Buzz config must be a JSON object.")
+        raise ValueError("Buzz config must be a mapping.")
     return data
+
+
+def parse_simple_yaml(raw: str) -> object:
+    lines = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        lines.append((indent, stripped))
+    if not lines:
+        return {}
+    value, next_index = _parse_yaml_block(lines, 0, lines[0][0])
+    if next_index != len(lines):
+        raise ValueError("Unexpected trailing YAML content.")
+    return value
+
+
+def _parse_yaml_block(lines: list[tuple[int, str]], index: int, indent: int) -> tuple[object, int]:
+    if index >= len(lines):
+        return {}, index
+    _, first = lines[index]
+    if first.startswith("- "):
+        result = []
+        while index < len(lines):
+            current_indent, stripped = lines[index]
+            if current_indent != indent or not stripped.startswith("- "):
+                break
+            item_text = stripped[2:].strip()
+            if not item_text:
+                child, index = _parse_yaml_block(lines, index + 1, indent + 2)
+                result.append(child)
+                continue
+            if ":" in item_text:
+                key, value_text = item_text.split(":", 1)
+                key = key.strip()
+                value_text = value_text.strip()
+                item = {key: _parse_yaml_scalar(value_text)} if value_text else {key: None}
+                index += 1
+                if index < len(lines) and lines[index][0] > indent:
+                    child, index = _parse_yaml_block(lines, index, indent + 2)
+                    if value_text:
+                        raise ValueError("Unsupported YAML list structure.")
+                    item[key] = child
+                result.append(item)
+                continue
+            result.append(_parse_yaml_scalar(item_text))
+            index += 1
+        return result, index
+
+    result = {}
+    while index < len(lines):
+        current_indent, stripped = lines[index]
+        if current_indent < indent:
+            break
+        if current_indent > indent:
+            raise ValueError("Invalid YAML indentation.")
+        if ":" not in stripped:
+            raise ValueError("Expected YAML mapping entry.")
+        key, value_text = stripped.split(":", 1)
+        key = key.strip()
+        value_text = value_text.strip()
+        index += 1
+        if value_text:
+            result[key] = _parse_yaml_scalar(value_text)
+            continue
+        if index < len(lines) and lines[index][0] > current_indent:
+            child, index = _parse_yaml_block(lines, index, current_indent + 2)
+            result[key] = child
+        else:
+            result[key] = {}
+    return result, index
+
+
+def _parse_yaml_scalar(value: str) -> object:
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered in {"null", "~"}:
+        return None
+    if value.startswith('"') and value.endswith('"'):
+        return json.loads(value)
+    if value.startswith("'") and value.endswith("'"):
+        return value[1:-1]
+    try:
+        return int(value)
+    except ValueError:
+        return value
 
 
 @dataclass(frozen=True)

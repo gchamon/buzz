@@ -46,7 +46,7 @@ docker compose restart buzz
 
 ## Config
 
-`buzz.yml` is JSON-compatible YAML and currently supports:
+`buzz.yml` is YAML and currently supports:
 
 - `provider.token`
 - `poll_interval_secs`

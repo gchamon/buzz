@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from buzz.app import BuzzState, Config, LibraryBuilder, normalize_posix_path
-from scripts.migrate_config import buzz_to_zurg, convert, parse_zurg_config, zurg_to_buzz
+from scripts.migrate_config import buzz_to_zurg, convert, parse_buzz_config, parse_zurg_config, zurg_to_buzz
 
 
 class LibraryBuilderTests(unittest.TestCase):
@@ -168,14 +168,16 @@ directories:
         self.assertIn("      - regex: /abc/", rendered)
         self.assertIn("      - regex: /def/", rendered)
 
-    def test_cli_convert_outputs_json_for_buzz(self):
+    def test_cli_convert_outputs_yaml_for_buzz(self):
         raw = """
 zurg: v1
 token: tok
 check_for_changes_every_secs: 10
 """
         converted = convert("zurg", "buzz", raw)
-        payload = json.loads(converted)
+        self.assertIn("provider:", converted)
+        self.assertIn("  token: tok", converted)
+        payload = parse_buzz_config(converted)
         self.assertEqual(payload["provider"]["token"], "tok")
 
 

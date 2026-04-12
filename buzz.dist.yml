@@ -1,30 +1,21 @@
-{
-  "provider": {
-    "token": "yourtoken"
-  },
-  "poll_interval_secs": 10,
-  "server": {
-    "bind": "0.0.0.0",
-    "port": 9999
-  },
-  "state_dir": "/app/data",
-  "hooks": {
-    "on_library_change": "sh /app/media_update.sh"
-  },
-  "compat": {
-    "enable_all_dir": true,
-    "enable_unplayable_dir": true
-  },
-  "directories": {
-    "anime": {
-      "patterns": [
-        "\\b[a-fA-F0-9]{8}\\b"
-      ]
-    },
-    "shows": {},
-    "movies": {}
-  },
-  "request_timeout_secs": 30,
-  "user_agent": "buzz/0.1",
-  "version_label": "buzz/0.1"
-}
+provider:
+  token: yourtoken
+poll_interval_secs: 10
+server:
+  bind: 0.0.0.0
+  port: 9999
+state_dir: /app/data
+hooks:
+  on_library_change: "sh /app/media_update.sh"
+compat:
+  enable_all_dir: true
+  enable_unplayable_dir: true
+directories:
+  anime:
+    patterns:
+      - "\\b[a-fA-F0-9]{8}\\b"
+  shows: {}
+  movies: {}
+request_timeout_secs: 30
+user_agent: buzz/0.1
+version_label: buzz/0.1
