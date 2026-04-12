@@ -1,13 +1,13 @@
 # zurg
 
-A self-hosted Real-Debrid webdav server written from scratch. Together with [rclone](https://rclone.org/) it can mount your Real-Debrid torrent library into your file system like Dropbox. It's meant to be used with Infuse (webdav server) and Plex (mount zurg webdav with rclone).
+A self-hosted Real-Debrid webdav server written from scratch. Together with [rclone](https://rclone.org/) it can mount your Real-Debrid torrent library into your file system like Dropbox. It's meant to be used with Infuse (webdav server) and a media server such as Plex or Jellyfin.
 
 ## Changes from upstream
 
 - `config.yml` is now `config.dist.yml`. This is to avoid potentially commiting changes to `config.yml` and exposing your token
-- `rclone` mounts the volume with `1000` gid and uid, so that plex can read it
-- `plex` is now a service that integrates with the other services by waiting for rclone to finish before mounting. This way it avoids a race condition to the mount endpoint where if plex is started before rclone finishes, the mountpoint will fail with `Transport endpoint missing`.
-- `healthcheck` is a service that continuously try to access `/mnt/zurg/movies`. If it identifies that it can't access the mountpoint that means `rclone` failed for some reason and it restart both the plex service and itself, so they can pick up the mount point again.
+- `rclone` mounts the volume with `1000` gid and uid, so that Plex or Jellyfin can read it
+- `media-server` is now a selectable service that integrates with the other services by waiting for rclone to finish before mounting. This way it avoids a race condition to the mount endpoint where if the media server is started before rclone finishes, the mountpoint will fail with `Transport endpoint missing`.
+- `healthcheck` is a service that continuously try to access `/mnt/zurg/movies`. If it identifies that it can't access the mountpoint that means `rclone` failed for some reason and it restart both the selected media server and itself, so they can pick up the mount point again.
 
 ## Download
 
@@ -37,15 +37,34 @@ docker pull ghcr.io/debridmediamanager/zurg-testing:latest
 docker pull ghcr.io/debridmediamanager/zurg-testing:v0.9.3-final
 ```
 
-## How to run zurg in 5 steps for Plex with Docker
+## How to run zurg in 6 steps for Plex or Jellyfin with Docker
 
 1. Clone the repo `git clone https://github.com/debridmediamanager/zurg-testing.git` or `git clone https://github.com/debridmediamanager/zurg.git`
 2. Add your token in `config.yml`
 3. `sudo mkdir -p /mnt/zurg`
-4. Run `docker compose up -d`
-5. `time ls -1R /mnt/zurg` You're done! If you do edits on your config.yml just do `docker compose restart zurg`.
+4. Copy `.env.dist` to `.env` and set the variables you need. `COMPOSE_PROFILES=plex` and `MEDIA_SERVER=plex` are the defaults; set both to `jellyfin` to switch the stack to Jellyfin.
+5. Put media-server state under `./config/plex` or `./config/jellyfin` depending on what you deploy.
+6. Run `docker compose up -d`
+
+`time ls -1R /mnt/zurg` confirms the mount is working. If you do edits on your `config.yml` just run `docker compose restart zurg`.
 
 A web server is now running at `localhost:9999`.
+
+### Media server notes
+
+- The Zurg library layout is unchanged for both Plex and Jellyfin: `/mnt/zurg/movies`, `/mnt/zurg/shows`, `/mnt/zurg/anime`
+- Plex keeps the existing partial refresh script in [`scripts/plex_update.sh`](./scripts/plex_update.sh)
+- Jellyfin uses [`scripts/jellyfin_update.sh`](./scripts/jellyfin_update.sh) to call the internal `presentation-builder` sidecar, which rebuilds a Jellyfin-facing library under `/mnt/jellyfin-library` and then triggers `Scan Media Library`
+- `COMPOSE_PROFILES` selects which media-server services Docker starts
+- `MEDIA_SERVER` controls which update-hook script Zurg calls and should match `COMPOSE_PROFILES`
+- In Jellyfin mode, set `JELLYFIN_URL=http://jellyfin:8096` so the `zurg` container can reach Jellyfin over the Compose network
+- In Jellyfin mode, you can still open the UI from the host at `http://localhost:8096`
+- Point Jellyfin libraries at `/mnt/jellyfin-library/movies`, `/mnt/jellyfin-library/shows`, and `/mnt/jellyfin-library/animes`
+- Manual naming overrides live in [`presentation/overrides.yml`](./presentation/overrides.yml) and currently use JSON-compatible YAML
+- Generator state and reports are written under `./state/jellyfin-library/`
+- `presentation-builder` only exists in the `jellyfin` profile and performs an initial library build when it starts, before serving rebuild requests on port `8400`
+- `presentation-builder` runs as `PUID`/`PGID` and removes `/mnt/jellyfin-library` on a normal container stop
+- `.env.dist` documents the supported Compose and update-hook variables
 
 ### Note: when using zurg in a server outside of your home network, ensure that "Use my Remote Traffic automatically when needed" is unchecked on your [Account page](https://real-debrid.com/account)
 
@@ -73,7 +92,7 @@ Use "zurg [command] --help" for more information about a command.
 
 ## Why zurg? Why not X?
 
-- Better performance than anything out there; changes in your library appear instantly ([assuming Plex picks it up fast enough](./plex_update.sh))
+- Better performance than anything out there; changes in your library appear instantly ([assuming your media server picks it up fast enough](./scripts/plex_update.sh))
 - You can configure a flexible directory structure in `config.yml`; you can select individual torrents that should appear on a directory by the ID you see in [DMM](https://debridmediamanager.com/). [Need help?](https://github.com/debridmediamanager/zurg-testing/wiki/Config)
 - If you've ever experienced Plex scanner being stuck on a file and thereby freezing Plex completely, it should not happen anymore because zurg does a comprehensive check if a torrent is dead or not. You can run `ps aux --sort=-time | grep "Plex Media Scanner"` to check for stuck scanner processes.
 - zurg guarantees that your library is **always available** because of its repair abilities!
