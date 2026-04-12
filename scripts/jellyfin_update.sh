@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # JELLYFIN UPDATE script
-# When zurg detects changes, it can trigger this script IF your config.yml contains
+# When buzz detects changes, it can trigger this script IF your config contains
 # on_library_update: sh /app/media_update.sh "$@"
 
 builder_url="${PRESENTATION_BUILDER_URL:-http://presentation-builder:8400/rebuild}"

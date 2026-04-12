@@ -1,13 +1,15 @@
 services:
-  zurg:
-    image: ghcr.io/debridmediamanager/zurg-testing:latest
-    container_name: zurg
+  buzz:
+    build:
+      context: .
+      dockerfile: buzz/Dockerfile
+    container_name: buzz
     restart: unless-stopped
     environment:
       - MEDIA_SERVER=${MEDIA_SERVER:-plex}
       - PLEX_URL=${PLEX_URL:-}
       - PLEX_TOKEN=${PLEX_TOKEN:-}
-      - ZURG_MOUNT=${ZURG_MOUNT:-/mnt/zurg}
+      - LIBRARY_MOUNT=${LIBRARY_MOUNT:-/mnt/buzz}
       - JELLYFIN_URL=${JELLYFIN_URL:-http://jellyfin:8096}
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
       - JELLYFIN_SCAN_TASK_ID=${JELLYFIN_SCAN_TASK_ID:-}
@@ -18,8 +20,8 @@ services:
       - ./scripts/media_update.sh:/app/media_update.sh
       - ./scripts/plex_update.sh:/app/plex_update.sh
       - ./scripts/jellyfin_update.sh:/app/jellyfin_update.sh
-      - ./config.yml:/app/config.yml
-      - zurgdata:/app/data
+      - ./buzz.yml:/app/buzz.yml
+      - buzzdata:/app/data
 
   rclone:
     image: rclone/rclone:latest
@@ -30,7 +32,7 @@ services:
       PUID: 1000
       PGID: 1000
     volumes:
-      - /mnt/zurg:/data:rshared # CHANGE /mnt/zurg WITH YOUR PREFERRED MOUNT PATH
+      - /mnt/buzz:/data:rshared # CHANGE /mnt/buzz WITH YOUR PREFERRED MOUNT PATH
       - ./rclone.conf:/config/rclone/rclone.conf
     cap_add:
       - SYS_ADMIN
@@ -39,8 +41,8 @@ services:
     devices:
       - /dev/fuse:/dev/fuse:rwm
     depends_on:
-      - zurg
-    command: "mount zurg: /data --allow-other --allow-non-empty --dir-cache-time 10s --vfs-cache-mode full --default-permissions --uid 1000 --gid 1000"
+      - buzz
+    command: "mount buzz: /data --allow-other --allow-non-empty --dir-cache-time 10s --vfs-cache-mode full --default-permissions --uid 1000 --gid 1000"
 
   plex:
     profiles: ["plex"]
@@ -89,7 +91,7 @@ services:
       - PRESENTATION_BIND=0.0.0.0
       - PRESENTATION_PORT=${PRESENTATION_PORT:-8400}
       - PRESENTATION_BUILD_ON_START=${PRESENTATION_BUILD_ON_START:-true}
-      - PRESENTATION_SOURCE_ROOT=${PRESENTATION_SOURCE_ROOT:-/mnt/zurg}
+      - PRESENTATION_SOURCE_ROOT=${PRESENTATION_SOURCE_ROOT:-/mnt/buzz}
       - PRESENTATION_TARGET_ROOT=${PRESENTATION_TARGET_ROOT:-/mnt/jellyfin-library}
       - PRESENTATION_STATE_ROOT=${PRESENTATION_STATE_ROOT:-/state}
       - PRESENTATION_OVERRIDES=${PRESENTATION_OVERRIDES:-/config/overrides.yml}
@@ -111,7 +113,7 @@ services:
     environment:
       - TARGET_CONTAINER=plex
       - SELF_CONTAINER=plex-healthcheck
-      - HEALTHCHECK_PATH=${HEALTHCHECK_PATH:-/mnt/zurg/movies}
+      - HEALTHCHECK_PATH=${HEALTHCHECK_PATH:-/mnt/buzz/movies}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./healthcheck.sh:/app/healthcheck.sh
@@ -130,7 +132,7 @@ services:
     environment:
       - TARGET_CONTAINER=jellyfin
       - SELF_CONTAINER=jellyfin-healthcheck
-      - HEALTHCHECK_PATH=${HEALTHCHECK_PATH:-/mnt/zurg/movies}
+      - HEALTHCHECK_PATH=${HEALTHCHECK_PATH:-/mnt/buzz/movies}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./healthcheck.sh:/app/healthcheck.sh
@@ -143,4 +145,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  zurgdata:
+  buzzdata:

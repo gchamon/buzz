@@ -78,7 +78,7 @@ def load_config() -> Config:
     return Config(
         bind=os.environ.get("PRESENTATION_BIND", "0.0.0.0"),
         port=int(os.environ.get("PRESENTATION_PORT", "8400")),
-        source_root=env_path("PRESENTATION_SOURCE_ROOT", "/mnt/zurg"),
+        source_root=env_path("PRESENTATION_SOURCE_ROOT", "/mnt/buzz"),
         target_root=env_path("PRESENTATION_TARGET_ROOT", "/mnt/jellyfin-library"),
         state_root=env_path("PRESENTATION_STATE_ROOT", "/state"),
         overrides_path=env_path("PRESENTATION_OVERRIDES", "/config/overrides.yml"),

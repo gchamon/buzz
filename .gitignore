@@ -1,5 +1,6 @@
 config/
 config.yml
+buzz.yml
 .codex
 state/jellyfin-library/*
 !state/jellyfin-library/.gitkeep

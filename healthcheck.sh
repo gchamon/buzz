@@ -2,7 +2,7 @@
 
 target_container="${TARGET_CONTAINER:-plex}"
 self_container="${SELF_CONTAINER:-${HOSTNAME}}"
-healthcheck_path="${HEALTHCHECK_PATH:-/mnt/zurg/movies}"
+healthcheck_path="${HEALTHCHECK_PATH:-/mnt/buzz/movies}"
 
 while true; do
     if ! ls "$healthcheck_path" 2>&1 >/dev/null; then
