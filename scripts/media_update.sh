@@ -4,7 +4,7 @@ media_server="${MEDIA_SERVER:-plex}"
 
 case "$media_server" in
     plex)
-        exec sh /app/plex_update.sh "$@"
+        exec bash /app/plex_update.sh "$@"
         ;;
     jellyfin)
         exec sh /app/jellyfin_update.sh "$@"

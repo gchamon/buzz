@@ -4,8 +4,7 @@
 # When buzz detects changes, it can trigger this script IF your config contains
 # on_library_update: sh /app/media_update.sh "$@"
 
-# docker compose exec buzz apk add libxml2-utils
-# sudo apt install libxml2-utils
+# Dependencies inside the Buzz container: bash, curl, xmllint
 
 plex_url="${PLEX_URL:-http://<url>}" # If you're using buzz inside a Docker container, by default it is 172.17.0.1:32400
 token="${PLEX_TOKEN:-<token>}" # open Plex in a browser, open dev console and copy-paste this: window.localStorage.getItem("myPlexAccessToken")
