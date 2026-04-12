@@ -909,7 +909,20 @@ class Poller(threading.Thread):
     def run(self) -> None:
         while not self._stop_event.wait(self.state.config.poll_interval_secs):
             try:
-                self.state.sync()
+                report = self.state.sync()
+                if report.get("changed"):
+                    print(
+                        json.dumps(
+                            {
+                                "event": "realdebrid_update",
+                                "timestamp": report.get("timestamp"),
+                                "synced_torrents": report.get("synced_torrents"),
+                                "changed_paths": report.get("changed_paths", []),
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
             except Exception as exc:  # noqa: BLE001
                 self.state.last_error = str(exc)
                 print(f"background sync failed: {exc}", flush=True)

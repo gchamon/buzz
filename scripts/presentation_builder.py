@@ -353,16 +353,51 @@ def replace_root(tmp_root: Path, target_root: Path):
         shutil.rmtree(backup_root)
 
 
-def log_mapping_event(mapping: list[dict], report: dict):
+def load_previous_mapping(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    raw = path.read_text(encoding="utf-8").strip()
+    if not raw:
+        return []
+    payload = json.loads(raw)
+    return payload if isinstance(payload, list) else []
+
+
+def mapping_index(entries: list[dict]) -> dict[str, dict]:
+    indexed = {}
+    for entry in entries:
+        target = entry.get("target")
+        if isinstance(target, str):
+            indexed[target] = entry
+    return indexed
+
+
+def mapping_diff(previous: list[dict], current: list[dict]) -> dict:
+    previous_index = mapping_index(previous)
+    current_index = mapping_index(current)
+
+    added = [current_index[target] for target in sorted(current_index.keys() - previous_index.keys())]
+    removed = [previous_index[target] for target in sorted(previous_index.keys() - current_index.keys())]
+    changed = []
+    for target in sorted(previous_index.keys() & current_index.keys()):
+        if previous_index[target] != current_index[target]:
+            changed.append({"before": previous_index[target], "after": current_index[target]})
+
+    return {"added": added, "removed": removed, "changed": changed}
+
+
+def log_mapping_event(diff: dict, report: dict, mapping_entries: int):
     print(
         json.dumps(
             {
-                "event": "presentation_builder_mapping",
-                "mapping_entries": len(mapping),
+                "event": "presentation_builder_mapping_diff",
+                "mapping_entries": mapping_entries,
                 "movies": report["movies"],
                 "show_files": report["show_files"],
                 "anime_files": report["anime_files"],
-                "entries": mapping,
+                "added": diff["added"],
+                "removed": diff["removed"],
+                "changed": diff["changed"],
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -383,6 +418,8 @@ def build_library(config: Config):
     config.state_root.mkdir(parents=True, exist_ok=True)
     target_parent = config.target_root.parent
     target_parent.mkdir(parents=True, exist_ok=True)
+    mapping_path = config.state_root / "mapping.json"
+    previous_mapping = load_previous_mapping(mapping_path)
     tmp_root = Path(tempfile.mkdtemp(prefix=".jellyfin-library-", dir=target_parent))
     mapping = []
     report = {
@@ -403,10 +440,10 @@ def build_library(config: Config):
         raise
 
     report["mapping_entries"] = len(mapping)
-    (config.state_root / "mapping.json").write_text(json.dumps(mapping, indent=2, sort_keys=True), encoding="utf-8")
+    mapping_path.write_text(json.dumps(mapping, indent=2, sort_keys=True), encoding="utf-8")
     (config.state_root / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     if config.verbose:
-        log_mapping_event(mapping, report)
+        log_mapping_event(mapping_diff(previous_mapping, mapping), report, len(mapping))
     return report
 
 

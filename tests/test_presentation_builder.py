@@ -61,12 +61,35 @@ class PresentationBuilderTests(unittest.TestCase):
             self.assertEqual(report["movies"], 1)
             lines = [line for line in stdout.getvalue().splitlines() if line]
             mapping_log = json.loads(lines[-1])
-            self.assertEqual(mapping_log["event"], "presentation_builder_mapping")
+            self.assertEqual(mapping_log["event"], "presentation_builder_mapping_diff")
             self.assertEqual(mapping_log["mapping_entries"], 1)
+            self.assertEqual(mapping_log["removed"], [])
+            self.assertEqual(mapping_log["changed"], [])
             self.assertEqual(
-                mapping_log["entries"],
+                mapping_log["added"],
                 [{"source": "movies/Movie.2026.1080p.mkv", "target": "movies/Movie (2026)/Movie (2026).mkv", "type": "movie"}],
             )
+
+    def test_rebuild_logs_empty_diff_when_mapping_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self.make_config(root, verbose=True)
+            self.create_source_tree(config.source_root)
+
+            with mock.patch("sys.stdout", io.StringIO()):
+                pb.rebuild_and_trigger(config)
+
+            stdout = io.StringIO()
+            with mock.patch("sys.stdout", stdout):
+                report = pb.rebuild_and_trigger(config)
+
+            self.assertEqual(report["movies"], 1)
+            lines = [line for line in stdout.getvalue().splitlines() if line]
+            mapping_log = json.loads(lines[-1])
+            self.assertEqual(mapping_log["event"], "presentation_builder_mapping_diff")
+            self.assertEqual(mapping_log["added"], [])
+            self.assertEqual(mapping_log["removed"], [])
+            self.assertEqual(mapping_log["changed"], [])
 
     def test_rebuild_triggers_scan_when_auth_is_configured(self):
         with tempfile.TemporaryDirectory() as tmpdir:
