@@ -281,6 +281,7 @@ def build_library(config: Config):
 
 
 def build_movies(source_root: Path, target_root: Path, overrides: dict, mapping: list, report: dict, all_source_root: Path):
+    target_root.mkdir(parents=True, exist_ok=True)
     if not source_root.exists():
         return
     used_targets = set()
@@ -317,6 +318,7 @@ def build_movies(source_root: Path, target_root: Path, overrides: dict, mapping:
 
 
 def build_shows(source_root: Path, target_root: Path, overrides: dict, mapping: list, report: dict, all_source_root: Path):
+    target_root.mkdir(parents=True, exist_ok=True)
     if not source_root.exists():
         return
     grouped = {}
@@ -378,6 +380,7 @@ def build_shows(source_root: Path, target_root: Path, overrides: dict, mapping: 
 
 
 def build_anime(source_root: Path, target_root: Path, mapping: list, report: dict, all_source_root: Path):
+    target_root.mkdir(parents=True, exist_ok=True)
     if not source_root.exists():
         return
     for path in iter_files(source_root):
