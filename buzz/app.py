@@ -68,6 +68,13 @@ def normalize_posix_path(value: str) -> str:
     return normalized.lstrip("/")
 
 
+def dav_rel_path(raw_path: str) -> str:
+    path = parse.urlsplit(raw_path).path
+    if path.startswith("/dav"):
+        path = path[len("/dav") :]
+    return normalize_posix_path(parse.unquote(path))
+
+
 def split_path(value: str) -> tuple[str, ...]:
     normalized = normalize_posix_path(value)
     if not normalized:
@@ -672,7 +679,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.path.startswith("/dav"):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        rel = normalize_posix_path(self.path[len("/dav") :])
+        rel = dav_rel_path(self.path)
         node = self.state.lookup(rel)
         if node is None:
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -692,7 +699,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def _serve_dav(self, send_body: bool) -> None:
-        rel = normalize_posix_path(self.path[len("/dav") :])
+        rel = dav_rel_path(self.path)
         node = self.state.lookup(rel)
         if node is None:
             self.send_error(HTTPStatus.NOT_FOUND)

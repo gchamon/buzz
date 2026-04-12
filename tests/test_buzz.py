@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from buzz.app import BuzzState, Config, LibraryBuilder, normalize_posix_path
+from buzz.app import BuzzState, Config, Handler, LibraryBuilder, dav_rel_path, normalize_posix_path
 from scripts.migrate_config import buzz_to_zurg, convert, parse_buzz_config, parse_zurg_config, zurg_to_buzz
 
 
@@ -198,6 +198,77 @@ class BuzzStateTests(unittest.TestCase):
             self.assertTrue(report["changed"])
             self.assertTrue(state.snapshot_loaded)
             self.assertTrue(state.is_ready())
+
+
+class DavHandlerTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        state_dir = Path(self.tmpdir.name)
+        snapshot = {
+            "dirs": ["", "movies", "movies/Little Shop [1986] + Extras"],
+            "files": {
+                "movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv": {
+                    "type": "memory",
+                    "content": "ok",
+                    "size": 2,
+                    "mime_type": "video/x-matroska",
+                    "modified": "2026-01-01T00:00:00Z",
+                    "etag": "etag-1",
+                }
+            },
+        }
+        (state_dir / "library_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+        config = Config(
+            token="token",
+            poll_interval_secs=10,
+            bind="127.0.0.1",
+            port=9999,
+            state_dir=str(state_dir),
+            hook_command="",
+            anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+            enable_all_dir=True,
+            enable_unplayable_dir=True,
+            request_timeout_secs=30,
+            user_agent="buzz-tests",
+            version_label="buzz/test",
+        )
+        self.state = BuzzState(config, client=None)
+        self.handler = Handler.__new__(Handler)
+        self.handler.state = self.state
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_dav_rel_path_decodes_encoded_names(self):
+        self.assertEqual(
+            dav_rel_path("/dav/movies/Little%20Shop%20%5B1986%5D%20%2B%20Extras/"),
+            "movies/Little Shop [1986] + Extras",
+        )
+
+    def test_propfind_child_round_trips_encoded_directory_name(self):
+        root_body = self.handler._propfind_body(["movies", "movies/Little Shop [1986] + Extras"])
+        self.assertIn("/dav/movies/Little%20Shop%20%5B1986%5D%20%2B%20Extras", root_body)
+
+        decoded = dav_rel_path("/dav/movies/Little%20Shop%20%5B1986%5D%20%2B%20Extras/")
+        self.assertIsNotNone(self.state.lookup(decoded))
+
+        child_body = self.handler._propfind_body(
+            [
+                decoded,
+                f"{decoded}/Little Shop of Horrors (1986).mkv",
+            ]
+        )
+        self.assertIn("Little%20Shop%20of%20Horrors%20%281986%29.mkv", child_body)
+
+    def test_get_and_head_resolve_encoded_file_paths(self):
+        encoded_path = dav_rel_path(
+            "/dav/movies/Little%20Shop%20%5B1986%5D%20%2B%20Extras/"
+            "Little%20Shop%20of%20Horrors%20%281986%29.mkv"
+        )
+        node = self.state.lookup(encoded_path)
+        self.assertIsNotNone(node)
+        self.assertEqual(node["size"], 2)
+        self.assertEqual(node["content"], "ok")
 
 
 class ConfigMigrationTests(unittest.TestCase):
