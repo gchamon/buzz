@@ -91,6 +91,27 @@ def stable_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def canonical_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    files = {}
+    for path, node in snapshot.get("files", {}).items():
+        if not isinstance(node, dict):
+            files[path] = node
+            continue
+        canonical_node = {key: value for key, value in node.items() if key != "modified"}
+        files[path] = canonical_node
+
+    report = snapshot.get("report", {})
+    canonical_report = report
+    if isinstance(report, dict):
+        canonical_report = {key: value for key, value in report.items() if key != "generated_at"}
+
+    return {
+        "dirs": snapshot.get("dirs", []),
+        "files": files,
+        "report": canonical_report,
+    }
+
+
 def parse_json_compat_yaml(raw: str) -> dict[str, Any]:
     try:
         data = json.loads(raw)
@@ -467,7 +488,7 @@ class BuzzState:
         self.cache = self._load_json(self.cache_path, default={})
         self.snapshot_loaded = os.path.exists(self.snapshot_path)
         self.snapshot = self._load_json(self.snapshot_path, default={"dirs": [""], "files": {}})
-        self.snapshot_digest = stable_json(self.snapshot)
+        self.snapshot_digest = stable_json(canonical_snapshot(self.snapshot))
         self.last_sync_at = None
         self.last_report = {}
         self.last_error = None
@@ -521,7 +542,7 @@ class BuzzState:
                 infos.append(info)
 
             snapshot, changed_roots = self.builder.build(infos)
-            digest = stable_json(snapshot)
+            digest = stable_json(canonical_snapshot(snapshot))
 
             with self.lock:
                 changed = digest != self.snapshot_digest

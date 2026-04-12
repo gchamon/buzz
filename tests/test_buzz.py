@@ -5,7 +5,7 @@ import time
 import unittest
 from pathlib import Path
 
-from buzz.app import BuzzState, Config, Handler, LibraryBuilder, dav_rel_path, normalize_posix_path
+from buzz.app import BuzzState, Config, Handler, LibraryBuilder, canonical_snapshot, dav_rel_path, normalize_posix_path
 from scripts.migrate_config import buzz_to_zurg, convert, parse_buzz_config, parse_zurg_config, zurg_to_buzz
 
 
@@ -200,6 +200,209 @@ class BuzzStateTests(unittest.TestCase):
             self.assertTrue(report["changed"])
             self.assertTrue(state.snapshot_loaded)
             self.assertTrue(state.is_ready())
+
+    def test_canonical_snapshot_ignores_generated_timestamps(self):
+        first = {
+            "generated_at": "2026-01-01T00:00:00Z",
+            "dirs": ["", "movies"],
+            "files": {
+                "movies/Movie/file.mkv": {
+                    "type": "remote",
+                    "size": 123,
+                    "url": "https://example.invalid/file",
+                    "mime_type": "video/x-matroska",
+                    "modified": "2026-01-01T00:00:00Z",
+                    "etag": "abc",
+                }
+            },
+            "report": {"movies": 1, "generated_at": "2026-01-01T00:00:00Z"},
+        }
+        second = {
+            "generated_at": "2026-01-02T00:00:00Z",
+            "dirs": ["", "movies"],
+            "files": {
+                "movies/Movie/file.mkv": {
+                    "type": "remote",
+                    "size": 123,
+                    "url": "https://example.invalid/file",
+                    "mime_type": "video/x-matroska",
+                    "modified": "2026-01-02T00:00:00Z",
+                    "etag": "abc",
+                }
+            },
+            "report": {"movies": 1, "generated_at": "2026-01-02T00:00:00Z"},
+        }
+
+        self.assertEqual(canonical_snapshot(first), canonical_snapshot(second))
+
+    def test_identical_syncs_after_first_change_are_stable(self):
+        class FakeClient:
+            def list_torrents(self):
+                return [
+                    {
+                        "id": "TORRENT1",
+                        "filename": "Movie.2026.1080p.mkv",
+                        "bytes": 123,
+                        "progress": 100,
+                        "status": "downloaded",
+                        "ended": "2026-01-01T00:00:00Z",
+                        "links": ["https://example.invalid/file"],
+                    }
+                ]
+
+            def torrent_info(self, torrent_id):
+                return {
+                    "id": torrent_id,
+                    "status": "downloaded",
+                    "filename": "Movie.2026.1080p.mkv",
+                    "original_filename": "Movie 2026",
+                    "links": ["https://example.invalid/file"],
+                    "files": [
+                        {
+                            "id": 1,
+                            "path": "/Movie.2026.1080p.mkv",
+                            "bytes": 123,
+                            "selected": 1,
+                        }
+                    ],
+                }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+            )
+            state = BuzzState(config, client=FakeClient())
+            first = state.sync(trigger_hook=False)
+            second = state.sync(trigger_hook=False)
+
+            self.assertTrue(first["changed"])
+            self.assertFalse(second["changed"])
+            self.assertEqual(second["changed_paths"], [])
+
+    def test_identical_syncs_do_not_enqueue_duplicate_hooks(self):
+        class FakeClient:
+            def list_torrents(self):
+                return [
+                    {
+                        "id": "TORRENT1",
+                        "filename": "Movie.2026.1080p.mkv",
+                        "bytes": 123,
+                        "progress": 100,
+                        "status": "downloaded",
+                        "ended": "2026-01-01T00:00:00Z",
+                        "links": ["https://example.invalid/file"],
+                    }
+                ]
+
+            def torrent_info(self, torrent_id):
+                return {
+                    "id": torrent_id,
+                    "status": "downloaded",
+                    "filename": "Movie.2026.1080p.mkv",
+                    "original_filename": "Movie 2026",
+                    "links": ["https://example.invalid/file"],
+                    "files": [
+                        {
+                            "id": 1,
+                            "path": "/Movie.2026.1080p.mkv",
+                            "bytes": 123,
+                            "selected": 1,
+                        }
+                    ],
+                }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="test-hook",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+            )
+            state = BuzzState(config, client=FakeClient())
+            enqueued = []
+            state._enqueue_hook = lambda changed_roots: enqueued.append(list(changed_roots))
+
+            first = state.sync()
+            second = state.sync()
+
+            self.assertTrue(first["changed"])
+            self.assertFalse(second["changed"])
+            self.assertEqual(enqueued, [["movies/Movie 2026"]])
+
+    def test_existing_snapshot_digest_stays_stable_across_restart(self):
+        class FakeClient:
+            def list_torrents(self):
+                return [
+                    {
+                        "id": "TORRENT1",
+                        "filename": "Movie.2026.1080p.mkv",
+                        "bytes": 123,
+                        "progress": 100,
+                        "status": "downloaded",
+                        "ended": "2026-01-01T00:00:00Z",
+                        "links": ["https://example.invalid/file"],
+                    }
+                ]
+
+            def torrent_info(self, torrent_id):
+                return {
+                    "id": torrent_id,
+                    "status": "downloaded",
+                    "filename": "Movie.2026.1080p.mkv",
+                    "original_filename": "Movie 2026",
+                    "links": ["https://example.invalid/file"],
+                    "files": [
+                        {
+                            "id": 1,
+                            "path": "/Movie.2026.1080p.mkv",
+                            "bytes": 123,
+                            "selected": 1,
+                        }
+                    ],
+                }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+            )
+            first_state = BuzzState(config, client=FakeClient())
+            first_state.sync(trigger_hook=False)
+
+            second_state = BuzzState(config, client=FakeClient())
+            second = second_state.sync(trigger_hook=False)
+
+            self.assertFalse(second["changed"])
+            self.assertEqual(second["changed_paths"], [])
 
     def test_sync_does_not_block_on_hook_execution(self):
         class FakeClient:
