@@ -3,6 +3,8 @@ config.yml
 .codex
 state/jellyfin-library/*
 !state/jellyfin-library/.gitkeep
+presentation/overrides.yml
+!presentation/overrides.dist.yml
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
