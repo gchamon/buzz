@@ -11,6 +11,7 @@ services:
       - JELLYFIN_URL=${JELLYFIN_URL:-http://jellyfin:8096}
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
       - JELLYFIN_SCAN_TASK_ID=${JELLYFIN_SCAN_TASK_ID:-}
+      - PRESENTATION_BUILDER_URL=${PRESENTATION_BUILDER_URL:-http://presentation-builder:8400/rebuild}
     ports:
       - 9999:9999
     volumes:
@@ -76,6 +77,31 @@ services:
       - ./config/jellyfin:/config
       - ./cache/jellyfin:/cache
       - /mnt:/mnt:ro
+    restart: unless-stopped
+
+  presentation-builder:
+    profiles: ["jellyfin"]
+    image: python:3.12-slim
+    container_name: presentation-builder
+    depends_on:
+      - rclone
+      - jellyfin
+    environment:
+      - PRESENTATION_BIND=0.0.0.0
+      - PRESENTATION_PORT=${PRESENTATION_PORT:-8400}
+      - PRESENTATION_SOURCE_ROOT=${PRESENTATION_SOURCE_ROOT:-/mnt/zurg}
+      - PRESENTATION_TARGET_ROOT=${PRESENTATION_TARGET_ROOT:-/mnt/jellyfin-library}
+      - PRESENTATION_STATE_ROOT=${PRESENTATION_STATE_ROOT:-/state}
+      - PRESENTATION_OVERRIDES=${PRESENTATION_OVERRIDES:-/config/overrides.yml}
+      - JELLYFIN_URL=${JELLYFIN_URL:-http://jellyfin:8096}
+      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
+      - JELLYFIN_SCAN_TASK_ID=${JELLYFIN_SCAN_TASK_ID:-}
+    command: ["python3", "/app/presentation_builder.py"]
+    volumes:
+      - ./scripts/presentation_builder.py:/app/presentation_builder.py:ro
+      - ./presentation/overrides.yml:/config/overrides.yml:ro
+      - ./state/jellyfin-library:/state
+      - /mnt:/mnt
     restart: unless-stopped
 
   plex-healthcheck:

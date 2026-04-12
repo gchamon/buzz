@@ -54,11 +54,14 @@ A web server is now running at `localhost:9999`.
 
 - The Zurg library layout is unchanged for both Plex and Jellyfin: `/mnt/zurg/movies`, `/mnt/zurg/shows`, `/mnt/zurg/anime`
 - Plex keeps the existing partial refresh script in [`scripts/plex_update.sh`](./scripts/plex_update.sh)
-- Jellyfin uses [`scripts/jellyfin_update.sh`](./scripts/jellyfin_update.sh) and triggers the `Scan Media Library` scheduled task when Zurg reports changes
+- Jellyfin uses [`scripts/jellyfin_update.sh`](./scripts/jellyfin_update.sh) to call the internal `presentation-builder` sidecar, which rebuilds a Jellyfin-facing library under `/mnt/jellyfin-library` and then triggers `Scan Media Library`
 - `COMPOSE_PROFILES` selects which media-server services Docker starts
 - `MEDIA_SERVER` controls which update-hook script Zurg calls and should match `COMPOSE_PROFILES`
 - In Jellyfin mode, set `JELLYFIN_URL=http://jellyfin:8096` so the `zurg` container can reach Jellyfin over the Compose network
 - In Jellyfin mode, you can still open the UI from the host at `http://localhost:8096`
+- Point Jellyfin libraries at `/mnt/jellyfin-library/movies`, `/mnt/jellyfin-library/shows`, and `/mnt/jellyfin-library/animes`
+- Manual naming overrides live in [`presentation/overrides.yml`](./presentation/overrides.yml) and currently use JSON-compatible YAML
+- Generator state and reports are written under `./state/jellyfin-library/`
 - `.env.dist` documents the supported Compose and update-hook variables
 
 ### Note: when using zurg in a server outside of your home network, ensure that "Use my Remote Traffic automatically when needed" is unchecked on your [Account page](https://real-debrid.com/account)
