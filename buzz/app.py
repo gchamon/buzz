@@ -458,11 +458,14 @@ class BuzzState:
         self.cache_path = os.path.join(self.state_dir, "torrent_cache.json")
         self.snapshot_path = os.path.join(self.state_dir, "library_snapshot.json")
         self.cache = self._load_json(self.cache_path, default={})
+        self.snapshot_loaded = os.path.exists(self.snapshot_path)
         self.snapshot = self._load_json(self.snapshot_path, default={"dirs": [""], "files": {}})
         self.snapshot_digest = stable_json(self.snapshot)
         self.last_sync_at = None
         self.last_report = {}
         self.last_error = None
+        self.sync_in_progress = False
+        self.startup_sync_complete = False
 
     def _load_json(self, path: str, default: Any) -> Any:
         try:
@@ -480,6 +483,8 @@ class BuzzState:
 
     def sync(self, *, trigger_hook: bool = True) -> dict[str, Any]:
         with self.lock:
+            self.sync_in_progress = True
+        try:
             summaries = self.client.list_torrents()
             new_cache: dict[str, dict[str, Any]] = {}
             infos: list[dict[str, Any]] = []
@@ -488,7 +493,8 @@ class BuzzState:
                 if not torrent_id:
                     continue
                 signature = self._summary_signature(summary)
-                cached = self.cache.get(torrent_id)
+                with self.lock:
+                    cached = self.cache.get(torrent_id)
                 if cached and cached.get("signature") == signature and isinstance(cached.get("info"), dict):
                     info = cached["info"]
                 else:
@@ -498,27 +504,37 @@ class BuzzState:
 
             snapshot, changed_roots = self.builder.build(infos)
             digest = stable_json(snapshot)
-            changed = digest != self.snapshot_digest
-            report = dict(snapshot["report"])
-            report["changed"] = changed
-            report["changed_paths"] = changed_roots if changed else []
-            report["synced_torrents"] = len(infos)
-            report["timestamp"] = utc_now_iso()
 
-            self.cache = new_cache
-            self._write_json(self.cache_path, self.cache)
+            with self.lock:
+                changed = digest != self.snapshot_digest
+                report = dict(snapshot["report"])
+                report["changed"] = changed
+                report["changed_paths"] = changed_roots if changed else []
+                report["synced_torrents"] = len(infos)
+                report["timestamp"] = utc_now_iso()
 
-            if changed:
-                self.snapshot = snapshot
-                self.snapshot_digest = digest
-                self._write_json(self.snapshot_path, self.snapshot)
-                if trigger_hook and self.config.hook_command:
-                    self._run_hook(changed_roots)
+                self.cache = new_cache
+                self._write_json(self.cache_path, self.cache)
 
-            self.last_sync_at = report["timestamp"]
-            self.last_report = report
-            self.last_error = None
-            return report
+                if changed:
+                    self.snapshot = snapshot
+                    self.snapshot_digest = digest
+                    self._write_json(self.snapshot_path, self.snapshot)
+                    self.snapshot_loaded = True
+                    if trigger_hook and self.config.hook_command:
+                        self._run_hook(changed_roots)
+
+                self.last_sync_at = report["timestamp"]
+                self.last_report = report
+                self.last_error = None
+                return report
+        except Exception as exc:
+            with self.lock:
+                self.last_error = str(exc)
+            raise
+        finally:
+            with self.lock:
+                self.sync_in_progress = False
 
     def _summary_signature(self, summary: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -571,7 +587,18 @@ class BuzzState:
                 "last_sync_at": self.last_sync_at,
                 "last_error": self.last_error,
                 "last_report": self.last_report,
+                "sync_in_progress": self.sync_in_progress,
+                "startup_sync_complete": self.startup_sync_complete,
+                "snapshot_loaded": self.snapshot_loaded,
+                "ready": self.is_ready(),
             }
+
+    def mark_startup_sync_complete(self) -> None:
+        with self.lock:
+            self.startup_sync_complete = True
+
+    def is_ready(self) -> bool:
+        return self.snapshot_loaded or (self.startup_sync_complete and self.last_sync_at is not None)
 
 
 def read_range_header(value: str | None, size: int) -> tuple[int, int] | None:
@@ -609,6 +636,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/healthz":
             self._respond_json(HTTPStatus.OK, {"status": "ok", **self.state.status()})
+            return
+        if self.path == "/readyz":
+            status = HTTPStatus.OK if self.state.is_ready() else HTTPStatus.SERVICE_UNAVAILABLE
+            payload_status = "ready" if status == HTTPStatus.OK else "starting"
+            self._respond_json(status, {"status": payload_status, **self.state.status()})
             return
         if self.path == "/sync":
             self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
@@ -804,15 +836,31 @@ class Poller(threading.Thread):
         self._stop_event.set()
 
 
+class InitialSync(threading.Thread):
+    def __init__(self, state: BuzzState):
+        super().__init__(daemon=True)
+        self.state = state
+
+    def run(self) -> None:
+        try:
+            report = self.state.sync(trigger_hook=False)
+            print(json.dumps({"startup_sync": report}, sort_keys=True), flush=True)
+        except Exception as exc:  # noqa: BLE001
+            self.state.last_error = str(exc)
+            print(f"startup sync failed: {exc}", flush=True)
+        finally:
+            self.state.mark_startup_sync_complete()
+
+
 def main() -> None:
     config = Config.load()
     client = RealDebridClient(config)
     state = BuzzState(config, client)
-    initial_report = state.sync(trigger_hook=False)
-    print(json.dumps({"startup_sync": initial_report}, sort_keys=True), flush=True)
     Handler.state = state
     server = ThreadingHTTPServer((config.bind, config.port), Handler)
+    initial_sync = InitialSync(state)
     poller = Poller(state)
+    initial_sync.start()
     poller.start()
     print(f"buzz listening on {config.bind}:{config.port}", flush=True)
     try:

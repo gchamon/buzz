@@ -120,6 +120,84 @@ class BuzzStateTests(unittest.TestCase):
             self.assertEqual(normalize_posix_path("/movies/Torrent/file.mkv"), "movies/Torrent/file.mkv")
             self.assertIsNotNone(state.lookup("/movies/Torrent/file.mkv"))
             self.assertEqual(state.list_children("/movies"), ["Torrent"])
+            self.assertTrue(state.is_ready())
+
+    def test_no_snapshot_starts_unready_until_first_sync_completes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+            )
+            state = BuzzState(config, client=None)
+            self.assertFalse(state.snapshot_loaded)
+            self.assertFalse(state.startup_sync_complete)
+            self.assertFalse(state.is_ready())
+            state.mark_startup_sync_complete()
+            self.assertFalse(state.is_ready())
+
+    def test_successful_sync_marks_state_ready(self):
+        class FakeClient:
+            def list_torrents(self):
+                return [
+                    {
+                        "id": "TORRENT1",
+                        "filename": "Movie.2026.1080p.mkv",
+                        "bytes": 123,
+                        "progress": 100,
+                        "status": "downloaded",
+                        "ended": "2026-01-01T00:00:00Z",
+                        "links": ["https://example.invalid/file"],
+                    }
+                ]
+
+            def torrent_info(self, torrent_id):
+                return {
+                    "id": torrent_id,
+                    "status": "downloaded",
+                    "filename": "Movie.2026.1080p.mkv",
+                    "original_filename": "Movie 2026",
+                    "links": ["https://example.invalid/file"],
+                    "files": [
+                        {
+                            "id": 1,
+                            "path": "/Movie.2026.1080p.mkv",
+                            "bytes": 123,
+                            "selected": 1,
+                        }
+                    ],
+                }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+            )
+            state = BuzzState(config, client=FakeClient())
+            report = state.sync(trigger_hook=False)
+            state.mark_startup_sync_complete()
+            self.assertTrue(report["changed"])
+            self.assertTrue(state.snapshot_loaded)
+            self.assertTrue(state.is_ready())
 
 
 class ConfigMigrationTests(unittest.TestCase):

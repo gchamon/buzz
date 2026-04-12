@@ -17,7 +17,7 @@ services:
     ports:
       - 9999:9999
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9999/healthz"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9999/readyz"]
       interval: 10s
       timeout: 5s
       retries: 5
