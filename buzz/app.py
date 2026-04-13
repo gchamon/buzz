@@ -110,6 +110,22 @@ def format_bytes(value: Any) -> str:
     return f"{size:.1f} {units[index]}"
 
 
+def is_probably_media_content_type(value: str | None) -> bool:
+    if not value:
+        return True
+    normalized = value.split(";", 1)[0].strip().lower()
+    if normalized.startswith(("video/", "audio/", "application/octet-stream")):
+        return True
+    if normalized in {"application/mp4", "application/vnd.apple.mpegurl"}:
+        return True
+    return False
+
+
+def looks_like_markup(payload: bytes) -> bool:
+    head = payload.lstrip().lower()
+    return head.startswith((b"<!doctype", b"<html", b"<?xml", b"{", b"["))
+
+
 def canonical_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     files = {}
     for path, node in snapshot.get("files", {}).items():
@@ -283,14 +299,19 @@ class RealDebridClient:
         self.config = config
         self.base_url = "https://api.real-debrid.com/rest/1.0"
 
-    def _request_json(self, path: str) -> Any:
+    def _request_json(self, path: str, *, method: str = "GET", data: bytes | None = None) -> Any:
+        headers = {
+            "Authorization": f"Bearer {self.config.token}",
+            "User-Agent": self.config.user_agent,
+            "Accept": "application/json",
+        }
+        if data is not None:
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
         req = request.Request(
             self.base_url + path,
-            headers={
-                "Authorization": f"Bearer {self.config.token}",
-                "User-Agent": self.config.user_agent,
-                "Accept": "application/json",
-            },
+            data=data,
+            method=method,
+            headers=headers,
         )
         with request.urlopen(req, timeout=self.config.request_timeout_secs) as response:
             return json.load(response)
@@ -306,6 +327,19 @@ class RealDebridClient:
         if not isinstance(payload, dict):
             raise ValueError(f"Unexpected response for torrent {torrent_id}")
         return payload
+
+    def unrestrict_link(self, link: str) -> str:
+        payload = self._request_json(
+            "/unrestrict/link",
+            method="POST",
+            data=parse.urlencode({"link": link}).encode("utf-8"),
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("Unexpected response for /unrestrict/link")
+        download = str(payload.get("download", "")).strip()
+        if not download:
+            raise ValueError("Missing download URL from /unrestrict/link")
+        return download
 
 
 class LibraryBuilder:
@@ -417,7 +451,7 @@ class LibraryBuilder:
             files[path] = {
                 "type": "remote",
                 "size": int(entry["bytes"]),
-                "url": entry["url"],
+                "source_url": entry["url"],
                 "mime_type": mimetypes.guess_type(rel)[0] or "application/octet-stream",
                 "modified": utc_now_iso(),
                 "etag": self._etag(path, entry["url"], entry["bytes"]),
@@ -519,6 +553,7 @@ class BuzzState:
         self.hook_last_started_at = None
         self.hook_last_finished_at = None
         self.hook_last_error = None
+        self.resolved_urls: dict[str, dict[str, str]] = {}
         self.hook_worker = None
         if self.config.hook_command:
             self.hook_worker = threading.Thread(target=self._hook_worker_loop, daemon=True)
@@ -693,6 +728,31 @@ class BuzzState:
                 }
             )
         return payload
+
+    def resolve_download_url(self, source_url: str, *, force_refresh: bool = False) -> str:
+        if not source_url:
+            raise ValueError("missing source URL")
+        with self.lock:
+            cached = self.resolved_urls.get(source_url)
+            if cached and not force_refresh:
+                download_url = cached.get("download_url", "").strip()
+                if download_url:
+                    return download_url
+        if self.client is None:
+            raise ValueError("Real-Debrid client unavailable")
+        download_url = self.client.unrestrict_link(source_url)
+        with self.lock:
+            self.resolved_urls[source_url] = {
+                "download_url": download_url,
+                "resolved_at": utc_now_iso(),
+            }
+        if force_refresh:
+            print(json.dumps({"event": "rd_link_refreshed", "source_url": source_url}, sort_keys=True), flush=True)
+        return download_url
+
+    def invalidate_download_url(self, source_url: str) -> None:
+        with self.lock:
+            self.resolved_urls.pop(source_url, None)
 
     def torrents(self) -> list[dict[str, Any]]:
         with self.lock:
@@ -873,12 +933,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(size))
             self.end_headers()
             return
-        req = request.Request(node["url"], method="GET")
-        if range_header:
-            start, end = range_header
-            req.add_header("Range", f"bytes={start}-{end}")
         try:
-            with request.urlopen(req, timeout=60) as response:
+            response, first_chunk = self._open_remote_media(node, range_header)
+            with response:
                 status = HTTPStatus.PARTIAL_CONTENT if range_header else HTTPStatus.OK
                 self.send_response(status)
                 self.send_header("Accept-Ranges", "bytes")
@@ -893,6 +950,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header("Content-Length", str(size))
                 self.end_headers()
                 if send_body:
+                    if first_chunk:
+                        self.wfile.write(first_chunk)
                     while True:
                         chunk = response.read(64 * 1024)
                         if not chunk:
@@ -900,6 +959,9 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.write(chunk)
         except error.HTTPError as exc:
             self.send_error(exc.code, str(exc))
+        except ValueError as exc:
+            print(json.dumps({"event": "rd_stream_failed", "path": rel, "error": str(exc)}, sort_keys=True), flush=True)
+            self.send_error(HTTPStatus.BAD_GATEWAY, str(exc))
 
     def _propfind_body(self, paths: list[str]) -> str:
         responses = []
@@ -950,6 +1012,58 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+
+    def _open_remote_media(
+        self,
+        node: dict[str, Any],
+        range_header: tuple[int, int] | None,
+    ) -> tuple[Any, bytes]:
+        source_url = str(node.get("source_url") or node.get("url") or "").strip()
+        if not source_url:
+            raise ValueError("missing Real-Debrid source URL")
+        last_error = "unable to resolve upstream media"
+        for attempt in range(2):
+            download_url = self.state.resolve_download_url(source_url, force_refresh=attempt == 1)
+            req = request.Request(download_url, method="GET")
+            if range_header:
+                start, end = range_header
+                req.add_header("Range", f"bytes={start}-{end}")
+            try:
+                response = request.urlopen(req, timeout=60)
+            except error.HTTPError as exc:
+                self.state.invalidate_download_url(source_url)
+                last_error = f"upstream returned HTTP {exc.code}"
+                if attempt == 0:
+                    continue
+                raise ValueError(last_error) from exc
+            try:
+                first_chunk = self._validate_remote_media_response(response, node, range_header)
+                return response, first_chunk
+            except ValueError as exc:
+                response.close()
+                self.state.invalidate_download_url(source_url)
+                last_error = str(exc)
+                if attempt == 0:
+                    continue
+                raise
+        raise ValueError(last_error)
+
+    def _validate_remote_media_response(
+        self,
+        response: Any,
+        node: dict[str, Any],
+        range_header: tuple[int, int] | None,
+    ) -> bytes:
+        content_type = response.headers.get("Content-Type")
+        if not is_probably_media_content_type(content_type):
+            raise ValueError(f"upstream returned non-media content type {content_type!r}")
+        should_peek = range_header is None or range_header[0] == 0
+        if not should_peek:
+            return b""
+        first_chunk = response.read(512)
+        if first_chunk and looks_like_markup(first_chunk):
+            raise ValueError("upstream returned markup instead of media bytes")
+        return first_chunk
 
     def _torrents_page(self) -> str:
         status = self.state.status()

@@ -4,8 +4,9 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from buzz.app import BuzzState, Config, Handler, LibraryBuilder, canonical_snapshot, dav_rel_path, normalize_posix_path
+from buzz.app import BuzzState, Config, Handler, LibraryBuilder, RealDebridClient, canonical_snapshot, dav_rel_path, normalize_posix_path
 from scripts.migrate_config import buzz_to_zurg, convert, parse_buzz_config, parse_zurg_config, zurg_to_buzz
 
 
@@ -85,8 +86,60 @@ class LibraryBuilderTests(unittest.TestCase):
         self.assertIn("__unplayable__/Broken Torrent/Broken.Movie.mkv", snapshot["files"])
         self.assertEqual(changed, ["__unplayable__/Broken Torrent"])
 
+    def test_remote_entries_store_source_url(self):
+        snapshot, _ = self.builder.build(
+            [
+                {
+                    "id": "ABC123",
+                    "status": "downloaded",
+                    "filename": "Movie.mkv",
+                    "links": ["https://example.invalid/source-link"],
+                    "files": [{"id": 1, "path": "/Movie.mkv", "bytes": 123, "selected": 1}],
+                }
+            ]
+        )
+
+        self.assertEqual(
+            snapshot["files"]["movies/Movie.mkv/Movie.mkv"]["source_url"],
+            "https://example.invalid/source-link",
+        )
+
 
 class BuzzStateTests(unittest.TestCase):
+    def test_resolve_download_url_uses_unrestrict_and_caches_result(self):
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def unrestrict_link(self, link):
+                self.calls.append(link)
+                return "https://cdn.example.invalid/file"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+            )
+            client = FakeClient()
+            state = BuzzState(config, client=client)
+
+            first = state.resolve_download_url("https://example.invalid/source")
+            second = state.resolve_download_url("https://example.invalid/source")
+
+            self.assertEqual(first, "https://cdn.example.invalid/file")
+            self.assertEqual(second, "https://cdn.example.invalid/file")
+            self.assertEqual(client.calls, ["https://example.invalid/source"])
+
     def test_torrents_exposes_cached_realdebrid_entries(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             state_dir = Path(tmpdir)
@@ -701,6 +754,153 @@ class DavHandlerTests(unittest.TestCase):
         self.assertIn("1.5 MiB", body)
         self.assertIn("2026-01-02T00:00:00Z", body)
         self.assertIn("status-downloaded", body)
+
+    def test_remote_media_refreshes_stale_html_response_once(self):
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def unrestrict_link(self, link):
+                self.calls.append(link)
+                if len(self.calls) == 1:
+                    return "https://example.invalid/stale"
+                return "https://example.invalid/fresh"
+
+        class FakeResponse:
+            def __init__(self, body: bytes, content_type: str):
+                self._stream = memoryview(body)
+                self.headers = {"Content-Type": content_type}
+
+            def read(self, amount=-1):
+                if amount is None or amount < 0:
+                    amount = len(self._stream)
+                chunk = self._stream[:amount].tobytes()
+                self._stream = self._stream[amount:]
+                return chunk
+
+            def close(self):
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.close()
+                return False
+
+        self.state.client = FakeClient()
+        response_queue = [
+            FakeResponse(b"<!DOCTYPE html><html>bad</html>", "text/html; charset=utf-8"),
+            FakeResponse(b"\x1a\x45\xdf\xa3media-bytes", "video/x-matroska"),
+        ]
+
+        self.state.snapshot["files"]["movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv"] = {
+            "type": "remote",
+            "size": 14,
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-2",
+        }
+
+        with patch("buzz.app.request.urlopen", side_effect=response_queue):
+            response, first_chunk = self.handler._open_remote_media(
+                self.state.lookup("movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv"),
+                None,
+            )
+            self.assertEqual(first_chunk, b"\x1a\x45\xdf\xa3media-bytes")
+            response.close()
+
+        self.assertEqual(self.state.client.calls, ["https://example.invalid/source", "https://example.invalid/source"])
+
+    def test_remote_media_returns_bad_gateway_after_failed_retry(self):
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def unrestrict_link(self, link):
+                self.calls.append(link)
+                return f"https://example.invalid/{len(self.calls)}"
+
+        class FakeResponse:
+            def __init__(self, body: bytes, content_type: str):
+                self._body = body
+                self.headers = {"Content-Type": content_type}
+
+            def read(self, amount=-1):
+                if amount < 0:
+                    amount = len(self._body)
+                chunk = self._body[:amount]
+                self._body = self._body[amount:]
+                return chunk
+
+            def close(self):
+                return None
+
+        self.state.client = FakeClient()
+        node = {
+            "type": "remote",
+            "size": 14,
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-3",
+        }
+
+        with patch(
+            "buzz.app.request.urlopen",
+            side_effect=[
+                FakeResponse(b"<!DOCTYPE html>bad", "text/html"),
+                FakeResponse(b"<!DOCTYPE html>worse", "text/html"),
+            ],
+        ):
+            with self.assertRaisesRegex(ValueError, "non-media content type|markup"):
+                self.handler._open_remote_media(node, None)
+
+
+class RealDebridClientTests(unittest.TestCase):
+    def test_unrestrict_link_posts_form_data_and_returns_download_url(self):
+        config = Config(
+            token="token",
+            poll_interval_secs=10,
+            bind="127.0.0.1",
+            port=9999,
+            state_dir="/tmp/buzz-tests",
+            hook_command="",
+            anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+            enable_all_dir=True,
+            enable_unplayable_dir=True,
+            request_timeout_secs=30,
+            user_agent="buzz-tests",
+            version_label="buzz/test",
+        )
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self, *_args, **_kwargs):
+                return b'{"download":"https://cdn.example.invalid/video.mkv"}'
+
+        def fake_urlopen(req, timeout):
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
+            captured["data"] = req.data
+            captured["headers"] = dict(req.header_items())
+            return FakeResponse()
+
+        with patch("buzz.app.request.urlopen", side_effect=fake_urlopen):
+            client = RealDebridClient(config)
+            download = client.unrestrict_link("https://real-debrid.com/d/abc")
+
+        self.assertEqual(download, "https://cdn.example.invalid/video.mkv")
+        self.assertEqual(captured["url"], "https://api.real-debrid.com/rest/1.0/unrestrict/link")
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["data"], b"link=https%3A%2F%2Freal-debrid.com%2Fd%2Fabc")
 
 
 class ConfigMigrationTests(unittest.TestCase):
