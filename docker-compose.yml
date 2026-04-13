@@ -23,6 +23,7 @@ services:
       retries: 5
       start_period: 5s
     volumes:
+      - ./buzz:/app/buzz:ro
       - ./scripts/media_update.sh:/app/media_update.sh
       - ./scripts/plex_update.sh:/app/plex_update.sh
       - ./scripts/jellyfin_update.sh:/app/jellyfin_update.sh

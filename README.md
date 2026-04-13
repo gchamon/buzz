@@ -80,6 +80,7 @@ That script dispatches to Plex or Jellyfin based on `MEDIA_SERVER`.
 
 - Service code lives in [buzz/app.py](./buzz/app.py).
 - The container image is built from [buzz/Dockerfile](./buzz/Dockerfile).
+- The `buzz/` package is bind-mounted into the Buzz container from the repo, so source changes take effect after `docker compose up -d --force-recreate buzz` without an image rebuild.
 - Persisted RD cache and committed library snapshots live under the `buzzdata` volume at `/app/data` in the Buzz container.
 - Tests live in [tests/test_buzz.py](./tests/test_buzz.py).
 - Config migration helper lives in [scripts/migrate_config.py](./scripts/migrate_config.py).
