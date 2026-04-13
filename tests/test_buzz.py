@@ -87,6 +87,59 @@ class LibraryBuilderTests(unittest.TestCase):
 
 
 class BuzzStateTests(unittest.TestCase):
+    def test_torrents_exposes_cached_realdebrid_entries(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            cache = {
+                "b": {
+                    "signature": {"status": "downloading"},
+                    "info": {
+                        "id": "b",
+                        "filename": "Beta Torrent",
+                        "status": "downloading",
+                        "progress": 42,
+                        "bytes": 2048,
+                        "links": ["https://example.invalid/two"],
+                        "files": [{"selected": 1}, {"selected": 0}],
+                    },
+                },
+                "a": {
+                    "signature": {"status": "downloaded"},
+                    "info": {
+                        "id": "a",
+                        "original_filename": "Alpha Torrent",
+                        "status": "downloaded",
+                        "progress": 100,
+                        "bytes": 1024,
+                        "links": ["https://example.invalid/one"],
+                        "ended": "2026-01-01T00:00:00Z",
+                        "files": [{"selected": 1}, {"selected": 1}],
+                    },
+                },
+            }
+            (state_dir / "torrent_cache.json").write_text(json.dumps(cache), encoding="utf-8")
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=str(state_dir),
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+            )
+            state = BuzzState(config, client=None)
+
+            torrents = state.torrents()
+
+            self.assertEqual([item["name"] for item in torrents], ["Alpha Torrent", "Beta Torrent"])
+            self.assertEqual(torrents[0]["selected_files"], 2)
+            self.assertEqual(torrents[1]["status"], "downloading")
+
     def test_lookup_and_children_use_normalized_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             state_dir = Path(tmpdir)
@@ -622,6 +675,32 @@ class DavHandlerTests(unittest.TestCase):
         self.assertIsNotNone(node)
         self.assertEqual(node["size"], 2)
         self.assertEqual(node["content"], "ok")
+
+    def test_torrents_page_renders_cached_torrents(self):
+        self.state.cache = {
+            "torrent-1": {
+                "signature": {},
+                "info": {
+                    "id": "torrent-1",
+                    "original_filename": "Movie & Stuff",
+                    "status": "downloaded",
+                    "progress": 100,
+                    "bytes": 1572864,
+                    "links": ["https://example.invalid/file"],
+                    "ended": "2026-01-01T00:00:00Z",
+                    "files": [{"selected": 1}, {"selected": 0}],
+                },
+            }
+        }
+        self.state.last_sync_at = "2026-01-02T00:00:00Z"
+
+        body = self.handler._torrents_page()
+
+        self.assertIn("Real-Debrid Torrents", body)
+        self.assertIn("Movie &amp; Stuff", body)
+        self.assertIn("1.5 MiB", body)
+        self.assertIn("2026-01-02T00:00:00Z", body)
+        self.assertIn("status-downloaded", body)
 
 
 class ConfigMigrationTests(unittest.TestCase):

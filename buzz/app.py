@@ -91,6 +91,25 @@ def stable_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def html_escape(value: Any) -> str:
+    return escape(str(value), {"'": "&#x27;", '"': "&quot;"})
+
+
+def format_bytes(value: Any) -> str:
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        return "0 B"
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    index = 0
+    while size >= 1024 and index < len(units) - 1:
+        size /= 1024
+        index += 1
+    if index == 0:
+        return f"{int(size)} {units[index]}"
+    return f"{size:.1f} {units[index]}"
+
+
 def canonical_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     files = {}
     for path, node in snapshot.get("files", {}).items():
@@ -675,6 +694,32 @@ class BuzzState:
             )
         return payload
 
+    def torrents(self) -> list[dict[str, Any]]:
+        with self.lock:
+            items = []
+            for torrent_id, cached in self.cache.items():
+                info = cached.get("info") if isinstance(cached, dict) else None
+                if not isinstance(info, dict):
+                    continue
+                selected_files = [item for item in info.get("files", []) if item.get("selected")]
+                items.append(
+                    {
+                        "id": str(info.get("id") or torrent_id),
+                        "name": str(
+                            info.get("original_filename")
+                            or info.get("filename")
+                            or torrent_id
+                        ),
+                        "status": str(info.get("status") or "unknown"),
+                        "progress": int(info.get("progress") or 0),
+                        "bytes": int(info.get("bytes") or 0),
+                        "selected_files": len(selected_files),
+                        "links": len(info.get("links") or []),
+                        "ended": str(info.get("ended") or ""),
+                    }
+                )
+        return sorted(items, key=lambda item: (item["status"] != "downloaded", item["name"].lower()))
+
     def mark_startup_sync_complete(self) -> None:
         with self.lock:
             self.startup_sync_complete = True
@@ -716,6 +761,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_GET(self) -> None:
+        if self.path in {"/", "/torrents"}:
+            self._respond_html(HTTPStatus.OK, self._torrents_page())
+            return
         if self.path == "/healthz":
             self._respond_json(HTTPStatus.OK, {"status": "ok", **self.state.status()})
             return
@@ -894,6 +942,188 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _respond_html(self, status: HTTPStatus, body: str) -> None:
+        encoded = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def _torrents_page(self) -> str:
+        status = self.state.status()
+        torrents = self.state.torrents()
+        rows = []
+        for torrent in torrents:
+            rows.append(
+                "<tr>"
+                f"<td>{html_escape(torrent['name'])}</td>"
+                f"<td><span class=\"status status-{html_escape(torrent['status'])}\">{html_escape(torrent['status'])}</span></td>"
+                f"<td>{html_escape(torrent['progress'])}%</td>"
+                f"<td>{html_escape(format_bytes(torrent['bytes']))}</td>"
+                f"<td>{html_escape(torrent['selected_files'])}</td>"
+                f"<td>{html_escape(torrent['links'])}</td>"
+                f"<td>{html_escape(torrent['ended'] or '-')}</td>"
+                f"<td><code>{html_escape(torrent['id'])}</code></td>"
+                "</tr>"
+            )
+        if not rows:
+            rows.append(
+                "<tr><td colspan=\"8\" class=\"empty\">No cached torrents yet. "
+                "Wait for the first sync or trigger <code>POST /sync</code>.</td></tr>"
+            )
+
+        sync_state = "syncing" if status.get("sync_in_progress") else "idle"
+        error_html = ""
+        if status.get("last_error"):
+            error_html = (
+                "<p class=\"error\"><strong>Last error:</strong> "
+                f"{html_escape(status['last_error'])}</p>"
+            )
+
+        return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Buzz Torrents</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg: #f4efe6;
+      --panel: #fffaf2;
+      --ink: #1d1a17;
+      --muted: #6c6257;
+      --line: #d8cbb8;
+      --accent: #0e6b5c;
+      --accent-soft: #dff2ed;
+      --danger: #9b2d30;
+      --danger-soft: #f9dfdf;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+      background:
+        radial-gradient(circle at top left, #fffaf2 0, #f4efe6 45%, #ebe1d3 100%);
+      color: var(--ink);
+    }}
+    main {{
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }}
+    h1 {{ margin: 0 0 8px; font-size: clamp(2rem, 4vw, 3.4rem); }}
+    p {{ margin: 0; color: var(--muted); }}
+    .meta {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin: 24px 0;
+    }}
+    .card {{
+      padding: 16px 18px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: color-mix(in srgb, var(--panel) 88%, white);
+      box-shadow: 0 8px 24px rgba(29, 26, 23, 0.06);
+    }}
+    .label {{
+      display: block;
+      margin-bottom: 6px;
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }}
+    .value {{ font-size: 1.1rem; }}
+    .table-wrap {{
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--panel);
+      box-shadow: 0 10px 30px rgba(29, 26, 23, 0.08);
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 860px;
+    }}
+    th, td {{
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      font-size: 0.95rem;
+    }}
+    th {{
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: rgba(216, 203, 184, 0.18);
+    }}
+    tr:last-child td {{ border-bottom: 0; }}
+    .status {{
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 0.82rem;
+      font-weight: 700;
+      text-transform: lowercase;
+    }}
+    .status-error {{ background: var(--danger-soft); color: var(--danger); }}
+    .empty {{ color: var(--muted); text-align: center; }}
+    .error {{
+      margin: 0 0 20px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: var(--danger-soft);
+      color: var(--danger);
+      border: 1px solid rgba(155, 45, 48, 0.2);
+    }}
+    code {{
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.85em;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Real-Debrid Torrents</h1>
+    <p>Server-rendered from Buzz's cached torrent metadata.</p>
+    <section class="meta">
+      <div class="card"><span class="label">Cached Torrents</span><span class="value">{len(torrents)}</span></div>
+      <div class="card"><span class="label">Last Sync</span><span class="value">{html_escape(status.get('last_sync_at') or 'never')}</span></div>
+      <div class="card"><span class="label">Sync State</span><span class="value">{html_escape(sync_state)}</span></div>
+      <div class="card"><span class="label">Snapshot Ready</span><span class="value">{html_escape('yes' if status.get('snapshot_loaded') else 'no')}</span></div>
+    </section>
+    {error_html}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Progress</th>
+            <th>Size</th>
+            <th>Selected</th>
+            <th>Links</th>
+            <th>Ended</th>
+            <th>ID</th>
+          </tr>
+        </thead>
+        <tbody>
+          {''.join(rows)}
+        </tbody>
+      </table>
+    </div>
+  </main>
+</body>
+</html>"""
 
     def log_message(self, format: str, *args: Any) -> None:
         message = "%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format % args)
