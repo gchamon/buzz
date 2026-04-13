@@ -1,18 +1,16 @@
-FROM python:3.14-slim
+FROM astral/uv:python3.14-alpine
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
   PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
+RUN apk add --no-cache \
   bash \
   ca-certificates \
   curl \
-  libxml2-utils \
-  && rm -rf /var/lib/apt/lists/*
+  libxml2-utils
 
 # COPY buzz /app/buzz
 
-CMD ["python3", "-m", "buzz.app"]
+CMD ["uv", "run", "python3", "-m", "buzz.app"]
