@@ -512,7 +512,7 @@ def build_shows(source_root: Path, target_root: Path, overrides: dict, mapping: 
             if parsed is None:
                 parsed = {"series": "", "season": 0, "episode": 0}
             apply_show_override(parsed, override)
-            if not parsed.get("series") or not parsed.get("season") or not parsed.get("episode"):
+            if not parsed.get("series") or parsed.get("season") is None or parsed.get("episode") is None:
                 group_errors.append({"source": rel_path, "reason": "show override missing series/season/episode"})
                 continue
             if group_series is None:
