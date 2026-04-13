@@ -98,15 +98,13 @@ services:
     restart: unless-stopped
 
   presentation-builder:
-    profiles: ["jellyfin"]
+    profiles: ["jellyfin", "plex"]
     image: python:3.12-slim
     container_name: presentation-builder
     user: "${PUID:-1000}:${PGID:-1000}"
     depends_on:
       rclone:
         condition: service_healthy
-      jellyfin:
-        condition: service_started
     environment:
       - PRESENTATION_BIND=0.0.0.0
       - PRESENTATION_PORT=${PRESENTATION_PORT:-8400}
