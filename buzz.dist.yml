@@ -19,3 +19,5 @@ directories:
 request_timeout_secs: 30
 user_agent: buzz/0.1
 version_label: buzz/0.1
+logging:
+  verbose: false

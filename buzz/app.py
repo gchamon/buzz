@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import mimetypes
 import os
@@ -116,7 +117,13 @@ def is_probably_media_content_type(value: str | None) -> bool:
     normalized = value.split(";", 1)[0].strip().lower()
     if normalized.startswith(("video/", "audio/", "application/octet-stream")):
         return True
-    if normalized in {"application/mp4", "application/vnd.apple.mpegurl"}:
+    if normalized in {
+        "application/mp4",
+        "application/vnd.apple.mpegurl",
+        "application/force-download",
+        "application/download",
+        "binary/octet-stream",
+    }:
         return True
     return False
 
@@ -261,6 +268,7 @@ class Config:
     request_timeout_secs: int
     user_agent: str
     version_label: str
+    verbose: bool = False
 
     @classmethod
     def load(cls, path: str = DEFAULT_CONFIG_PATH) -> "Config":
@@ -271,6 +279,7 @@ class Config:
         anime = directories.get("anime", {})
         hooks = payload.get("hooks", {})
         compat = payload.get("compat", {})
+        logging = payload.get("logging", {})
         server = payload.get("server", {})
         token = provider.get("token", "").strip()
         if not token:
@@ -291,6 +300,7 @@ class Config:
             request_timeout_secs=int(payload.get("request_timeout_secs", 30)),
             user_agent=str(payload.get("user_agent", "buzz/0.1")),
             version_label=str(payload.get("version_label", "buzz/0.1")),
+            verbose=bool(logging.get("verbose", False)),
         )
 
 
@@ -747,12 +757,16 @@ class BuzzState:
                 "resolved_at": utc_now_iso(),
             }
         if force_refresh:
-            print(json.dumps({"event": "rd_link_refreshed", "source_url": source_url}, sort_keys=True), flush=True)
+            self.verbose_log(json.dumps({"event": "rd_link_refreshed", "source_url": source_url}, sort_keys=True))
         return download_url
 
     def invalidate_download_url(self, source_url: str) -> None:
         with self.lock:
             self.resolved_urls.pop(source_url, None)
+
+    def verbose_log(self, message: str) -> None:
+        if self.config.verbose:
+            print(message, flush=True)
 
     def torrents(self) -> list[dict[str, Any]]:
         with self.lock:
@@ -879,7 +893,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", 'application/xml; charset="utf-8"')
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
-        self.wfile.write(encoded)
+        self._write_client(encoded)
 
     def _serve_dav(self, send_body: bool) -> None:
         rel = dav_rel_path(self.path)
@@ -894,7 +908,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             if send_body:
-                self.wfile.write(body)
+                self._write_client(body)
             return
         if node["type"] == "memory":
             content = node["content"].encode("utf-8")
@@ -914,7 +928,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Last-Modified", http_date(node.get("modified")))
             self.end_headers()
             if send_body:
-                self.wfile.write(payload)
+                self._write_client(payload)
             return
 
         size = int(node["size"])
@@ -951,12 +965,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 if send_body:
                     if first_chunk:
-                        self.wfile.write(first_chunk)
+                        if not self._write_client(first_chunk):
+                            return
                     while True:
                         chunk = response.read(64 * 1024)
                         if not chunk:
                             break
-                        self.wfile.write(chunk)
+                        if not self._write_client(chunk):
+                            return
         except error.HTTPError as exc:
             self.send_error(exc.code, str(exc))
         except ValueError as exc:
@@ -1003,7 +1019,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self._write_client(body)
 
     def _respond_html(self, status: HTTPStatus, body: str) -> None:
         encoded = body.encode("utf-8")
@@ -1011,7 +1027,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
-        self.wfile.write(encoded)
+        self._write_client(encoded)
+
+    def _write_client(self, payload: bytes) -> bool:
+        try:
+            self.wfile.write(payload)
+            return True
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            self.state.verbose_log(
+                json.dumps(
+                    {
+                        "event": "client_disconnected",
+                        "path": self.path,
+                        "error": str(exc),
+                    },
+                    sort_keys=True,
+                )
+            )
+            return False
 
     def _open_remote_media(
         self,
@@ -1240,6 +1273,8 @@ class Handler(BaseHTTPRequestHandler):
 </html>"""
 
     def log_message(self, format: str, *args: Any) -> None:
+        if not self.state.config.verbose:
+            return
         message = "%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format % args)
         print(message, end="", flush=True)
 

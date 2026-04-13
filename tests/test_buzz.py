@@ -694,6 +694,7 @@ class DavHandlerTests(unittest.TestCase):
         self.state = BuzzState(config, client=None)
         self.handler = Handler.__new__(Handler)
         self.handler.state = self.state
+        self.handler.client_address = ("127.0.0.1", 12345)
 
     def tearDown(self):
         self.tmpdir.cleanup()
@@ -855,6 +856,95 @@ class DavHandlerTests(unittest.TestCase):
             ],
         ):
             with self.assertRaisesRegex(ValueError, "non-media content type|markup"):
+                self.handler._open_remote_media(node, None)
+
+    def test_force_download_media_payload_is_accepted(self):
+        class FakeClient:
+            def unrestrict_link(self, _link):
+                return "https://example.invalid/download"
+
+        class FakeResponse:
+            def __init__(self, body: bytes, content_type: str):
+                self._stream = memoryview(body)
+                self.headers = {"Content-Type": content_type}
+
+            def read(self, amount=-1):
+                if amount is None or amount < 0:
+                    amount = len(self._stream)
+                chunk = self._stream[:amount].tobytes()
+                self._stream = self._stream[amount:]
+                return chunk
+
+            def close(self):
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.close()
+                return False
+
+        self.state.client = FakeClient()
+        node = {
+            "type": "remote",
+            "size": 14,
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-4",
+        }
+
+        with patch(
+            "buzz.app.request.urlopen",
+            return_value=FakeResponse(b"\x1a\x45\xdf\xa3media-bytes", "application/force-download"),
+        ):
+            response, first_chunk = self.handler._open_remote_media(node, None)
+            self.assertEqual(first_chunk, b"\x1a\x45\xdf\xa3media-bytes")
+            response.close()
+
+    def test_force_download_html_payload_is_still_rejected(self):
+        class FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            def unrestrict_link(self, _link):
+                self.calls += 1
+                return f"https://example.invalid/download/{self.calls}"
+
+        class FakeResponse:
+            def __init__(self, body: bytes, content_type: str):
+                self._body = body
+                self.headers = {"Content-Type": content_type}
+
+            def read(self, amount=-1):
+                if amount < 0:
+                    amount = len(self._body)
+                chunk = self._body[:amount]
+                self._body = self._body[amount:]
+                return chunk
+
+            def close(self):
+                return None
+
+        self.state.client = FakeClient()
+        node = {
+            "type": "remote",
+            "size": 14,
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-5",
+        }
+
+        with patch(
+            "buzz.app.request.urlopen",
+            side_effect=[
+                FakeResponse(b"<!DOCTYPE html>bad", "application/force-download"),
+                FakeResponse(b"<!DOCTYPE html>worse", "application/force-download"),
+            ],
+        ):
+            with self.assertRaisesRegex(ValueError, "markup instead of media bytes"):
                 self.handler._open_remote_media(node, None)
 
 

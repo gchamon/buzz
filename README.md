@@ -51,6 +51,7 @@ docker compose restart buzz
 - `provider.token`
 - `poll_interval_secs`
 - `hooks.on_library_change`
+- `logging.verbose`
 - `compat.enable_all_dir`
 - `compat.enable_unplayable_dir`
 - `directories.anime.patterns`
@@ -75,6 +76,8 @@ That script dispatches to Plex or Jellyfin based on `MEDIA_SERVER`.
 - Jellyfin uses [`scripts/jellyfin_update.sh`](./scripts/jellyfin_update.sh) to trigger the existing `presentation-builder` sidecar.
 - In Jellyfin mode, set `JELLYFIN_URL=http://jellyfin:8096` so the Buzz container can reach Jellyfin over the Compose network.
 - Point Jellyfin libraries at `/mnt/jellyfin-library/movies`, `/mnt/jellyfin-library/shows`, and `/mnt/jellyfin-library/animes`.
+- `logging.verbose: true` re-enables Buzz request/access logs and client-disconnect diagnostics when you need to debug stream behavior.
+- `HEALTHCHECK_VERBOSE=true` re-enables the sidecar “mountpoint seems to be working” message; the default is quiet success logs.
 
 ## Development
 
