@@ -13,7 +13,6 @@ import shlex
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import formatdate
 from http import HTTPStatus
@@ -22,6 +21,9 @@ from pathlib import PurePosixPath
 from typing import Any
 from urllib import error, parse, request
 from xml.sax.saxutils import escape
+
+import yaml
+from pydantic import BaseModel, Field
 
 
 VIDEO_EXTENSIONS = {
@@ -99,7 +101,7 @@ def html_escape(value: Any) -> str:
 def format_bytes(value: Any) -> str:
     try:
         size = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return "0 B"
     units = ("B", "KiB", "MiB", "GiB", "TiB")
     index = 0
@@ -139,13 +141,17 @@ def canonical_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(node, dict):
             files[path] = node
             continue
-        canonical_node = {key: value for key, value in node.items() if key != "modified"}
+        canonical_node = {
+            key: value for key, value in node.items() if key != "modified"
+        }
         files[path] = canonical_node
 
     report = snapshot.get("report", {})
     canonical_report = report
     if isinstance(report, dict):
-        canonical_report = {key: value for key, value in report.items() if key != "generated_at"}
+        canonical_report = {
+            key: value for key, value in report.items() if key != "generated_at"
+        }
 
     return {
         "dirs": snapshot.get("dirs", []),
@@ -154,152 +160,51 @@ def canonical_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def parse_json_compat_yaml(raw: str) -> dict[str, Any]:
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        data = parse_simple_yaml(raw)
-    if not isinstance(data, dict):
-        raise ValueError("Buzz config must be a mapping.")
-    return data
-
-
-def parse_simple_yaml(raw: str) -> object:
-    lines = []
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        indent = len(line) - len(line.lstrip(" "))
-        lines.append((indent, stripped))
-    if not lines:
-        return {}
-    value, next_index = _parse_yaml_block(lines, 0, lines[0][0])
-    if next_index != len(lines):
-        raise ValueError("Unexpected trailing YAML content.")
-    return value
-
-
-def _parse_yaml_block(lines: list[tuple[int, str]], index: int, indent: int) -> tuple[object, int]:
-    if index >= len(lines):
-        return {}, index
-    _, first = lines[index]
-    if first.startswith("- "):
-        result = []
-        while index < len(lines):
-            current_indent, stripped = lines[index]
-            if current_indent != indent or not stripped.startswith("- "):
-                break
-            item_text = stripped[2:].strip()
-            if not item_text:
-                child, index = _parse_yaml_block(lines, index + 1, indent + 2)
-                result.append(child)
-                continue
-            if ":" in item_text:
-                key, value_text = item_text.split(":", 1)
-                key = key.strip()
-                value_text = value_text.strip()
-                item = {key: _parse_yaml_scalar(value_text)} if value_text else {key: None}
-                index += 1
-                if index < len(lines) and lines[index][0] > indent:
-                    child, index = _parse_yaml_block(lines, index, indent + 2)
-                    if value_text:
-                        raise ValueError("Unsupported YAML list structure.")
-                    item[key] = child
-                result.append(item)
-                continue
-            result.append(_parse_yaml_scalar(item_text))
-            index += 1
-        return result, index
-
-    result = {}
-    while index < len(lines):
-        current_indent, stripped = lines[index]
-        if current_indent < indent:
-            break
-        if current_indent > indent:
-            raise ValueError("Invalid YAML indentation.")
-        if ":" not in stripped:
-            raise ValueError("Expected YAML mapping entry.")
-        key, value_text = stripped.split(":", 1)
-        key = key.strip()
-        value_text = value_text.strip()
-        index += 1
-        if value_text:
-            result[key] = _parse_yaml_scalar(value_text)
-            continue
-        if index < len(lines) and lines[index][0] > current_indent:
-            child, index = _parse_yaml_block(lines, index, current_indent + 2)
-            result[key] = child
-        else:
-            result[key] = {}
-    return result, index
-
-
-def _parse_yaml_scalar(value: str) -> object:
-    lowered = value.lower()
-    if lowered == "true":
-        return True
-    if lowered == "false":
-        return False
-    if lowered in {"null", "~"}:
-        return None
-    if value.startswith('"') and value.endswith('"'):
-        return json.loads(value)
-    if value.startswith("'") and value.endswith("'"):
-        return value[1:-1]
-    try:
-        return int(value)
-    except ValueError:
-        return value
-
-
-@dataclass(frozen=True)
-class Config:
+class Config(BaseModel):
     token: str
-    poll_interval_secs: int
-    bind: str
-    port: int
-    state_dir: str
-    hook_command: str
-    anime_patterns: tuple[str, ...]
-    enable_all_dir: bool
-    enable_unplayable_dir: bool
-    request_timeout_secs: int
-    user_agent: str
-    version_label: str
+    poll_interval_secs: int = 10
+    bind: str = "0.0.0.0"
+    port: int = 9999
+    state_dir: str = "/app/data"
+    hook_command: str = ""
+    anime_patterns: tuple[str, ...] = (r"\b[a-fA-F0-9]{8}\b",)
+    enable_all_dir: bool = True
+    enable_unplayable_dir: bool = True
+    request_timeout_secs: int = 30
+    user_agent: str = "buzz/0.1"
+    version_label: str = "buzz/0.1"
     verbose: bool = False
 
     @classmethod
     def load(cls, path: str = DEFAULT_CONFIG_PATH) -> "Config":
         with open(path, "r", encoding="utf-8") as handle:
-            payload = parse_json_compat_yaml(handle.read())
-        provider = payload.get("provider", {})
-        directories = payload.get("directories", {})
+            raw = yaml.safe_load(handle) or {}
+
+        provider = raw.get("provider", {})
+        server = raw.get("server", {})
+        hooks = raw.get("hooks", {})
+        directories = raw.get("directories", {})
         anime = directories.get("anime", {})
-        hooks = payload.get("hooks", {})
-        compat = payload.get("compat", {})
-        logging = payload.get("logging", {})
-        server = payload.get("server", {})
+        compat = raw.get("compat", {})
+        logging = raw.get("logging", {})
+
         token = provider.get("token", "").strip()
         if not token:
             raise ValueError("provider.token is required.")
-        poll_interval = int(payload.get("poll_interval_secs", 10))
-        if poll_interval < 1:
-            raise ValueError("poll_interval_secs must be positive.")
+
         return cls(
             token=token,
-            poll_interval_secs=poll_interval,
+            poll_interval_secs=int(raw.get("poll_interval_secs", 10)),
             bind=str(server.get("bind", "0.0.0.0")),
             port=int(server.get("port", 9999)),
-            state_dir=str(payload.get("state_dir", "/app/data")),
+            state_dir=str(raw.get("state_dir", "/app/data")),
             hook_command=str(hooks.get("on_library_change", "")).strip(),
             anime_patterns=tuple(anime.get("patterns", [r"\b[a-fA-F0-9]{8}\b"])),
             enable_all_dir=bool(compat.get("enable_all_dir", True)),
             enable_unplayable_dir=bool(compat.get("enable_unplayable_dir", True)),
-            request_timeout_secs=int(payload.get("request_timeout_secs", 30)),
-            user_agent=str(payload.get("user_agent", "buzz/0.1")),
-            version_label=str(payload.get("version_label", "buzz/0.1")),
+            request_timeout_secs=int(raw.get("request_timeout_secs", 30)),
+            user_agent=str(raw.get("user_agent", "buzz/0.1")),
+            version_label=str(raw.get("version_label", "buzz/0.1")),
             verbose=bool(logging.get("verbose", False)),
         )
 
@@ -309,7 +214,9 @@ class RealDebridClient:
         self.config = config
         self.base_url = "https://api.real-debrid.com/rest/1.0"
 
-    def _request_json(self, path: str, *, method: str = "GET", data: bytes | None = None) -> Any:
+    def _request_json(
+        self, path: str, *, method: str = "GET", data: bytes | None = None
+    ) -> Any:
         headers = {
             "Authorization": f"Bearer {self.config.token}",
             "User-Agent": self.config.user_agent,
@@ -355,7 +262,9 @@ class RealDebridClient:
 class LibraryBuilder:
     def __init__(self, config: Config):
         self.config = config
-        self.anime_regexes = tuple(re.compile(pattern) for pattern in config.anime_patterns)
+        self.anime_regexes = tuple(
+            re.compile(pattern) for pattern in config.anime_patterns
+        )
 
     def build(self, infos: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
         dirs: set[str] = {""}
@@ -383,13 +292,17 @@ class LibraryBuilder:
             selected = self._selected_files(info)
             playable = [item for item in selected if is_video_file(item["path"])]
             linked_playable = [
-                item for item in playable if item.get("url") and info.get("status") == "downloaded"
+                item
+                for item in playable
+                if item.get("url") and info.get("status") == "downloaded"
             ]
             if linked_playable:
                 category = self._category_for(linked_playable)
                 self._add_tree(files, dirs, category, torrent_name, linked_playable)
                 if self.config.enable_all_dir:
-                    self._add_tree(files, dirs, "__all__", torrent_name, linked_playable)
+                    self._add_tree(
+                        files, dirs, "__all__", torrent_name, linked_playable
+                    )
                 changed_roots.add(f"{category}/{torrent_name}")
                 if category == "movies":
                     report["movies"] += len(linked_playable)
@@ -399,7 +312,9 @@ class LibraryBuilder:
                     report["anime_files"] += len(linked_playable)
             elif self.config.enable_unplayable_dir:
                 reason = self._unplayable_reason(info, selected)
-                count = self._add_unplayable_tree(files, dirs, torrent_name, selected, reason)
+                count = self._add_unplayable_tree(
+                    files, dirs, torrent_name, selected, reason
+                )
                 if count:
                     changed_roots.add(f"__unplayable__/{torrent_name}")
                     report["unplayable_files"] += count
@@ -428,7 +343,12 @@ class LibraryBuilder:
         return results
 
     def _torrent_name(self, info: dict[str, Any]) -> str:
-        name = str(info.get("original_filename") or info.get("filename") or info.get("id") or "torrent").strip()
+        name = str(
+            info.get("original_filename")
+            or info.get("filename")
+            or info.get("id")
+            or "torrent"
+        ).strip()
         name = name.replace("/", " ").replace("\\", " ").strip(". ")
         return name or str(info.get("id") or "torrent")
 
@@ -477,15 +397,18 @@ class LibraryBuilder:
     ) -> int:
         root = f"__unplayable__/{torrent_name}"
         self._ensure_dirs(dirs, root)
-        summary_content = json.dumps(
-            {
-                "reason": reason,
-                "status": "unplayable",
-                "files": [normalize_posix_path(item["path"]) for item in entries],
-            },
-            indent=2,
-            sort_keys=True,
-        ) + "\n"
+        summary_content = (
+            json.dumps(
+                {
+                    "reason": reason,
+                    "status": "unplayable",
+                    "files": [normalize_posix_path(item["path"]) for item in entries],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
         files[f"{root}/__buzz__.json"] = {
             "type": "memory",
             "content": summary_content,
@@ -522,7 +445,9 @@ class LibraryBuilder:
             if current == ".":
                 current = ""
 
-    def _unplayable_reason(self, info: dict[str, Any], selected: list[dict[str, Any]]) -> str:
+    def _unplayable_reason(
+        self, info: dict[str, Any], selected: list[dict[str, Any]]
+    ) -> str:
         if not selected:
             return "no_selected_files"
         if info.get("status") != "downloaded":
@@ -550,7 +475,9 @@ class BuzzState:
         self.snapshot_path = os.path.join(self.state_dir, "library_snapshot.json")
         self.cache = self._load_json(self.cache_path, default={})
         self.snapshot_loaded = os.path.exists(self.snapshot_path)
-        self.snapshot = self._load_json(self.snapshot_path, default={"dirs": [""], "files": {}})
+        self.snapshot = self._load_json(
+            self.snapshot_path, default={"dirs": [""], "files": {}}
+        )
         self.snapshot_digest = stable_json(canonical_snapshot(self.snapshot))
         self.last_sync_at = None
         self.last_report = {}
@@ -566,7 +493,9 @@ class BuzzState:
         self.resolved_urls: dict[str, dict[str, str]] = {}
         self.hook_worker = None
         if self.config.hook_command:
-            self.hook_worker = threading.Thread(target=self._hook_worker_loop, daemon=True)
+            self.hook_worker = threading.Thread(
+                target=self._hook_worker_loop, daemon=True
+            )
             self.hook_worker.start()
 
     def _load_json(self, path: str, default: Any) -> Any:
@@ -598,7 +527,11 @@ class BuzzState:
                 signature = self._summary_signature(summary)
                 with self.lock:
                     cached = self.cache.get(torrent_id)
-                if cached and cached.get("signature") == signature and isinstance(cached.get("info"), dict):
+                if (
+                    cached
+                    and cached.get("signature") == signature
+                    and isinstance(cached.get("info"), dict)
+                ):
                     info = cached["info"]
                 else:
                     info = self.client.torrent_info(torrent_id)
@@ -739,7 +672,9 @@ class BuzzState:
             )
         return payload
 
-    def resolve_download_url(self, source_url: str, *, force_refresh: bool = False) -> str:
+    def resolve_download_url(
+        self, source_url: str, *, force_refresh: bool = False
+    ) -> str:
         if not source_url:
             raise ValueError("missing source URL")
         with self.lock:
@@ -757,7 +692,12 @@ class BuzzState:
                 "resolved_at": utc_now_iso(),
             }
         if force_refresh:
-            self.verbose_log(json.dumps({"event": "rd_link_refreshed", "source_url": source_url}, sort_keys=True))
+            self.verbose_log(
+                json.dumps(
+                    {"event": "rd_link_refreshed", "source_url": source_url},
+                    sort_keys=True,
+                )
+            )
         return download_url
 
     def invalidate_download_url(self, source_url: str) -> None:
@@ -775,7 +715,9 @@ class BuzzState:
                 info = cached.get("info") if isinstance(cached, dict) else None
                 if not isinstance(info, dict):
                     continue
-                selected_files = [item for item in info.get("files", []) if item.get("selected")]
+                selected_files = [
+                    item for item in info.get("files", []) if item.get("selected")
+                ]
                 items.append(
                     {
                         "id": str(info.get("id") or torrent_id),
@@ -792,14 +734,19 @@ class BuzzState:
                         "ended": str(info.get("ended") or ""),
                     }
                 )
-        return sorted(items, key=lambda item: (item["status"] != "downloaded", item["name"].lower()))
+        return sorted(
+            items,
+            key=lambda item: (item["status"] != "downloaded", item["name"].lower()),
+        )
 
     def mark_startup_sync_complete(self) -> None:
         with self.lock:
             self.startup_sync_complete = True
 
     def is_ready(self) -> bool:
-        return self.snapshot_loaded or (self.startup_sync_complete and self.last_sync_at is not None)
+        return self.snapshot_loaded or (
+            self.startup_sync_complete and self.last_sync_at is not None
+        )
 
 
 def read_range_header(value: str | None, size: int) -> tuple[int, int] | None:
@@ -842,9 +789,15 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_json(HTTPStatus.OK, {"status": "ok", **self.state.status()})
             return
         if self.path == "/readyz":
-            status = HTTPStatus.OK if self.state.is_ready() else HTTPStatus.SERVICE_UNAVAILABLE
+            status = (
+                HTTPStatus.OK
+                if self.state.is_ready()
+                else HTTPStatus.SERVICE_UNAVAILABLE
+            )
             payload_status = "ready" if status == HTTPStatus.OK else "starting"
-            self._respond_json(status, {"status": payload_status, **self.state.status()})
+            self._respond_json(
+                status, {"status": payload_status, **self.state.status()}
+            )
             return
         if self.path == "/sync":
             self.send_error(HTTPStatus.METHOD_NOT_ALLOWED)
@@ -934,7 +887,9 @@ class Handler(BaseHTTPRequestHandler):
         size = int(node["size"])
         range_header = read_range_header(self.headers.get("Range"), size)
         if not send_body:
-            self.send_response(HTTPStatus.PARTIAL_CONTENT if range_header else HTTPStatus.OK)
+            self.send_response(
+                HTTPStatus.PARTIAL_CONTENT if range_header else HTTPStatus.OK
+            )
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Content-Type", node["mime_type"])
             self.send_header("ETag", node["etag"])
@@ -976,7 +931,13 @@ class Handler(BaseHTTPRequestHandler):
         except error.HTTPError as exc:
             self.send_error(exc.code, str(exc))
         except ValueError as exc:
-            print(json.dumps({"event": "rd_stream_failed", "path": rel, "error": str(exc)}, sort_keys=True), flush=True)
+            print(
+                json.dumps(
+                    {"event": "rd_stream_failed", "path": rel, "error": str(exc)},
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
             self.send_error(HTTPStatus.BAD_GATEWAY, str(exc))
 
     def _propfind_body(self, paths: list[str]) -> str:
@@ -1011,7 +972,10 @@ class Handler(BaseHTTPRequestHandler):
                 "</D:propstat>"
                 "</D:response>"
             )
-        return '<?xml version="1.0" encoding="utf-8"?>' "<D:multistatus xmlns:D=\"DAV:\">" + "".join(responses) + "</D:multistatus>"
+        return (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<D:multistatus xmlns:D="DAV:">' + "".join(responses) + "</D:multistatus>"
+        )
 
     def _respond_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
@@ -1056,7 +1020,9 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("missing Real-Debrid source URL")
         last_error = "unable to resolve upstream media"
         for attempt in range(2):
-            download_url = self.state.resolve_download_url(source_url, force_refresh=attempt == 1)
+            download_url = self.state.resolve_download_url(
+                source_url, force_refresh=attempt == 1
+            )
             req = request.Request(download_url, method="GET")
             if range_header:
                 start, end = range_header
@@ -1070,7 +1036,9 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 raise ValueError(last_error) from exc
             try:
-                first_chunk = self._validate_remote_media_response(response, node, range_header)
+                first_chunk = self._validate_remote_media_response(
+                    response, node, range_header
+                )
                 return response, first_chunk
             except ValueError as exc:
                 response.close()
@@ -1089,7 +1057,9 @@ class Handler(BaseHTTPRequestHandler):
     ) -> bytes:
         content_type = response.headers.get("Content-Type")
         if not is_probably_media_content_type(content_type):
-            raise ValueError(f"upstream returned non-media content type {content_type!r}")
+            raise ValueError(
+                f"upstream returned non-media content type {content_type!r}"
+            )
         should_peek = range_header is None or range_header[0] == 0
         if not should_peek:
             return b""
@@ -1106,7 +1076,7 @@ class Handler(BaseHTTPRequestHandler):
             rows.append(
                 "<tr>"
                 f"<td>{html_escape(torrent['name'])}</td>"
-                f"<td><span class=\"status status-{html_escape(torrent['status'])}\">{html_escape(torrent['status'])}</span></td>"
+                f'<td><span class="status status-{html_escape(torrent["status"])}">{html_escape(torrent["status"])}</span></td>'
                 f"<td>{html_escape(torrent['progress'])}%</td>"
                 f"<td>{html_escape(format_bytes(torrent['bytes']))}</td>"
                 f"<td>{html_escape(torrent['selected_files'])}</td>"
@@ -1117,7 +1087,7 @@ class Handler(BaseHTTPRequestHandler):
             )
         if not rows:
             rows.append(
-                "<tr><td colspan=\"8\" class=\"empty\">No cached torrents yet. "
+                '<tr><td colspan="8" class="empty">No cached torrents yet. '
                 "Wait for the first sync or trigger <code>POST /sync</code>.</td></tr>"
             )
 
@@ -1125,7 +1095,7 @@ class Handler(BaseHTTPRequestHandler):
         error_html = ""
         if status.get("last_error"):
             error_html = (
-                "<p class=\"error\"><strong>Last error:</strong> "
+                '<p class="error"><strong>Last error:</strong> '
                 f"{html_escape(status['last_error'])}</p>"
             )
 
@@ -1244,9 +1214,9 @@ class Handler(BaseHTTPRequestHandler):
     <p>Server-rendered from Buzz's cached torrent metadata.</p>
     <section class="meta">
       <div class="card"><span class="label">Cached Torrents</span><span class="value">{len(torrents)}</span></div>
-      <div class="card"><span class="label">Last Sync</span><span class="value">{html_escape(status.get('last_sync_at') or 'never')}</span></div>
+      <div class="card"><span class="label">Last Sync</span><span class="value">{html_escape(status.get("last_sync_at") or "never")}</span></div>
       <div class="card"><span class="label">Sync State</span><span class="value">{html_escape(sync_state)}</span></div>
-      <div class="card"><span class="label">Snapshot Ready</span><span class="value">{html_escape('yes' if status.get('snapshot_loaded') else 'no')}</span></div>
+      <div class="card"><span class="label">Snapshot Ready</span><span class="value">{html_escape("yes" if status.get("snapshot_loaded") else "no")}</span></div>
     </section>
     {error_html}
     <div class="table-wrap">
@@ -1264,7 +1234,7 @@ class Handler(BaseHTTPRequestHandler):
           </tr>
         </thead>
         <tbody>
-          {''.join(rows)}
+          {"".join(rows)}
         </tbody>
       </table>
     </div>
@@ -1275,7 +1245,11 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         if not self.state.config.verbose:
             return
-        message = "%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format % args)
+        message = "%s - - [%s] %s\n" % (
+            self.address_string(),
+            self.log_date_time_string(),
+            format % args,
+        )
         print(message, end="", flush=True)
 
 
