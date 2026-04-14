@@ -1,45 +1,34 @@
-#!/usr/bin/env python3
-
 import json
 import os
-import re
-import signal
 import shutil
-import sys
 import tempfile
 import threading
-import traceback
-import yaml
-from pydantic import BaseModel, Field
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib import error, request
+from pydantic import BaseModel, Field
+import yaml
 
-# Add project root to sys.path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from buzz.core.constants import (
+from .constants import (
     NOISE_RE,
     SHOW_PATTERNS,
     SIDECAR_EXTENSIONS,
     VIDEO_EXTENSIONS,
     YEAR_RE,
 )
-from buzz.core.media import (
+from .media import (
     is_sidecar_file,
     is_video_file,
     parse_movie,
     parse_show,
 )
-from buzz.core.utils import (
+from .utils import (
     canonical_spaces,
     pretty_title,
     sanitize_path_component,
 )
 
 
-class Config(BaseModel):
+class PresentationConfig(BaseModel):
     bind: str = Field(
         default_factory=lambda: os.environ.get("PRESENTATION_BIND", "0.0.0.0")
     )
@@ -100,14 +89,6 @@ class RebuildError(RuntimeError):
     def __init__(self, message: str, payload: dict):
         super().__init__(message)
         self.payload = payload
-
-
-def env_path(name: str, default: str) -> Path:
-    return Path(os.environ.get(name, default))
-
-
-def load_config() -> Config:
-    return Config()
 
 
 def load_overrides(path: Path) -> dict:
@@ -245,7 +226,7 @@ def log_mapping_event(diff: dict, report: dict, mapping_entries: int):
     print(
         json.dumps(
             {
-                "event": "presentation_builder_mapping_diff",
+                "event": "curator_mapping_diff",
                 "mapping_entries": mapping_entries,
                 "movies": report["movies"],
                 "show_files": report["show_files"],
@@ -261,7 +242,7 @@ def log_mapping_event(diff: dict, report: dict, mapping_entries: int):
     )
 
 
-def build_library(config: Config):
+def build_library(config: PresentationConfig):
     overrides = load_overrides(config.overrides_path)
     movies_source = config.source_root / "movies"
     shows_source = config.source_root / "shows"
@@ -505,7 +486,7 @@ def build_anime(
         report["anime_files"] += 1
 
 
-def discover_scan_task_id(config: Config) -> str:
+def discover_scan_task_id(config: PresentationConfig) -> str:
     if config.jellyfin_scan_task_id:
         return config.jellyfin_scan_task_id
     req = request.Request(
@@ -520,7 +501,7 @@ def discover_scan_task_id(config: Config) -> str:
     raise RuntimeError("Unable to find the Jellyfin Scan Media Library task ID.")
 
 
-def trigger_jellyfin_scan(config: Config):
+def trigger_jellyfin_scan(config: PresentationConfig):
     task_id = discover_scan_task_id(config)
     req = request.Request(
         f"{config.jellyfin_url}/ScheduledTasks/Running/{task_id}",
@@ -531,7 +512,7 @@ def trigger_jellyfin_scan(config: Config):
         return
 
 
-def rebuild_and_trigger(config: Config):
+def rebuild_and_trigger(config: PresentationConfig):
     report = build_library(config)
     if config.skip_jellyfin_scan:
         report["jellyfin_scan_triggered"] = False
@@ -556,8 +537,8 @@ def rebuild_and_trigger(config: Config):
     return report
 
 
-class App:
-    def __init__(self, config: Config):
+class Curator:
+    def __init__(self, config: PresentationConfig):
         self.config = config
         self.lock = threading.Lock()
 
@@ -568,95 +549,3 @@ class App:
     def cleanup(self):
         with self.lock:
             shutil.rmtree(self.config.target_root, ignore_errors=True)
-
-
-class Handler(BaseHTTPRequestHandler):
-    app = None
-
-    def do_GET(self):
-        if self.path == "/healthz":
-            self.respond(HTTPStatus.OK, {"status": "ok"})
-            return
-        self.respond(HTTPStatus.NOT_FOUND, {"error": "not found"})
-
-    def do_POST(self):
-        if self.path != "/rebuild":
-            self.respond(HTTPStatus.NOT_FOUND, {"error": "not found"})
-            return
-        length = int(self.headers.get("Content-Length", "0"))
-        if length:
-            self.rfile.read(length)
-        try:
-            report = self.app.handle_rebuild()
-        except Exception as exc:
-            payload = {"error": str(exc)}
-            if isinstance(exc, RebuildError):
-                payload.update(exc.payload)
-            print(
-                f"presentation-builder rebuild failed: {exc}\n{traceback.format_exc()}",
-                file=sys.stderr,
-                flush=True,
-            )
-            self.respond(HTTPStatus.INTERNAL_SERVER_ERROR, payload)
-            return
-        self.respond(HTTPStatus.OK, report)
-
-    def log_message(self, format, *args):
-        sys.stdout.write(
-            "%s - - [%s] %s\n"
-            % (self.address_string(), self.log_date_time_string(), format % args)
-        )
-
-    def respond(self, status: HTTPStatus, payload: dict):
-        body = json.dumps(payload, sort_keys=True).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-
-def run_server(config: Config):
-    app = App(config)
-    Handler.app = app
-    if config.build_on_start:
-        try:
-            startup_report = build_library(config)
-            print(
-                "initial presentation build complete: "
-                f"{startup_report['movies']} movies, "
-                f"{startup_report['show_files']} show files, "
-                f"{startup_report['anime_files']} anime files",
-                flush=True,
-            )
-        except Exception as exc:
-            print(
-                f"initial presentation build failed: {exc}", file=sys.stderr, flush=True
-            )
-    server = ThreadingHTTPServer((config.bind, config.port), Handler)
-
-    def stop_handler(signum, frame):
-        raise SystemExit(128 + signum)
-
-    signal.signal(signal.SIGTERM, stop_handler)
-    signal.signal(signal.SIGINT, stop_handler)
-    print(f"presentation-builder listening on {config.bind}:{config.port}", flush=True)
-    try:
-        server.serve_forever()
-    finally:
-        app.cleanup()
-        server.server_close()
-        print(f"presentation-builder cleaned up {config.target_root}", flush=True)
-
-
-def main():
-    config = load_config()
-    if len(sys.argv) > 1 and sys.argv[1] == "--once":
-        report = rebuild_and_trigger(config)
-        print(json.dumps(report, indent=2, sort_keys=True))
-        return
-    run_server(config)
-
-
-if __name__ == "__main__":
-    main()
