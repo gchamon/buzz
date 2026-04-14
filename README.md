@@ -95,8 +95,13 @@ For a deep dive into how Buzz works, components, and data flow, see the [Archite
 - DAV service code lives in [buzz/dav_app.py](./buzz/dav_app.py).
 - Curator service code lives in [buzz/curator_app.py](./buzz/curator_app.py).
 - The container image is built from [buzz/Dockerfile](./buzz/Dockerfile).
-- **Local Development:** The `docker-compose.override.yml` file is automatically used by `docker compose up -d`. It mounts your local code directly into the containers (`- ./:/app`). Source changes take effect immediately after a service restart (`docker compose restart buzz-dav`) without rebuilding the image.
-- **Production Testing:** To test the immutable production image (bypassing the local mounts), run: `docker compose -f docker-compose.yml up -d --build`.
+- **Local Development:** Use the development override to mount your local code directly into the containers (`- ./:/app`):
+  ```sh
+  docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+  ```
+  Source changes take effect immediately after a service restart (`docker compose restart buzz-dav`) without rebuilding the image.
+- **Isolated Development VM:** You can also deploy an isolated development environment using [Incus](./docs/incus-dev-vm.md).
+- **Production (Default):** Running `docker compose up -d` uses the stable, immutable code baked into the container image. To rebuild the production image after code changes, use `docker compose up -d --build`.
 - Tests live in [tests/test_buzz.py](./tests/test_buzz.py).
 - Config migration helper lives in [scripts/migrate_config.py](./scripts/migrate_config.py).
 
