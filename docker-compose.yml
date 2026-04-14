@@ -9,7 +9,7 @@ services:
       - MEDIA_SERVER=${MEDIA_SERVER:-plex}
       - PLEX_URL=${PLEX_URL:-}
       - PLEX_TOKEN=${PLEX_TOKEN:-}
-      - LIBRARY_MOUNT=${LIBRARY_MOUNT:-/mnt/buzz}
+      - LIBRARY_MOUNT=/mnt/buzz/raw
       - JELLYFIN_URL=${JELLYFIN_URL:-http://jellyfin:8096}
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
       - JELLYFIN_SCAN_TASK_ID=${JELLYFIN_SCAN_TASK_ID:-}
@@ -21,14 +21,15 @@ services:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9999/readyz"]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 5s
+      retries: 20
+      start_period: 10s
     volumes:
       - ./scripts/media_update.sh:/app/media_update.sh
       - ./scripts/plex_update.sh:/app/plex_update.sh
       - ./scripts/jellyfin_update.sh:/app/jellyfin_update.sh
       - ./:/app
-      - buzzdata:/app/data
+      - ./data:/app/data
+      - /mnt/buzz/raw:/mnt/buzz/raw
     networks:
       default:
         aliases:
@@ -44,7 +45,7 @@ services:
       PUID: 1000
       PGID: 1000
     volumes:
-      - /mnt/buzz:/data:rshared # CHANGE /mnt/buzz WITH YOUR PREFERRED MOUNT PATH
+      - /mnt/buzz/raw:/data:shared
       - ./rclone.conf:/config/rclone/rclone.conf
     cap_add:
       - SYS_ADMIN
@@ -79,7 +80,8 @@ services:
       - PLEX_CLAIM=${PLEX_CLAIM:-} # Plex only
     volumes:
       - ./config/plex:/config
-      - /mnt:/mnt:ro
+      - /mnt/buzz/curated:/mnt/buzz/curated:ro
+      - /mnt/buzz/raw:/mnt/buzz/raw:ro
     restart: unless-stopped
 
   jellyfin:
@@ -97,7 +99,8 @@ services:
     volumes:
       - ./config/jellyfin:/config
       - ./cache/jellyfin:/cache
-      - /mnt:/mnt:ro
+      - /mnt/buzz/curated:/mnt/buzz/curated:ro
+      - /mnt/buzz/raw:/mnt/buzz/raw:ro
     devices:
       - "/dev/dri:/dev/dri"
     restart: unless-stopped
@@ -117,10 +120,10 @@ services:
       - PRESENTATION_BIND=0.0.0.0
       - PRESENTATION_PORT=${PRESENTATION_PORT:-8400}
       - PRESENTATION_BUILD_ON_START=${PRESENTATION_BUILD_ON_START:-true}
-      - PRESENTATION_SOURCE_ROOT=${PRESENTATION_SOURCE_ROOT:-/mnt/buzz}
-      - PRESENTATION_TARGET_ROOT=${PRESENTATION_TARGET_ROOT:-/mnt/jellyfin-library}
-      - PRESENTATION_STATE_ROOT=${PRESENTATION_STATE_ROOT:-/state}
-      - PRESENTATION_OVERRIDES=${PRESENTATION_OVERRIDES:-/config/overrides.yml}
+      - PRESENTATION_SOURCE_ROOT=/mnt/buzz/raw
+      - PRESENTATION_TARGET_ROOT=/mnt/buzz/curated
+      - PRESENTATION_STATE_ROOT=/state
+      - PRESENTATION_OVERRIDES=/config/overrides.yml
       - JELLYFIN_URL=${JELLYFIN_URL:-http://jellyfin:8096}
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
       - JELLYFIN_SCAN_TASK_ID=${JELLYFIN_SCAN_TASK_ID:-}
@@ -130,8 +133,9 @@ services:
     volumes:
       - ./:/app
       - ./presentation/overrides.yml:/config/overrides.yml:ro
-      - ./state/jellyfin-library:/state
-      - /mnt:/mnt
+      - ./state/curator:/state
+      - /mnt/buzz/curated:/mnt/buzz/curated
+      - /mnt/buzz/raw:/mnt/buzz/raw:ro
     restart: unless-stopped
 
   plex-healthcheck:
@@ -141,12 +145,12 @@ services:
     environment:
       - TARGET_CONTAINER=plex
       - SELF_CONTAINER=plex-healthcheck
-      - HEALTHCHECK_PATH=${HEALTHCHECK_PATH:-/mnt/buzz/movies}
+      - HEALTHCHECK_PATH=/mnt/buzz/raw/movies
       - HEALTHCHECK_VERBOSE=${HEALTHCHECK_VERBOSE:-false}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./healthcheck.sh:/app/healthcheck.sh
-      - /mnt:/mnt:ro
+      - /mnt/buzz/raw:/mnt/buzz/raw:ro
     entrypoint: []
     command: "ash /app/healthcheck.sh"
     depends_on:
@@ -163,12 +167,12 @@ services:
     environment:
       - TARGET_CONTAINER=jellyfin
       - SELF_CONTAINER=jellyfin-healthcheck
-      - HEALTHCHECK_PATH=${HEALTHCHECK_PATH:-/mnt/buzz/movies}
+      - HEALTHCHECK_PATH=/mnt/buzz/raw/movies
       - HEALTHCHECK_VERBOSE=${HEALTHCHECK_VERBOSE:-false}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./healthcheck.sh:/app/healthcheck.sh
-      - /mnt:/mnt:ro
+      - /mnt/buzz/raw:/mnt/buzz/raw:ro
     entrypoint: []
     command: "ash /app/healthcheck.sh"
     depends_on:
@@ -177,6 +181,3 @@ services:
       jellyfin:
         condition: service_started
     restart: unless-stopped
-
-volumes:
-  buzzdata:

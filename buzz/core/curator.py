@@ -37,12 +37,12 @@ class PresentationConfig(BaseModel):
     )
     source_root: Path = Field(
         default_factory=lambda: Path(
-            os.environ.get("PRESENTATION_SOURCE_ROOT", "/mnt/buzz")
+            os.environ.get("PRESENTATION_SOURCE_ROOT", "/mnt/buzz/raw")
         )
     )
     target_root: Path = Field(
         default_factory=lambda: Path(
-            os.environ.get("PRESENTATION_TARGET_ROOT", "/mnt/jellyfin-library")
+            os.environ.get("PRESENTATION_TARGET_ROOT", "/mnt/buzz/curated")
         )
     )
     state_root: Path = Field(
@@ -274,31 +274,32 @@ def build_library(config: PresentationConfig):
     }
 
     try:
-        with tempfile.TemporaryDirectory(
-            prefix=".curator-tmp-", dir=config.target_root
-        ) as tmp_dir:
-            tmp_root = Path(tmp_dir)
-            build_movies(
-                movies_source,
-                tmp_root / "movies",
-                overrides.get("movies", {}),
-                mapping,
-                report,
-                config.source_root,
-            )
-            build_shows(
-                shows_source,
-                tmp_root / "shows",
-                overrides.get("shows", {}),
-                mapping,
-                report,
-                config.source_root,
-            )
-            build_anime(
-                anime_source, tmp_root / "animes", mapping, report, config.source_root
-            )
-            replace_root(tmp_root, config.target_root)
+        tmp_root = Path(
+            tempfile.mkdtemp(prefix=".curator-tmp-", dir=config.target_root)
+        )
+        build_movies(
+            movies_source,
+            tmp_root / "movies",
+            overrides.get("movies", {}),
+            mapping,
+            report,
+            config.source_root,
+        )
+        build_shows(
+            shows_source,
+            tmp_root / "shows",
+            overrides.get("shows", {}),
+            mapping,
+            report,
+            config.source_root,
+        )
+        build_anime(
+            anime_source, tmp_root / "animes", mapping, report, config.source_root
+        )
+        replace_root(tmp_root, config.target_root)
     except Exception:
+        if "tmp_root" in locals() and tmp_root.exists():
+            shutil.rmtree(tmp_root, ignore_errors=True)
         raise
 
     report["mapping_entries"] = len(mapping)
