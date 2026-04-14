@@ -26,6 +26,7 @@ services:
     volumes:
       - ./data:/app/data
       - /mnt/buzz/raw:/mnt/buzz/raw
+      - ./buzz.yml:/app/buzz.yml
     networks:
       default:
         aliases:
@@ -129,6 +130,7 @@ services:
     volumes:
       - ./presentation/overrides.yml:/config/overrides.yml:ro
       - ./state/curator:/state
+      - ./buzz.yml:/app/buzz.yml
       - /mnt/buzz/curated:/mnt/buzz/curated
       - /mnt/buzz/raw:/mnt/buzz/raw:ro
     restart: unless-stopped
