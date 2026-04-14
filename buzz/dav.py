@@ -94,6 +94,8 @@ class DavConfig(BaseModel):
     request_timeout_secs: int = 30
     user_agent: str = "buzz/0.1"
     version_label: str = "buzz/0.1"
+    curator_url: str = "http://buzz-curator:8400/rebuild"
+    rd_update_delay_secs: int = 15
     verbose: bool = False
 
     @classmethod
@@ -120,6 +122,10 @@ class DavConfig(BaseModel):
             port=int(server.get("port", 9999)),
             state_dir=str(raw.get("state_dir", "/app/data")),
             hook_command=str(hooks.get("on_library_change", "")).strip(),
+            curator_url=str(
+                hooks.get("curator_url", "http://buzz-curator:8400/rebuild")
+            ),
+            rd_update_delay_secs=int(hooks.get("rd_update_delay_secs", 15)),
             anime_patterns=tuple(anime.get("patterns", [DEFAULT_ANIME_PATTERN])),
             enable_all_dir=bool(compat.get("enable_all_dir", True)),
             enable_unplayable_dir=bool(compat.get("enable_unplayable_dir", True)),
@@ -157,7 +163,7 @@ class LibraryBuilder:
             "torrents": len(infos),
             "generated_at": utc_now_iso(),
         }
-        changed_roots: set[str] = set()
+        current_roots: set[str] = set()
         for info in infos:
             torrent_name = self._torrent_name(info)
             selected = self._selected_files(info)
@@ -174,7 +180,7 @@ class LibraryBuilder:
                     self._add_tree(
                         files, dirs, "__all__", torrent_name, linked_playable
                     )
-                changed_roots.add(f"{category}/{torrent_name}")
+                current_roots.add(f"{category}/{torrent_name}")
                 if category == "movies":
                     report["movies"] += len(linked_playable)
                 elif category == "shows":
@@ -187,7 +193,7 @@ class LibraryBuilder:
                     files, dirs, torrent_name, selected, reason
                 )
                 if count:
-                    changed_roots.add(f"__unplayable__/{torrent_name}")
+                    current_roots.add(f"__unplayable__/{torrent_name}")
                     report["unplayable_files"] += count
 
         snapshot = {
@@ -196,7 +202,7 @@ class LibraryBuilder:
             "files": files,
             "report": report,
         }
-        return snapshot, sorted(changed_roots)
+        return snapshot, sorted(current_roots)
 
     def _selected_files(self, info: dict[str, Any]) -> list[dict[str, Any]]:
         selected = [item for item in info.get("files", []) if item.get("selected")]
@@ -355,19 +361,14 @@ class BuzzState:
         self.last_error = None
         self.sync_in_progress = False
         self.startup_sync_complete = False
-        self.hook_condition = threading.Condition()
         self.hook_pending_paths: list[str] = []
         self.hook_in_progress = False
         self.hook_last_started_at = None
         self.hook_last_finished_at = None
         self.hook_last_error = None
         self.resolved_urls: dict[str, dict[str, str]] = {}
-        self.hook_worker = None
-        if self.config.hook_command:
-            self.hook_worker = threading.Thread(
-                target=self._hook_worker_loop, daemon=True
-            )
-            self.hook_worker.start()
+        self.hook_lock = threading.Lock()
+        self.hook_task_active = False
 
     def _load_json(self, path: str, default: Any) -> Any:
         try:
@@ -382,6 +383,51 @@ class BuzzState:
         with open(tmp, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, sort_keys=True)
         os.replace(tmp, path)
+
+    def _root_for_snapshot_path(self, path: str) -> str | None:
+        normalized = normalize_posix_path(path)
+        if not normalized:
+            return None
+        parts = tuple(part for part in normalized.split("/") if part)
+        if len(parts) < 2:
+            return None
+        if parts[0] == "__all__":
+            return None
+        if parts[0] not in {"movies", "shows", "anime", "__unplayable__"}:
+            return None
+        return "/".join(parts[:2])
+
+    def _snapshot_root_signatures(self, snapshot: dict[str, Any]) -> dict[str, str]:
+        root_entries: dict[str, dict[str, Any]] = {}
+        canonical = canonical_snapshot(snapshot)
+        for path, node in canonical.get("files", {}).items():
+            root = self._root_for_snapshot_path(path)
+            if not root:
+                continue
+            rel = path[len(root) + 1 :]
+            entries = root_entries.setdefault(root, {})
+            entries[rel] = node
+        return {
+            root: stable_json(entries) for root, entries in root_entries.items()
+        }
+
+    def _classified_changed_roots(
+        self, previous_snapshot: dict[str, Any], new_snapshot: dict[str, Any]
+    ) -> dict[str, list[str]]:
+        previous = self._snapshot_root_signatures(previous_snapshot)
+        current = self._snapshot_root_signatures(new_snapshot)
+        added = sorted(root for root in current if root not in previous)
+        removed = sorted(root for root in previous if root not in current)
+        updated = sorted(
+            root
+            for root in set(previous) & set(current)
+            if previous[root] != current[root]
+        )
+        return {
+            "added_paths": added,
+            "removed_paths": removed,
+            "updated_paths": updated,
+        }
 
     def sync(self, *, trigger_hook: bool = True) -> dict[str, Any]:
         hook_paths: list[str] = []
@@ -409,14 +455,31 @@ class BuzzState:
                 new_cache[torrent_id] = {"signature": signature, "info": info}
                 infos.append(info)
 
-            snapshot, changed_roots = self.builder.build(infos)
+            snapshot, _current_roots = self.builder.build(infos)
             digest = stable_json(canonical_snapshot(snapshot))
 
             with self.lock:
                 changed = digest != self.snapshot_digest
+                classified_changes = (
+                    self._classified_changed_roots(self.snapshot, snapshot)
+                    if changed
+                    else {
+                        "added_paths": [],
+                        "removed_paths": [],
+                        "updated_paths": [],
+                    }
+                )
+                changed_paths = sorted(
+                    {
+                        *classified_changes["added_paths"],
+                        *classified_changes["removed_paths"],
+                        *classified_changes["updated_paths"],
+                    }
+                )
                 report = dict(snapshot["report"])
                 report["changed"] = changed
-                report["changed_paths"] = changed_roots if changed else []
+                report["changed_paths"] = changed_paths
+                report.update(classified_changes)
                 report["synced_torrents"] = len(infos)
                 report["timestamp"] = utc_now_iso()
 
@@ -429,7 +492,7 @@ class BuzzState:
                     self._write_json(self.snapshot_path, self.snapshot)
                     self.snapshot_loaded = True
                     if trigger_hook and self.config.hook_command:
-                        hook_paths = changed_roots
+                        hook_paths = changed_paths
 
                 self.last_sync_at = report["timestamp"]
                 self.last_report = report
@@ -449,31 +512,57 @@ class BuzzState:
         pending = set(changed_roots)
         if not pending:
             return
-        with self.hook_condition:
+        with self.hook_lock:
             merged = set(self.hook_pending_paths)
             merged.update(pending)
             self.hook_pending_paths = sorted(merged)
-            self.hook_condition.notify()
+            if not self.hook_task_active:
+                self.hook_task_active = True
+                threading.Thread(target=self._run_hook_task, daemon=True).start()
 
-    def _hook_worker_loop(self) -> None:
-        while True:
-            with self.hook_condition:
-                while not self.hook_pending_paths:
-                    self.hook_condition.wait()
-                paths = self.hook_pending_paths
-                self.hook_pending_paths = []
-                self.hook_in_progress = True
-                self.hook_last_started_at = utc_now_iso()
-                self.hook_last_error = None
-            try:
-                self._run_hook(paths)
-            except Exception as exc:  # noqa: BLE001
-                with self.hook_condition:
-                    self.hook_last_error = str(exc)
-            finally:
-                with self.hook_condition:
-                    self.hook_in_progress = False
-                    self.hook_last_finished_at = utc_now_iso()
+    def _run_hook_task(self) -> None:
+        try:
+            while True:
+                with self.hook_lock:
+                    if not self.hook_pending_paths:
+                        self.hook_task_active = False
+                        return
+                    paths = self.hook_pending_paths
+                    self.hook_pending_paths = []
+                    self.hook_in_progress = True
+                    self.hook_last_started_at = utc_now_iso()
+                    self.hook_last_error = None
+
+                try:
+                    self._trigger_curator_and_hooks(paths, skip_delay=False)
+                except Exception as exc:  # noqa: BLE001
+                    with self.hook_lock:
+                        self.hook_last_error = str(exc)
+                finally:
+                    with self.hook_lock:
+                        self.hook_in_progress = False
+                        self.hook_last_finished_at = utc_now_iso()
+        except Exception as exc:  # noqa: BLE001
+            print(f"Hook task failed unexpectedly: {exc}", flush=True)
+            with self.hook_lock:
+                self.hook_task_active = False
+
+    def manual_rebuild(self) -> None:
+        """Manually trigger curator rebuild and library hooks without RD delay."""
+        with self.hook_lock:
+            self.hook_in_progress = True
+            self.hook_last_started_at = utc_now_iso()
+            self.hook_last_error = None
+        try:
+            self._trigger_curator_and_hooks([], skip_delay=True)
+        except Exception as exc:
+            with self.hook_lock:
+                self.hook_last_error = str(exc)
+            raise
+        finally:
+            with self.hook_lock:
+                self.hook_in_progress = False
+                self.hook_last_finished_at = utc_now_iso()
 
     def _summary_signature(self, summary: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -485,10 +574,37 @@ class BuzzState:
             "links": len(summary.get("links") or []),
         }
 
+    def _trigger_curator_and_hooks(
+        self, changed_roots: list[str], *, skip_delay: bool = False
+    ) -> None:
+        if not skip_delay and self.config.rd_update_delay_secs > 0:
+            self.verbose_log(
+                f"Waiting {self.config.rd_update_delay_secs}s for Real-Debrid update..."
+            )
+            time.sleep(self.config.rd_update_delay_secs)
+
+        self._trigger_curator(changed_roots)
+        self._run_hook(changed_roots)
+
+    def _trigger_curator(self, changed_roots: list[str]) -> None:
+        if not self.config.curator_url:
+            return
+        self.verbose_log(f"Triggering curator rebuild at {self.config.curator_url}...")
+        try:
+            req = request.Request(self.config.curator_url, method="POST")
+            with request.urlopen(req, timeout=30) as response:
+                if response.status not in (200, 204):
+                    raise ValueError(f"Curator returned HTTP {response.status}")
+                self.verbose_log("Curator rebuild triggered successfully")
+        except Exception as exc:
+            self.verbose_log(f"Curator rebuild failed: {exc}")
+            raise
+
     def _run_hook(self, changed_roots: list[str]) -> None:
         command = shlex.split(self.config.hook_command)
         if not command:
             return
+        self.verbose_log(f"Running hook command: {self.config.hook_command}")
         subprocess.run(command + changed_roots, check=True)
 
     def lookup(self, rel_path: str) -> dict[str, Any] | None:
@@ -531,7 +647,7 @@ class BuzzState:
                 "snapshot_loaded": self.snapshot_loaded,
                 "ready": self.is_ready(),
             }
-        with self.hook_condition:
+        with self.hook_lock:
             payload.update(
                 {
                     "hook_in_progress": self.hook_in_progress,
@@ -542,6 +658,56 @@ class BuzzState:
                 }
             )
         return payload
+
+    def add_magnet(self, magnet: str) -> dict[str, Any]:
+        res = self.client.torrents.add_magnet(magnet).json()
+        torrent_id = res.get("id")
+        if not torrent_id:
+            raise ValueError(f"Failed to add magnet: {res}")
+
+        # Get info to retrieve file list
+        info = self.client.torrents.info(torrent_id).json()
+        filename = info.get("filename")
+
+        # Check if already exists in cache
+        already_exists = False
+        with self.lock:
+            for cached in self.cache.values():
+                cached_info = cached.get("info", {})
+                if (
+                    cached_info.get("filename") == filename
+                    or cached_info.get("original_filename") == filename
+                ):
+                    already_exists = True
+                    break
+
+        return {
+            "id": torrent_id,
+            "filename": filename,
+            "files": info.get("files", []),
+            "already_exists": already_exists,
+        }
+
+    def delete_torrent(self, torrent_id: str) -> dict[str, Any]:
+        res = self.client.torrents.delete(torrent_id)
+        if res.status_code not in (200, 204):
+            raise ValueError(f"Failed to delete torrent: {res.text}")
+
+        # Remove from cache immediately to reflect in UI
+        with self.lock:
+            if torrent_id in self.cache:
+                del self.cache[torrent_id]
+                self._write_json(self.cache_path, self.cache)
+
+        return {"status": "success"}
+
+    def select_files(self, torrent_id: str, file_ids: list[str]) -> dict[str, Any]:
+        files_str = ",".join(map(str, file_ids))
+        res = self.client.torrents.select_files(torrent_id, files_str)
+        # RD API returns 204 No Content on success for select_files
+        if res.status_code not in (200, 204):
+            raise ValueError(f"Failed to select files: {res.text}")
+        return {"status": "success"}
 
     def resolve_download_url(
         self, source_url: str, *, force_refresh: bool = False
@@ -687,16 +853,88 @@ class DavHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
-        if self.path != "/sync":
-            self.send_error(HTTPStatus.NOT_FOUND)
+        if self.path == "/sync":
+            try:
+                report = self.state.sync()
+                self._respond_json(HTTPStatus.OK, report)
+            except Exception as exc:  # noqa: BLE001
+                self.state.last_error = str(exc)
+                self._respond_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}
+                )
             return
-        try:
-            report = self.state.sync()
-        except Exception as exc:  # noqa: BLE001
-            self.state.last_error = str(exc)
-            self._respond_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
+        if self.path == "/api/torrents/add":
+            try:
+                data = self._read_json_body()
+                magnet = data.get("magnet")
+                if not magnet:
+                    self._respond_json(
+                        HTTPStatus.BAD_REQUEST, {"error": "Missing magnet link"}
+                    )
+                    return
+                result = self.state.add_magnet(magnet)
+                self._respond_json(HTTPStatus.OK, result)
+            except Exception as exc:  # noqa: BLE001
+                self._respond_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}
+                )
             return
-        self._respond_json(HTTPStatus.OK, report)
+
+        if self.path == "/api/torrents/select":
+            try:
+                data = self._read_json_body()
+                torrent_id = data.get("torrent_id")
+                file_ids = data.get("file_ids")
+                if not torrent_id or file_ids is None:
+                    self._respond_json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "Missing torrent_id or file_ids"},
+                    )
+                    return
+                result = self.state.select_files(torrent_id, file_ids)
+                self._respond_json(HTTPStatus.OK, result)
+            except Exception as exc:  # noqa: BLE001
+                self._respond_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}
+                )
+            return
+
+        if self.path == "/api/torrents/delete":
+            try:
+                data = self._read_json_body()
+                torrent_id = data.get("torrent_id")
+                if not torrent_id:
+                    self._respond_json(
+                        HTTPStatus.BAD_REQUEST, {"error": "Missing torrent_id"}
+                    )
+                    return
+                result = self.state.delete_torrent(torrent_id)
+                self._respond_json(HTTPStatus.OK, result)
+            except Exception as exc:  # noqa: BLE001
+                self._respond_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}
+                )
+            return
+
+        if self.path == "/api/curator/rebuild":
+            try:
+                self.state.manual_rebuild()
+                self._respond_json(HTTPStatus.OK, {"status": "success"})
+            except Exception as exc:  # noqa: BLE001
+                self._respond_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}
+                )
+            return
+
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _read_json_body(self) -> dict[str, Any]:
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0:
+            return {}
+        body = self.rfile.read(content_length)
+        return json.loads(body.decode("utf-8"))
 
     def do_PROPFIND(self) -> None:
         if not self.path.startswith("/dav"):
@@ -946,16 +1184,26 @@ class DavHandler(BaseHTTPRequestHandler):
         torrents = self.state.torrents()
         rows = []
         for torrent in torrents:
+            torrent_id = torrent["id"]
             rows.append(
                 "<tr>"
-                f"<td>{html_escape(torrent['name'])}</td>"
-                f'<td><span class="status status-{html_escape(torrent["status"])}">{html_escape(torrent["status"])}</span></td>'
-                f"<td>{html_escape(torrent['progress'])}%</td>"
-                f"<td>{html_escape(format_bytes(torrent['bytes']))}</td>"
+                f"<td class='name'>{html_escape(torrent['name'])}</td>"
+                f'<td><span class="status status-{html_escape(torrent["status"])}">[{html_escape(torrent["status"])}]</span></td>'
+                f"<td data-value='{torrent['progress']}'>{html_escape(torrent['progress'])}%</td>"
+                f"<td data-value='{torrent['bytes']}'>{html_escape(format_bytes(torrent['bytes']))}</td>"
                 f"<td>{html_escape(torrent['selected_files'])}</td>"
                 f"<td>{html_escape(torrent['links'])}</td>"
-                f"<td>{html_escape(torrent['ended'] or '-')}</td>"
-                f"<td><code>{html_escape(torrent['id'])}</code></td>"
+                f"<td class='comment'>{html_escape(torrent['ended'] or '-')}</td>"
+                f"<td class='yellow'><code>{html_escape(torrent_id[:8])}</code></td>"
+                "<td>"
+                f'<div class="delete-container">'
+                f'<div class="confirm-opts" id="confirm-{torrent_id}">'
+                f'<div class="opt opt-y" onclick="deleteTorrent(\'{torrent_id}\')">[Y]</div>'
+                f'<div class="opt opt-n" onclick="toggleDelete(\'{torrent_id}\', false)">[N]</div>'
+                "</div>"
+                f'<div class="btn-x" id="btn-x-{torrent_id}" onclick="toggleDelete(\'{torrent_id}\', true)">[X]</div>'
+                "</div>"
+                "</td>"
                 "</tr>"
             )
         if not rows:
@@ -968,152 +1216,32 @@ class DavHandler(BaseHTTPRequestHandler):
         error_html = ""
         if status.get("last_error"):
             error_html = (
-                '<p class="error"><strong>Last error:</strong> '
-                f"{html_escape(status['last_error'])}</p>"
+                '<div class="error"><span class="label-red">[ERROR]</span> '
+                f"{html_escape(status['last_error'])}</div>"
             )
 
-        return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Buzz Torrents</title>
-  <style>
-    :root {{
-      color-scheme: light;
-      --bg: #f4efe6;
-      --panel: #fffaf2;
-      --ink: #1d1a17;
-      --muted: #6c6257;
-      --line: #d8cbb8;
-      --accent: #0e6b5c;
-      --accent-soft: #dff2ed;
-      --danger: #9b2d30;
-      --danger-soft: #f9dfdf;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
-      background:
-        radial-gradient(circle at top left, #fffaf2 0, #f4efe6 45%, #ebe1d3 100%);
-      color: var(--ink);
-    }}
-    main {{
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 32px 20px 48px;
-    }}
-    h1 {{ margin: 0 0 8px; font-size: clamp(2rem, 4vw, 3.4rem); }}
-    p {{ margin: 0; color: var(--muted); }}
-    .meta {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 12px;
-      margin: 24px 0;
-    }}
-    .card {{
-      padding: 16px 18px;
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      background: color-mix(in srgb, var(--panel) 88%, white);
-      box-shadow: 0 8px 24px rgba(29, 26, 23, 0.06);
-    }}
-    .label {{
-      display: block;
-      margin-bottom: 6px;
-      font-size: 0.78rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
-    }}
-    .value {{ font-size: 1.1rem; }}
-    .table-wrap {{
-      overflow-x: auto;
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      background: var(--panel);
-      box-shadow: 0 10px 30px rgba(29, 26, 23, 0.08);
-    }}
-    table {{
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 860px;
-    }}
-    th, td {{
-      padding: 14px 16px;
-      border-bottom: 1px solid var(--line);
-      text-align: left;
-      vertical-align: top;
-      font-size: 0.95rem;
-    }}
-    th {{
-      font-size: 0.78rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
-      background: rgba(216, 203, 184, 0.18);
-    }}
-    tr:last-child td {{ border-bottom: 0; }}
-    .status {{
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 999px;
-      background: var(--accent-soft);
-      color: var(--accent);
-      font-size: 0.82rem;
-      font-weight: 700;
-      text-transform: lowercase;
-    }}
-    .status-error {{ background: var(--danger-soft); color: var(--danger); }}
-    .empty {{ color: var(--muted); text-align: center; }}
-    .error {{
-      margin: 0 0 20px;
-      padding: 12px 14px;
-      border-radius: 12px;
-      background: var(--danger-soft);
-      color: var(--danger);
-      border: 1px solid rgba(155, 45, 48, 0.2);
-    }}
-    code {{
-      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-      font-size: 0.85em;
-    }}
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Real-Debrid Torrents</h1>
-    <p>Server-rendered from Buzz's cached torrent metadata.</p>
-    <section class="meta">
-      <div class="card"><span class="label">Cached Torrents</span><span class="value">{len(torrents)}</span></div>
-      <div class="card"><span class="label">Last Sync</span><span class="value">{html_escape(status.get("last_sync_at") or "never")}</span></div>
-      <div class="card"><span class="label">Sync State</span><span class="value">{html_escape(sync_state)}</span></div>
-      <div class="card"><span class="label">Snapshot Ready</span><span class="value">{html_escape("yes" if status.get("snapshot_loaded") else "no")}</span></div>
-    </section>
-    {error_html}
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Status</th>
-            <th>Progress</th>
-            <th>Size</th>
-            <th>Selected</th>
-            <th>Links</th>
-            <th>Ended</th>
-            <th>ID</th>
-          </tr>
-        </thead>
-        <tbody>
-          {"".join(rows)}
-        </tbody>
-      </table>
-    </div>
-  </main>
-</body>
-</html>"""
+        template_path = os.path.join(
+            os.path.dirname(__file__), "templates", "torrents.html"
+        )
+        try:
+            with open(template_path, "r", encoding="utf-8") as f:
+                template = f.read()
+        except Exception:
+            return "Error loading template"
+
+        return (
+            template.replace("{torrents_count}", str(len(torrents)))
+            .replace(
+                "{last_sync_at}", html_escape(status.get("last_sync_at") or "never")
+            )
+            .replace("{sync_state}", html_escape(sync_state))
+            .replace(
+                "{snapshot_ready}",
+                html_escape("true" if status.get("snapshot_loaded") else "false"),
+            )
+            .replace("{error_html}", error_html)
+            .replace("{rows}", "".join(rows))
+        )
 
     def log_message(self, format: str, *args: Any) -> None:
         if not self.state.config.verbose:
@@ -1143,7 +1271,9 @@ class Poller(threading.Thread):
                                 "event": "realdebrid_update",
                                 "timestamp": report.get("timestamp"),
                                 "synced_torrents": report.get("synced_torrents"),
-                                "changed_paths": report.get("changed_paths", []),
+                                "added_paths": report.get("added_paths", []),
+                                "removed_paths": report.get("removed_paths", []),
+                                "updated_paths": report.get("updated_paths", []),
                             },
                             sort_keys=True,
                         ),

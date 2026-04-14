@@ -6,7 +6,11 @@ server:
   port: 9999
 state_dir: /app/data
 hooks:
-  on_library_change: "sh /app/media_update.sh"
+  on_library_change: "bash /app/media_update.sh"
+  curator_url: "http://buzz-curator:8400/rebuild"
+  # Wait for Real-Debrid inventory to settle before rebuilds triggered by RD changes.
+  # This delay is not applied to manual RESYNC LIB actions from the UI.
+  rd_update_delay_secs: 15
 compat:
   enable_all_dir: true
   enable_unplayable_dir: true
