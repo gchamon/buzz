@@ -1,5 +1,5 @@
 [Unit]
-Description=Rclone mount for zurg
+Description=Rclone mount for buzz
 After=network-online.target
 Wants=network-online.target
 
@@ -7,10 +7,10 @@ Wants=network-online.target
 Type=notify
 # install rclone with:
 # sudo -v ; curl https://rclone.org/install.sh | sudo bash
-ExecStart=/usr/bin/rclone mount zurg: /mnt/zurg \
+ExecStart=/usr/bin/rclone mount buzz: /mnt/buzz \
   --config=/home/yowmamasita/.config/rclone/rclone.conf \
   --log-level=INFO \
-  --log-file=/opt/rclone/logs/zurg.log \
+  --log-file=/opt/rclone/logs/buzz.log \
   --gid=1000 \
   --uid=1000 \
   --allow-non-empty \
@@ -34,10 +34,10 @@ ExecStart=/usr/bin/rclone mount zurg: /mnt/zurg \
   --checkers 16 \
   --multi-thread-streams 4 \
   --vfs-read-wait 40ms \
-  --cache-dir=/opt/rclone/cache/zurg
+  --cache-dir=/opt/rclone/cache/buzz
 
 # ExecStop command to unmount the Rclone mount safely
-ExecStop=/bin/bash -c '/bin/fusermount -uz /mnt/zurg; umount /mnt/zurg'
+ExecStop=/bin/bash -c '/bin/fusermount -uz /mnt/buzz; umount /mnt/buzz'
 
 # Restart policy matching Docker's 'restart: unless-stopped'
 Restart=unless-stopped
@@ -48,10 +48,10 @@ StartLimitInterval=60s
 StartLimitBurst=3
 
 # Mount dependencies
-# Ensure /mnt/zurg exists and has correct permissions
+# Ensure /mnt/buzz exists and has correct permissions
 # You might need to create this directory and set ownership:
-# sudo mkdir -p /mnt/zurg
-# sudo chown yowmamasita:yowmamasita /mnt/zurg
+# sudo mkdir -p /mnt/buzz
+# sudo chown yowmamasita:yowmamasita /mnt/buzz
 
 [Install]
 WantedBy=multi-user.target

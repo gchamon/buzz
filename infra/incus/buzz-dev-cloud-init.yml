@@ -1,0 +1,65 @@
+#cloud-config
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - ca-certificates
+  - curl
+  - fuse3
+  - git
+  - jq
+  - uidmap
+  - kitty-terminfo
+  - ffmpeg
+
+users:
+  - default
+  - name: dev
+    gecos: Buzz Development
+    groups: [adm, cdrom, dialout, plugdev, sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+
+write_files:
+  - path: /usr/local/bin/provision-buzz-dev.sh
+    permissions: "0755"
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      export DEBIAN_FRONTEND=noninteractive
+
+      apt-get update
+      apt-get install -y ca-certificates curl
+
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+      chmod a+r /etc/apt/keyrings/docker.asc
+
+      . /etc/os-release
+      cat > /etc/apt/sources.list.d/docker.sources <<EOF
+      Types: deb
+      URIs: https://download.docker.com/linux/ubuntu
+      Suites: ${UBUNTU_CODENAME:-$VERSION_CODENAME}
+      Components: stable
+      Architectures: $(dpkg --print-architecture)
+      Signed-By: /etc/apt/keyrings/docker.asc
+      EOF
+
+      apt-get update
+      apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      systemctl enable --now docker
+
+      getent group docker >/dev/null || groupadd --system docker
+      install -d -o dev -g dev /home/dev/plex-zurg
+      usermod -aG docker dev
+      printf 'cd /home/dev/plex-zurg\n' >> /home/dev/.bashrc
+      chown dev:dev /home/dev/.bashrc
+
+runcmd:
+  - [bash, -lc, "/usr/local/bin/provision-buzz-dev.sh"]
+
+final_message: buzz dev VM is ready after $UPTIME seconds

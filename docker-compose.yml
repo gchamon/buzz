@@ -1,25 +1,36 @@
 services:
-  zurg:
-    image: ghcr.io/debridmediamanager/zurg-testing:latest
-    container_name: zurg
+  buzz-dav:
+    build:
+      context: .
+      dockerfile: buzz/Dockerfile
+    container_name: buzz-dav
     restart: unless-stopped
     environment:
-      - MEDIA_SERVER=${MEDIA_SERVER:-plex}
+      - MEDIA_SERVER=${MEDIA_SERVER:-jellyfin}
       - PLEX_URL=${PLEX_URL:-}
       - PLEX_TOKEN=${PLEX_TOKEN:-}
-      - ZURG_MOUNT=${ZURG_MOUNT:-/mnt/zurg}
+      - LIBRARY_MOUNT=/mnt/buzz/raw
       - JELLYFIN_URL=${JELLYFIN_URL:-http://jellyfin:8096}
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
       - JELLYFIN_SCAN_TASK_ID=${JELLYFIN_SCAN_TASK_ID:-}
-      - PRESENTATION_BUILDER_URL=${PRESENTATION_BUILDER_URL:-http://presentation-builder:8400/rebuild}
+      - PRESENTATION_BUILDER_URL=${PRESENTATION_BUILDER_URL:-http://buzz-curator:8400/rebuild}
+      - UV_CACHE_DIR=/app/cache/uv-buzz
     ports:
       - 9999:9999
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9999/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
     volumes:
-      - ./scripts/media_update.sh:/app/media_update.sh
-      - ./scripts/plex_update.sh:/app/plex_update.sh
-      - ./scripts/jellyfin_update.sh:/app/jellyfin_update.sh
-      - ./config.yml:/app/config.yml
-      - zurgdata:/app/data
+      - ./data:/app/data
+      - /mnt/buzz/raw:/mnt/buzz/raw
+    networks:
+      default:
+        aliases:
+          - buzz
+    command: ["dav"]
 
   rclone:
     image: rclone/rclone:latest
@@ -30,7 +41,7 @@ services:
       PUID: 1000
       PGID: 1000
     volumes:
-      - /mnt/zurg:/data:rshared # CHANGE /mnt/zurg WITH YOUR PREFERRED MOUNT PATH
+      - /mnt/buzz/raw:/data:shared
       - ./rclone.conf:/config/rclone/rclone.conf
     cap_add:
       - SYS_ADMIN
@@ -39,8 +50,15 @@ services:
     devices:
       - /dev/fuse:/dev/fuse:rwm
     depends_on:
-      - zurg
-    command: "mount zurg: /data --allow-other --allow-non-empty --dir-cache-time 10s --vfs-cache-mode full --default-permissions --uid 1000 --gid 1000"
+      buzz-dav:
+        condition: service_healthy
+    command: "mount buzz: /data --allow-other --allow-non-empty --dir-cache-time 10s --vfs-cache-mode full --default-permissions --uid 1000 --gid 1000"
+    healthcheck:
+      test: ["CMD-SHELL", "ls /data/movies >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
 
   plex:
     profiles: ["plex"]
@@ -48,7 +66,8 @@ services:
     container_name: plex
     network_mode: host
     depends_on:
-      - rclone
+      rclone:
+        condition: service_healthy
     environment:
       - PUID=1000
       - PGID=1000
@@ -57,17 +76,19 @@ services:
       - PLEX_CLAIM=${PLEX_CLAIM:-} # Plex only
     volumes:
       - ./config/plex:/config
-      - /mnt:/mnt:ro
+      - /mnt/buzz/curated:/mnt/buzz/curated:ro
+      - /mnt/buzz/raw:/mnt/buzz/raw:ro
     restart: unless-stopped
 
   jellyfin:
     profiles: ["jellyfin"]
-    image: jellyfin/jellyfin:latest
+    image: jellyfin/jellyfin
     container_name: jellyfin
     devices:
       - "/dev/dri:/dev/dri"
     depends_on:
-      - rclone
+      rclone:
+        condition: service_healthy
     environment:
       - TZ=America/Sao_Paulo
     ports:
@@ -76,73 +97,83 @@ services:
     volumes:
       - ./config/jellyfin:/config
       - ./cache/jellyfin:/cache
-      - /mnt:/mnt:ro
+      - /mnt/buzz/curated:/mnt/buzz/curated:ro
+      - /mnt/buzz/raw:/mnt/buzz/raw:ro
+    devices:
+      - "/dev/dri:/dev/dri"
     restart: unless-stopped
 
-  presentation-builder:
-    profiles: ["jellyfin"]
-    image: python:3.12-slim
-    container_name: presentation-builder
+  buzz-curator:
+    profiles: ["jellyfin", "plex"]
+    build:
+      context: .
+      dockerfile: buzz/Dockerfile
+    container_name: buzz-curator
     user: "${PUID:-1000}:${PGID:-1000}"
+    working_dir: /app
     depends_on:
-      - rclone
-      - jellyfin
+      rclone:
+        condition: service_healthy
     environment:
       - PRESENTATION_BIND=0.0.0.0
       - PRESENTATION_PORT=${PRESENTATION_PORT:-8400}
       - PRESENTATION_BUILD_ON_START=${PRESENTATION_BUILD_ON_START:-true}
-      - PRESENTATION_SOURCE_ROOT=${PRESENTATION_SOURCE_ROOT:-/mnt/zurg}
-      - PRESENTATION_TARGET_ROOT=${PRESENTATION_TARGET_ROOT:-/mnt/jellyfin-library}
-      - PRESENTATION_STATE_ROOT=${PRESENTATION_STATE_ROOT:-/state}
-      - PRESENTATION_OVERRIDES=${PRESENTATION_OVERRIDES:-/config/overrides.yml}
+      - PRESENTATION_SOURCE_ROOT=/mnt/buzz/raw
+      - PRESENTATION_TARGET_ROOT=/mnt/buzz/curated
+      - PRESENTATION_STATE_ROOT=/state
+      - PRESENTATION_OVERRIDES=/config/overrides.yml
       - JELLYFIN_URL=${JELLYFIN_URL:-http://jellyfin:8096}
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
       - JELLYFIN_SCAN_TASK_ID=${JELLYFIN_SCAN_TASK_ID:-}
-    command: ["python3", "/app/presentation_builder.py"]
+      - UV_CACHE_DIR=/app/cache/uv-pres
+      - UV_PROJECT_ENVIRONMENT=/app/.venv-pres
+    command: ["curator", "server"]
     volumes:
-      - ./scripts/presentation_builder.py:/app/presentation_builder.py:ro
       - ./presentation/overrides.yml:/config/overrides.yml:ro
-      - ./state/jellyfin-library:/state
-      - /mnt:/mnt
+      - ./state/curator:/state
+      - /mnt/buzz/curated:/mnt/buzz/curated
+      - /mnt/buzz/raw:/mnt/buzz/raw:ro
     restart: unless-stopped
-
-  plex-healthcheck:
-    profiles: ["plex"]
-    image: docker:dind
-    container_name: plex-healthcheck
-    environment:
-      - TARGET_CONTAINER=plex
-      - SELF_CONTAINER=plex-healthcheck
-      - HEALTHCHECK_PATH=${HEALTHCHECK_PATH:-/mnt/zurg/movies}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./healthcheck.sh:/app/healthcheck.sh
-      - /mnt:/mnt:ro
-    entrypoint: []
-    command: "ash /app/healthcheck.sh"
-    depends_on:
-      - rclone
-      - plex
-    restart: unless-stopped
-
-  jellyfin-healthcheck:
-    profiles: ["jellyfin"]
-    image: docker:dind
-    container_name: jellyfin-healthcheck
-    environment:
-      - TARGET_CONTAINER=jellyfin
-      - SELF_CONTAINER=jellyfin-healthcheck
-      - HEALTHCHECK_PATH=${HEALTHCHECK_PATH:-/mnt/zurg/movies}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./healthcheck.sh:/app/healthcheck.sh
-      - /mnt:/mnt:ro
-    entrypoint: []
-    command: "ash /app/healthcheck.sh"
-    depends_on:
-      - rclone
-      - jellyfin
-    restart: unless-stopped
-
-volumes:
-  zurgdata:
+#   plex-healthcheck:
+#     profiles: ["plex"]
+#     image: docker:dind
+#     container_name: plex-healthcheck
+#     environment:
+#       - TARGET_CONTAINER=plex
+#       - SELF_CONTAINER=plex-healthcheck
+#       - HEALTHCHECK_PATH=/mnt/buzz/raw/movies
+#       - HEALTHCHECK_VERBOSE=${HEALTHCHECK_VERBOSE:-false}
+#     volumes:
+#       - /var/run/docker.sock:/var/run/docker.sock
+#       - ./scripts/healthcheck.sh:/app/healthcheck.sh
+#       - /mnt/buzz/raw:/mnt/buzz/raw:ro
+#     entrypoint: []
+#     command: "ash /app/healthcheck.sh"
+#     depends_on:
+#       rclone:
+#         condition: service_healthy
+#       plex:
+#         condition: service_started
+#     restart: unless-stopped
+#
+#   jellyfin-healthcheck:
+#     profiles: ["jellyfin"]
+#     image: docker:dind
+#     container_name: jellyfin-healthcheck
+#     environment:
+#       - TARGET_CONTAINER=jellyfin
+#       - SELF_CONTAINER=jellyfin-healthcheck
+#       - HEALTHCHECK_PATH=/mnt/buzz/raw/movies
+#       - HEALTHCHECK_VERBOSE=${HEALTHCHECK_VERBOSE:-false}
+#     volumes:
+#       - /var/run/docker.sock:/var/run/docker.sock
+#       - ./scripts/healthcheck.sh:/app/healthcheck.sh
+#       - /mnt/buzz/raw:/mnt/buzz/raw:ro
+#     entrypoint: []
+#     command: "ash /app/healthcheck.sh"
+#     depends_on:
+#       rclone:
+#         condition: service_healthy
+#       jellyfin:
+#         condition: service_started
+#     restart: unless-stopped

@@ -1,12 +1,32 @@
 #!/bin/sh
 
 # JELLYFIN UPDATE script
-# When zurg detects changes, it can trigger this script IF your config.yml contains
-# on_library_update: sh /app/media_update.sh "$@"
+# This script refreshes the Jellyfin library after the curation layer is ready.
 
-builder_url="${PRESENTATION_BUILDER_URL:-http://presentation-builder:8400/rebuild}"
+jellyfin_url="${JELLYFIN_URL:-http://jellyfin:8096}"
+jellyfin_api_key="${JELLYFIN_API_KEY:-<token>}"
 
-echo "Rebuilding Jellyfin presentation library via: $builder_url"
-curl -fsSL -X POST "$builder_url"
-echo
-echo "Jellyfin presentation library rebuild requested"
+if [ -z "$jellyfin_api_key" ] || [ "$jellyfin_api_key" = "<token>" ]; then
+    echo "JELLYFIN_API_KEY is not set, skipping library refresh"
+    exit 0
+fi
+
+if [ -z "$jellyfin_url" ]; then
+    echo "JELLYFIN_URL is not set, skipping library refresh"
+    exit 0
+fi
+
+echo "Triggering Jellyfin library scan at: $jellyfin_url"
+
+# Trigger a full library scan
+response="$(curl --connect-timeout 5 --max-time 30 --fail-with-body -sS -X POST \
+    "$jellyfin_url/Library/Refresh?api_key=$jellyfin_api_key" 2>&1)"
+status=$?
+
+if [ "$status" -ne 0 ]; then
+    printf '%s\n' "$response" >&2
+    echo "Jellyfin library refresh failed" >&2
+    exit "$status"
+fi
+
+echo "Jellyfin library refresh requested"
