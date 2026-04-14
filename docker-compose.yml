@@ -26,7 +26,7 @@ services:
     volumes:
       - ./data:/app/data
       - /mnt/buzz/raw:/mnt/buzz/raw
-      - ./buzz.yml:/app/buzz.yml
+      - ./buzz.yml:/app/buzz.yml:ro
     networks:
       default:
         aliases:
@@ -130,50 +130,7 @@ services:
     volumes:
       - ./presentation/overrides.yml:/config/overrides.yml:ro
       - ./state/curator:/state
-      - ./buzz.yml:/app/buzz.yml
+      - ./buzz.yml:/app/buzz.yml:rp
       - /mnt/buzz/curated:/mnt/buzz/curated
       - /mnt/buzz/raw:/mnt/buzz/raw:ro
     restart: unless-stopped
-#   plex-healthcheck:
-#     profiles: ["plex"]
-#     image: docker:dind
-#     container_name: plex-healthcheck
-#     environment:
-#       - TARGET_CONTAINER=plex
-#       - SELF_CONTAINER=plex-healthcheck
-#       - HEALTHCHECK_PATH=/mnt/buzz/raw/movies
-#       - HEALTHCHECK_VERBOSE=${HEALTHCHECK_VERBOSE:-false}
-#     volumes:
-#       - /var/run/docker.sock:/var/run/docker.sock
-#       - ./scripts/healthcheck.sh:/app/healthcheck.sh
-#       - /mnt/buzz/raw:/mnt/buzz/raw:ro
-#     entrypoint: []
-#     command: "ash /app/healthcheck.sh"
-#     depends_on:
-#       rclone:
-#         condition: service_healthy
-#       plex:
-#         condition: service_started
-#     restart: unless-stopped
-#
-#   jellyfin-healthcheck:
-#     profiles: ["jellyfin"]
-#     image: docker:dind
-#     container_name: jellyfin-healthcheck
-#     environment:
-#       - TARGET_CONTAINER=jellyfin
-#       - SELF_CONTAINER=jellyfin-healthcheck
-#       - HEALTHCHECK_PATH=/mnt/buzz/raw/movies
-#       - HEALTHCHECK_VERBOSE=${HEALTHCHECK_VERBOSE:-false}
-#     volumes:
-#       - /var/run/docker.sock:/var/run/docker.sock
-#       - ./scripts/healthcheck.sh:/app/healthcheck.sh
-#       - /mnt/buzz/raw:/mnt/buzz/raw:ro
-#     entrypoint: []
-#     command: "ash /app/healthcheck.sh"
-#     depends_on:
-#       rclone:
-#         condition: service_healthy
-#       jellyfin:
-#         condition: service_started
-#     restart: unless-stopped
