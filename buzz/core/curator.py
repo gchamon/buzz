@@ -171,14 +171,22 @@ def show_series_name(entry: dict) -> str:
 
 
 def replace_root(tmp_root: Path, target_root: Path):
-    backup_root = target_root.parent / f".{target_root.name}.backup"
-    if backup_root.exists():
-        shutil.rmtree(backup_root)
-    if target_root.exists():
-        target_root.rename(backup_root)
-    tmp_root.rename(target_root)
-    if backup_root.exists():
-        shutil.rmtree(backup_root)
+    """
+    Swaps the contents of target_root with those in tmp_root.
+    Operates on contents to avoid needing write permissions on target_root's parent.
+    """
+    # 1. Remove existing contents (except the tmp_root itself)
+    for item in target_root.iterdir():
+        if item.is_dir() and item.name.startswith(".curator-tmp-"):
+            continue
+        if item.is_dir():
+            shutil.rmtree(item)
+        else:
+            item.unlink()
+
+    # 2. Move new contents in
+    for item in tmp_root.iterdir():
+        shutil.move(str(item), str(target_root / item.name))
 
 
 def load_previous_mapping(path: Path) -> list[dict]:
@@ -252,11 +260,10 @@ def build_library(config: PresentationConfig):
         raise FileNotFoundError(f"Source root does not exist: {config.source_root}")
 
     config.state_root.mkdir(parents=True, exist_ok=True)
-    target_parent = config.target_root.parent
-    target_parent.mkdir(parents=True, exist_ok=True)
+    config.target_root.mkdir(parents=True, exist_ok=True)
+
     mapping_path = config.state_root / "mapping.json"
     previous_mapping = load_previous_mapping(mapping_path)
-    tmp_root = Path(tempfile.mkdtemp(prefix=".jellyfin-library-", dir=target_parent))
     mapping = []
     report = {
         "skipped_movies": [],
@@ -267,28 +274,31 @@ def build_library(config: PresentationConfig):
     }
 
     try:
-        build_movies(
-            movies_source,
-            tmp_root / "movies",
-            overrides.get("movies", {}),
-            mapping,
-            report,
-            config.source_root,
-        )
-        build_shows(
-            shows_source,
-            tmp_root / "shows",
-            overrides.get("shows", {}),
-            mapping,
-            report,
-            config.source_root,
-        )
-        build_anime(
-            anime_source, tmp_root / "animes", mapping, report, config.source_root
-        )
-        replace_root(tmp_root, config.target_root)
+        with tempfile.TemporaryDirectory(
+            prefix=".curator-tmp-", dir=config.target_root
+        ) as tmp_dir:
+            tmp_root = Path(tmp_dir)
+            build_movies(
+                movies_source,
+                tmp_root / "movies",
+                overrides.get("movies", {}),
+                mapping,
+                report,
+                config.source_root,
+            )
+            build_shows(
+                shows_source,
+                tmp_root / "shows",
+                overrides.get("shows", {}),
+                mapping,
+                report,
+                config.source_root,
+            )
+            build_anime(
+                anime_source, tmp_root / "animes", mapping, report, config.source_root
+            )
+            replace_root(tmp_root, config.target_root)
     except Exception:
-        shutil.rmtree(tmp_root, ignore_errors=True)
         raise
 
     report["mapping_entries"] = len(mapping)
