@@ -149,7 +149,7 @@ services:
       - HEALTHCHECK_VERBOSE=${HEALTHCHECK_VERBOSE:-false}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./healthcheck.sh:/app/healthcheck.sh
+      - ./scripts/healthcheck.sh:/app/healthcheck.sh
       - /mnt/buzz/raw:/mnt/buzz/raw:ro
     entrypoint: []
     command: "ash /app/healthcheck.sh"
@@ -171,7 +171,7 @@ services:
       - HEALTHCHECK_VERBOSE=${HEALTHCHECK_VERBOSE:-false}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./healthcheck.sh:/app/healthcheck.sh
+      - ./scripts/healthcheck.sh:/app/healthcheck.sh
       - /mnt/buzz/raw:/mnt/buzz/raw:ro
     entrypoint: []
     command: "ash /app/healthcheck.sh"
