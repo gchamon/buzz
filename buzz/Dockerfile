@@ -14,7 +14,7 @@ RUN apk add --no-cache \
 COPY buzz /app/buzz
 COPY pyproject.toml /app/
 
-RUN uv pip install .
+RUN uv pip install --system .
 
 ENTRYPOINT ["python3", "-m", "buzz"]
 CMD ["dav"]
