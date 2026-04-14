@@ -84,8 +84,6 @@ services:
     profiles: ["jellyfin"]
     image: jellyfin/jellyfin
     container_name: jellyfin
-    devices:
-      - "/dev/dri:/dev/dri"
     depends_on:
       rclone:
         condition: service_healthy
