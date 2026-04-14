@@ -32,14 +32,14 @@ Buzz is designed to provide a stable, curated media library from a Real-Debrid a
 This diagram shows how the Docker services interact and how data flows from Real-Debrid to your media server.
 
 ```mermaid
-graph TD;
-    RDAPI[Real-Debrid API] <--> |Polling/Sync| BuzzDAV[buzz-dav];
-    BuzzDAV --> |WebDAV Share| Rclone[rclone];
-    Rclone --> |FUSE Mount| HostRaw[/mnt/buzz/raw];
-    BuzzCurator[buzz-curator] --> |Reads| HostRaw;
-    BuzzCurator --> |Creates Symlinks| HostCurated[/mnt/buzz/curated];
-    Plex[Plex] --> |Reads| HostCurated;
-    Jellyfin[Jellyfin] --> |Reads| HostCurated;
+flowchart TD
+    RDAPI["Real-Debrid API"] <--> |Polling/Sync| BuzzDAV["buzz-dav"]
+    BuzzDAV --> |WebDAV Share| Rclone["rclone"]
+    Rclone --> |FUSE Mount| HostRaw["/mnt/buzz/raw"]
+    BuzzCurator["buzz-curator"] --> |Reads| HostRaw
+    BuzzCurator --> |Creates Symlinks| HostCurated["/mnt/buzz/curated"]
+    Plex["Plex"] --> |Reads| HostCurated
+    Jellyfin["Jellyfin"] --> |Reads| HostCurated
     
     subgraph "Host OS Filesystem"
     HostRaw
@@ -59,12 +59,13 @@ sequenceDiagram
     participant Rclone
     participant BuzzDAV
     participant RealDebrid
+    participant RDCDN as Real-Debrid CDN
     MediaServer->>Rclone: Request Video Stream
     Rclone->>BuzzDAV: HTTP GET /dav/movies/...
     BuzzDAV->>RealDebrid: Request unrestricted stream link
     RealDebrid-->>BuzzDAV: 302 Redirect to CDN
-    BuzzDAV->>RealDebrid CDN: HTTP GET with Range Headers
-    RealDebrid CDN-->>BuzzDAV: Video Chunks
+    BuzzDAV->>RDCDN: HTTP GET with Range Headers
+    RDCDN-->>BuzzDAV: Video Chunks
     BuzzDAV-->>Rclone: Video Chunks
     Rclone-->>MediaServer: Playback
 ```
@@ -86,7 +87,7 @@ sequenceDiagram
     HookScript->>Curator: POST /rebuild
     Curator->>RcloneMount: Read raw torrent folders
     Curator->>Curator: Parse titles, seasons, episodes
-    Curator->>RcloneMount: Create symlinks in /mnt/buzz/curated
+    Curator->>Jellyfin: Create symlinks in /mnt/buzz/curated
     Curator->>Jellyfin: POST /ScheduledTasks/Running/{task_id}
     Jellyfin-->>Curator: 204 No Content
     Curator-->>HookScript: 200 OK
