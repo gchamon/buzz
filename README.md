@@ -66,7 +66,7 @@ The default hook is:
 ```json
 {
   "hooks": {
-    "on_library_change": "sh /app/media_update.sh"
+    "on_library_change": "sh /app/scripts/media_update.sh"
   }
 }
 ```

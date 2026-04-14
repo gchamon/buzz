@@ -24,10 +24,6 @@ services:
       retries: 20
       start_period: 10s
     volumes:
-      - ./scripts/media_update.sh:/app/media_update.sh
-      - ./scripts/plex_update.sh:/app/plex_update.sh
-      - ./scripts/jellyfin_update.sh:/app/jellyfin_update.sh
-      - ./:/app
       - ./data:/app/data
       - /mnt/buzz/raw:/mnt/buzz/raw
     networks:
@@ -131,7 +127,6 @@ services:
       - UV_PROJECT_ENVIRONMENT=/app/.venv-pres
     command: ["curator", "server"]
     volumes:
-      - ./:/app
       - ./presentation/overrides.yml:/config/overrides.yml:ro
       - ./state/curator:/state
       - /mnt/buzz/curated:/mnt/buzz/curated

@@ -16,7 +16,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from buzz.core.constants import DEFAULT_ANIME_PATTERN
 from buzz.core.utils import ensure_regex_delimiters, strip_regex_delimiters
 
-DEFAULT_HOOK = "sh /app/media_update.sh"
+DEFAULT_HOOK = "sh /app/scripts/media_update.sh"
 
 
 def parse_zurg_config(raw: str) -> dict:
