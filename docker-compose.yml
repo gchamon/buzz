@@ -29,6 +29,10 @@ services:
       - ./scripts/jellyfin_update.sh:/app/jellyfin_update.sh
       - ./:/app
       - buzzdata:/app/data
+    networks:
+      default:
+        aliases:
+          - buzz
     command: ["dav"]
 
   rclone:
