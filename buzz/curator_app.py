@@ -45,6 +45,20 @@ class CuratorApp:
                 payload = {"error": str(exc)}
                 if isinstance(exc, RebuildError):
                     payload.update(exc.payload)
+
+                from urllib.error import HTTPError
+
+                if isinstance(exc.__cause__, HTTPError) and exc.__cause__.code in (
+                    401,
+                    403,
+                ):
+                    print(
+                        f"curator rebuild failed: Jellyfin API Token is invalid or unauthorized",
+                        flush=True,
+                    )
+                    payload["error"] = "Jellyfin API Token is invalid or unauthorized"
+                    return JSONResponse(status_code=403, content=payload)
+
                 print(
                     f"curator rebuild failed: {exc}\n{traceback.format_exc()}",
                     flush=True,

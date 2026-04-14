@@ -310,7 +310,7 @@ class DavApp:
                 "<td>"
                 f'<div class="delete-container">'
                 f'<div class="confirm-opts" id="confirm-{torrent_id}">'
-                f'<div class="opt opt-y" onclick="deleteTorrent(\'{torrent_id}\')" title="Confirm Move to Trashcan">[Y]</div>'
+                f'<div class="opt opt-y" onclick="deleteTorrent(\'{torrent_id}\', this)" title="Confirm Move to Trashcan">[Y]</div>'
                 f'<div class="opt opt-n" onclick="toggleDelete(\'{torrent_id}\', false)" title="Cancel">[N]</div>'
                 "</div>"
                 f'<div class="btn-x" id="btn-x-{torrent_id}" onclick="toggleDelete(\'{torrent_id}\', true)" title="Move to Trashcan">[X]</div>'
@@ -356,19 +356,17 @@ class DavApp:
                 f"<td data-value='{torrent['bytes']}'>{html_escape(format_bytes(torrent['bytes']))}</td>"
                 f"<td>{html_escape(str(torrent['file_count']))}</td>"
                 f"<td class='comment'>{html_escape(torrent['deleted_at'] or '-')}</td>"
-                "<td>"
-                f'<div class="delete-container">'
+                f'<td class="delete-container">'
                 f'<div class="confirm-opts" id="confirm-restore-{thash}">'
-                f'<div class="opt opt-y" onclick="restoreTrash(\'{thash}\')" title="Confirm Restore">[Y]</div>'
+                f'<div class="opt opt-y" onclick="restoreTrash(\'{thash}\', this)" title="Confirm Restore">[Y]</div>'
                 f'<div class="opt opt-n" onclick="toggleRestore(\'{thash}\', false)" title="Cancel">[N]</div>'
                 "</div>"
                 f'<div class="btn-r" id="btn-r-{thash}" onclick="toggleRestore(\'{thash}\', true)" title="Restore to Cache">[R]</div>'
                 f'<div class="confirm-opts" id="confirm-del-{thash}">'
-                f'<div class="opt opt-y" onclick="deleteTrash(\'{thash}\')" title="Confirm Permanent Delete">[Y]</div>'
+                f'<div class="opt opt-y" onclick="deleteTrash(\'{thash}\', this)" title="Confirm Permanent Delete">[Y]</div>'
                 f'<div class="opt opt-n" onclick="toggleDel(\'{thash}\', false)" title="Cancel">[N]</div>'
                 "</div>"
                 f'<div class="btn-x" id="btn-del-{thash}" onclick="toggleDel(\'{thash}\', true)" title="Delete Permanently">[D]</div>'
-                "</div>"
                 "</td>"
                 "</tr>"
             )

@@ -1,10 +1,12 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>buzz: list torrents</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐝</text></svg>">
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐝</text></svg>">
   <style>
     :root {
       --bg: #282a36;
@@ -19,7 +21,11 @@
       --red: #ff5555;
       --yellow: #f1fa8c;
     }
-    * { box-sizing: border-box; }
+
+    * {
+      box-sizing: border-box;
+    }
+
     body {
       margin: 0;
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
@@ -27,34 +33,49 @@
       color: var(--fg);
       line-height: 1.5;
     }
+
     main {
       padding: 20px;
       max-width: 1400px;
       margin: 0 auto;
     }
-    .prompt { margin-bottom: 4px; font-size: 1.1rem; }
-    .prompt b { color: var(--purple); font-weight: bold; }
-    .prompt span { color: var(--fg); }
-    
+
+    .prompt {
+      margin-bottom: 4px;
+      font-size: 1.1rem;
+    }
+
+    .prompt b {
+      color: var(--purple);
+      font-weight: bold;
+    }
+
+    .prompt span {
+      color: var(--fg);
+    }
+
     .nav-link {
       color: var(--comment);
       text-decoration: none;
       cursor: pointer;
       transition: all 0.2s ease;
     }
+
     .nav-link:hover {
       color: var(--cyan);
       text-shadow: 0 0 5px rgba(139, 233, 253, 0.5);
     }
+
     .nav-link.active {
-      color: var(--fg);
-      background: rgba(189, 147, 249, 0.2);
-      text-shadow: 0 0 5px rgba(189, 147, 249, 0.5);
-      border-radius: 4px;
-      padding: 0 4px;
+      color: var(--green);
+      text-shadow: 0 0 5px rgba(80, 250, 123, 0.5);
     }
-    .nav-sep { color: var(--comment); margin: 0 4px; }
-    
+
+    .nav-sep {
+      color: var(--comment);
+      margin: 0 4px;
+    }
+
     .meta-bar {
       display: flex;
       flex-wrap: wrap;
@@ -63,8 +84,15 @@
       font-size: 0.9rem;
       color: var(--comment);
     }
-    .meta-item b { color: var(--orange); font-weight: normal; }
-    .meta-item span { color: var(--cyan); }
+
+    .meta-item b {
+      color: var(--orange);
+      font-weight: normal;
+    }
+
+    .meta-item span {
+      color: var(--cyan);
+    }
 
     .error {
       margin-bottom: 20px;
@@ -72,7 +100,11 @@
       border-left: 3px solid var(--red);
       padding-left: 10px;
     }
-    .label-red { color: var(--red); font-weight: bold; }
+
+    .label-red {
+      color: var(--red);
+      font-weight: bold;
+    }
 
     /* Add Torrent UI */
     .add-torrent-section {
@@ -82,6 +114,7 @@
       margin-bottom: 24px;
       border: 1px solid var(--comment);
     }
+
     .add-torrent-header {
       color: var(--pink);
       text-transform: uppercase;
@@ -92,10 +125,12 @@
       justify-content: space-between;
       align-items: center;
     }
+
     .input-group {
       display: flex;
       gap: 10px;
     }
+
     input[type="text"] {
       flex: 1;
       background: var(--bg);
@@ -105,7 +140,11 @@
       font-family: inherit;
       outline: none;
     }
-    input[type="text"]:focus { border-color: var(--purple); }
+
+    input[type="text"]:focus {
+      border-color: var(--purple);
+    }
+
     button {
       background: var(--purple);
       color: var(--bg);
@@ -117,9 +156,20 @@
       text-transform: uppercase;
       font-size: 0.8rem;
     }
-    button:hover { filter: brightness(1.1); }
-    button:disabled { background: var(--comment); cursor: not-allowed; }
-    button.secondary { background: var(--comment); color: var(--fg); }
+
+    button:hover {
+      filter: brightness(1.1);
+    }
+
+    button:disabled {
+      background: var(--comment);
+      cursor: not-allowed;
+    }
+
+    button.secondary {
+      background: var(--comment);
+      color: var(--fg);
+    }
 
     #file-selection-area {
       margin-top: 15px;
@@ -127,35 +177,55 @@
       padding-top: 15px;
       display: none;
     }
+
     .file-list {
       max-height: 300px;
       overflow-y: auto;
       margin-bottom: 15px;
       font-size: 0.8rem;
     }
+
     .file-item {
       display: flex;
       align-items: center;
       gap: 10px;
       padding: 4px 0;
     }
-    .file-item:hover { background: rgba(255,255,255,0.05); }
-    .file-item input { accent-color: var(--purple); }
-    .file-info { display: flex; flex: 1; justify-content: space-between; }
-    .file-size { color: var(--cyan); }
+
+    .file-item:hover {
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .file-item input {
+      accent-color: var(--purple);
+    }
+
+    .file-info {
+      display: flex;
+      flex: 1;
+      justify-content: space-between;
+    }
+
+    .file-size {
+      color: var(--cyan);
+    }
 
     .file-actions {
       display: flex;
       gap: 10px;
     }
 
-    .table-wrap { overflow-x: auto; }
+    .table-wrap {
+      overflow-x: auto;
+    }
+
     table {
       width: 100%;
       border-collapse: collapse;
       font-size: 0.8rem;
       table-layout: fixed;
     }
+
     th {
       text-align: left;
       padding: 8px 4px;
@@ -166,103 +236,248 @@
       cursor: pointer;
       user-select: none;
       position: relative;
-      overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    th:hover { color: var(--purple); }
-    th.sort-asc::after { content: "▲"; font-size: 0.6rem; margin-left: 2px; }
-    th.sort-desc::after { content: "▼"; font-size: 0.6rem; margin-left: 2px; }
+
+    th:hover {
+      color: var(--purple);
+    }
+
+    th.sort-asc::after {
+      content: "▲";
+      font-size: 0.6rem;
+      margin-left: 2px;
+    }
+
+    th.sort-desc::after {
+      content: "▼";
+      font-size: 0.6rem;
+      margin-left: 2px;
+    }
 
     td {
-      padding: 8px 4px;
+      padding: 0;
       border-bottom: 1px solid rgba(68, 71, 90, 0.3);
-      vertical-align: top;
+      vertical-align: middle;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      height: 35px;
     }
-    tr:hover { background: var(--selection); }
-    
+
+    .td-content {
+      padding: 8px 4px;
+      display: flex;
+      align-items: center;
+      height: 100%;
+      width: 100%;
+    }
+
+    tr:hover {
+      background: var(--selection);
+    }
+
     .trunc-cell {
       position: relative;
-      max-width: 1px; /* allows text-overflow in fixed tables */
+      max-width: 1px;
+      /* allows text-overflow in fixed tables */
     }
+
     .trunc-content {
       display: inline-block;
       white-space: nowrap;
     }
+
     .trunc-cell:hover .trunc-content {
       animation: scroll-text 4s linear infinite;
     }
+
     @keyframes scroll-text {
-      0%, 10% { transform: translateX(0); }
-      90%, 100% { transform: translateX(calc(-100% + 200px)); } /* approximate width */
+
+      0%,
+      10% {
+        transform: translateX(0);
+      }
+
+      90%,
+      100% {
+        transform: translateX(calc(-100% + 200px));
+      }
+
+      /* approximate width */
     }
-    
-    .name { color: var(--fg); }
-    
+
+    .name {
+      color: var(--fg);
+    }
+
     /* Column widths */
-    th:nth-child(1), td:nth-child(1) { width: auto; } /* Name */
-    th:nth-child(2), td:nth-child(2) { width: 110px; } /* Status */
-    th:nth-child(3), td:nth-child(3) { width: 60px; }  /* Prog */
-    th:nth-child(4), td:nth-child(4) { width: 80px; }  /* Size */
-    th:nth-child(5), td:nth-child(5) { width: 60px; }  /* Files */
-    th:nth-child(6), td:nth-child(6) { width: 60px; }  /* Links */
-    th:nth-child(7), td:nth-child(7) { width: 150px; } /* Ended */
-    th:nth-child(8), td:nth-child(8) { width: 85px; }  /* ID */
-    th:nth-child(9), td:nth-child(9) { width: 70px; text-align: right; }  /* Act */
-    .status { font-weight: bold; }
-    .status-downloaded { color: var(--green); }
-    .status-error { color: var(--red); }
-    .status-uploading { color: var(--cyan); }
-    .status-downloading { color: var(--orange); }
-    
-    .comment { color: var(--comment); }
-    .yellow { color: var(--yellow); }
-    
-    code { font-family: inherit; }
-    .empty { color: var(--comment); text-align: center; padding: 40px; }
+    th:nth-child(1),
+    td:nth-child(1) {
+      width: auto;
+    }
+
+    /* Name */
+    th:nth-child(2),
+    td:nth-child(2) {
+      width: 110px;
+    }
+
+    /* Status */
+    th:nth-child(3),
+    td:nth-child(3) {
+      width: 60px;
+    }
+
+    /* Prog */
+    th:nth-child(4),
+    td:nth-child(4) {
+      width: 80px;
+    }
+
+    /* Size */
+    th:nth-child(5),
+    td:nth-child(5) {
+      width: 60px;
+    }
+
+    /* Files */
+    th:nth-child(6),
+    td:nth-child(6) {
+      width: 60px;
+    }
+
+    /* Links */
+    th:nth-child(7),
+    td:nth-child(7) {
+      width: 150px;
+    }
+
+    /* Ended */
+    th:nth-child(8),
+    td:nth-child(8) {
+      width: 85px;
+    }
+
+    /* ID */
+    th:nth-child(9),
+    td:nth-child(9) {
+      width: 75px;
+      text-align: right;
+    }
+
+    /* Act */
+    .status {
+      font-weight: bold;
+    }
+
+    .status-downloaded {
+      color: var(--green);
+    }
+
+    .status-error {
+      color: var(--red);
+    }
+
+    .status-uploading {
+      color: var(--cyan);
+    }
+
+    .status-downloading {
+      color: var(--orange);
+    }
+
+    .comment {
+      color: var(--comment);
+    }
+
+    .yellow {
+      color: var(--yellow);
+    }
+
+    code {
+      font-family: inherit;
+    }
+
+    .empty {
+      color: var(--comment);
+      text-align: center;
+      padding: 40px;
+    }
 
     /* Deletion UI */
+
     .delete-container {
       display: flex;
-      align-items: center;
-      justify-content: flex-end;
-      gap: 8px;
+      width: 100%;
+      height: 100%;
     }
+
     .confirm-opts {
       display: none;
-      flex-direction: column;
-      line-height: 1.3;
-      font-size: 0.7rem;
-      border-right: 1px solid var(--selection);
-      padding-right: 4px;
-      gap: 2px;
+      flex-direction: row;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      height: 100%;
+      background: rgba(255, 184, 108, 0.2);
+      gap: 15px;
     }
-    .opt { 
-      padding: 0 4px;
+
+    .opt {
       cursor: pointer;
       text-align: center;
+      font-weight: bold;
+      color: var(--orange);
     }
-    .opt-y { color: var(--comment); }
-    .opt-y:hover { color: var(--green); background: rgba(80, 250, 123, 0.1); }
-    .opt-n { color: var(--comment); }
-    .opt-n:hover { color: var(--orange); background: rgba(255, 184, 108, 0.1); }
+
+    .opt-y:hover {
+      color: var(--green);
+      text-shadow: 0 0 5px rgba(80, 250, 123, 0.5);
+    }
+
+    .opt-n:hover {
+      color: var(--red);
+      text-shadow: 0 0 5px rgba(255, 85, 85, 0.5);
+    }
+
     .btn-x {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      height: 100%;
       color: var(--comment);
       cursor: pointer;
       font-weight: bold;
-      padding: 2px 4px;
+      padding: 0;
     }
-    .btn-x:hover { color: var(--red); background: rgba(255, 85, 85, 0.1); }
-    
-    ::-webkit-scrollbar { width: 8px; height: 8px; }
-    ::-webkit-scrollbar-track { background: var(--bg); }
-    ::-webkit-scrollbar-thumb { background: var(--selection); }
-    ::-webkit-scrollbar-thumb:hover { background: var(--comment); }
+
+    .btn-x:hover {
+      color: var(--red);
+      background: rgba(255, 85, 85, 0.1);
+    }
+
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: var(--bg);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--selection);
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--comment);
+    }
   </style>
 </head>
+
 <body>
   <main>
     <div class="prompt">
@@ -273,14 +488,16 @@
     </div>
     <div class="meta-bar">
       <div class="meta-item"><b>[torrents]</b> <span>{{ torrents_count }}</span></div>
-      <div class="meta-item"><b>[last_sync]</b> <span>{{ last_sync_at }}</span></div>
-      <div class="meta-item"><b>[state]</b> <span>{{ sync_state }}</span></div>
-      <div class="meta-item"><b>[ready]</b> <span>{{ snapshot_ready }}</span></div>
+      <div class="meta-item"><b>[last_sync]</b> <span id="status-last-sync">{{ last_sync_at }}</span></div>
+      <div class="meta-item"><b>[state]</b> <span id="status-sync">{{ sync_state }}</span></div>
+      <div class="meta-item"><b id="status-ready-label">[ready]</b> <span id="status-ready" style="display: none;">{{
+          snapshot_ready }}</span></div>
       <div class="meta-item">
-        <button class="secondary" onclick="triggerManualRebuild()" style="font-size: 0.7rem; padding: 2px 8px;">RESYNC LIB</button>
+        <button class="secondary" onclick="triggerManualRebuild()" style="font-size: 0.7rem; padding: 2px 8px;">RESYNC
+          LIB</button>
       </div>
     </div>
-    
+
     {{ error_html | safe }}
 
     <section class="add-torrent-section">
@@ -288,7 +505,7 @@
         <span>Add New Torrent</span>
         <span id="add-status" style="text-transform: none; font-size: 0.7rem; color: var(--comment);"></span>
       </div>
-      
+
       <div id="magnet-input-area">
         <div class="input-group">
           <input type="text" id="magnet-input" placeholder="magnet:?xt=urn:btih:...">
@@ -312,7 +529,7 @@
         </div>
       </div>
     </section>
-    
+
     <div class="table-wrap">
       <table id="torrent-table">
         <thead>
@@ -344,7 +561,7 @@
 
       const btn = document.getElementById('resolve-btn');
       const status = document.getElementById('add-status');
-      
+
       btn.disabled = true;
       status.innerText = "Resolving magnet...";
       status.style.color = "var(--orange)";
@@ -352,10 +569,10 @@
       try {
         const res = await fetch('/api/torrents/add', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ magnet })
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({magnet})
         });
-        
+
         const data = await res.json();
         if (data.error) throw new Error(data.error);
 
@@ -368,15 +585,15 @@
 
         currentTorrentId = data.id;
         document.getElementById('torrent-name-display').innerText = data.filename || "Torrent Files";
-        
+
         const fileList = document.getElementById('file-list');
         fileList.innerHTML = '';
-        
+
         data.files.forEach(file => {
           const div = document.createElement('div');
           div.className = 'file-item';
           const isVideo = /\.(mkv|mp4|avi|m4v|mov)$/i.test(file.path);
-          
+
           div.innerHTML = `
             <input type="checkbox" value="${file.id}" ${isVideo ? 'checked' : ''} data-video="${isVideo}">
             <div class="file-info">
@@ -402,7 +619,7 @@
     async function confirmTorrent() {
       const checkboxes = document.querySelectorAll('#file-list input[type="checkbox"]:checked');
       const fileIds = Array.from(checkboxes).map(cb => cb.value);
-      
+
       if (fileIds.length === 0) {
         alert("Please select at least one file");
         return;
@@ -410,27 +627,27 @@
 
       const btn = document.getElementById('confirm-btn');
       const status = document.getElementById('add-status');
-      
+
       btn.disabled = true;
       status.innerText = "Starting cache...";
 
       try {
         const res = await fetch('/api/torrents/select', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ torrent_id: currentTorrentId, file_ids: fileIds })
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({torrent_id: currentTorrentId, file_ids: fileIds})
         });
-        
+
         const data = await res.json();
         if (data.error) throw new Error(data.error);
 
         status.innerText = "Torrent added! Refreshing...";
         status.style.color = "var(--green)";
-        
+
         resetAddForm();
 
         // Trigger sync and refresh page
-        await fetch('/sync', { method: 'POST' });
+        await fetch('/sync', {method: 'POST'});
         setTimeout(() => location.reload(), 1000);
       } catch (err) {
         status.innerText = "Error: " + err.message;
@@ -444,7 +661,7 @@
       status.innerText = "Resyncing library...";
       status.style.color = "var(--orange)";
       try {
-        const res = await fetch('/api/curator/rebuild', { method: 'POST' });
+        const res = await fetch('/api/curator/rebuild', {method: 'POST'});
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         status.innerText = "Library resynced!";
@@ -474,19 +691,28 @@
 
     function toggleDelete(id, show) {
       document.getElementById('confirm-' + id).style.display = show ? 'flex' : 'none';
+      document.getElementById('btn-x-' + id).style.display = show ? 'none' : 'flex';
     }
 
-    async function deleteTorrent(id) {
+    async function deleteTorrent(id, el) {
+      if (el) {
+        el.innerText = '...';
+        el.style.pointerEvents = 'none';
+      }
       try {
         const res = await fetch('/api/torrents/delete', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ torrent_id: id })
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({torrent_id: id})
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         location.reload();
       } catch (err) {
+        if (el) {
+          el.innerText = '[Y]';
+          el.style.pointerEvents = 'auto';
+        }
         alert("Delete failed: " + err.message);
       }
     }
@@ -499,12 +725,50 @@
       return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     }
 
+    async function pollStatus() {
+      try {
+        const res = await fetch('/healthz');
+        if (!res.ok) throw new Error('Offline');
+        const data = await res.json();
+
+        document.getElementById('status-sync').innerText = data.sync_in_progress ? 'syncing' : 'idle';
+        document.getElementById('status-last-sync').innerText = data.last_sync_at || 'never';
+
+        const readyLabel = document.getElementById('status-ready-label');
+        if (data.snapshot_loaded) {
+          readyLabel.innerText = '[ready]';
+          readyLabel.style.color = 'var(--green)';
+        } else {
+          readyLabel.innerText = '[starting]';
+          readyLabel.style.color = 'var(--orange)';
+        }
+      } catch (err) {
+        document.getElementById('status-sync').innerText = 'unknown';
+        const readyLabel = document.getElementById('status-ready-label');
+        readyLabel.innerText = '[offline]';
+        readyLabel.style.color = 'var(--cyan)';
+      }
+    }
+
+    // Initial setup based on template variables
+    const initReady = document.getElementById('status-ready').innerText === 'true';
+    const readyLabel = document.getElementById('status-ready-label');
+    if (initReady) {
+      readyLabel.innerText = '[ready]';
+      readyLabel.style.color = 'var(--green)';
+    } else {
+      readyLabel.innerText = '[starting]';
+      readyLabel.style.color = 'var(--orange)';
+    }
+
+    setInterval(pollStatus, 3000);
+
     function sortTable(n) {
       const table = document.getElementById("torrent-table");
       let rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
       switching = true;
       dir = "asc";
-      
+
       const headers = table.getElementsByTagName("th");
       for (let h = 0; h < headers.length; h++) {
         if (h === n) {
@@ -530,10 +794,10 @@
           shouldSwitch = false;
           x = rows[i].getElementsByTagName("TD")[n];
           y = rows[i + 1].getElementsByTagName("TD")[n];
-          
+
           let valX = x.getAttribute("data-value") || x.innerText.toLowerCase();
           let valY = y.getAttribute("data-value") || y.innerText.toLowerCase();
-          
+
           const numX = parseFloat(valX);
           const numY = parseFloat(valY);
           if (!isNaN(numX) && !isNaN(numY)) {
@@ -567,4 +831,5 @@
     }
   </script>
 </body>
+
 </html>
