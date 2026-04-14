@@ -1,8 +1,7 @@
 # buzz
 
-`buzz` is a small Real-Debrid WebDAV service for this stack. It polls the RD torrent list, materializes a stable virtual library, serves it at `/dav`, and lets `rclone` mount that library under `/mnt/buzz` for Plex or Jellyfin.
+`buzz` is a small Real-Debrid WebDAV service for Jellyfin and Plex.
 
-This replaces Zurg in this repo. The goal is a smaller service we control, with explicit snapshot persistence and post-sync hooks that trigger media-server refresh behavior only when the exposed library actually changes.
 
 ## Layout
 
