@@ -950,8 +950,8 @@ class DavHandler(BaseHTTPRequestHandler):
                 "<tr>"
                 f"<td class='name'>{html_escape(torrent['name'])}</td>"
                 f'<td><span class="status status-{html_escape(torrent["status"])}">[{html_escape(torrent["status"])}]</span></td>'
-                f"<td>{html_escape(torrent['progress'])}%</td>"
-                f"<td>{html_escape(format_bytes(torrent['bytes']))}</td>"
+                f"<td data-value='{torrent['progress']}'>{html_escape(torrent['progress'])}%</td>"
+                f"<td data-value='{torrent['bytes']}'>{html_escape(format_bytes(torrent['bytes']))}</td>"
                 f"<td>{html_escape(torrent['selected_files'])}</td>"
                 f"<td>{html_escape(torrent['links'])}</td>"
                 f"<td class='comment'>{html_escape(torrent['ended'] or '-')}</td>"
@@ -972,137 +972,28 @@ class DavHandler(BaseHTTPRequestHandler):
                 f"{html_escape(status['last_error'])}</div>"
             )
 
-        return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>buzz@local:~$</title>
-  <style>
-    :root {{
-      --bg: #282a36;
-      --fg: #f8f8f2;
-      --selection: #44475a;
-      --comment: #6272a4;
-      --cyan: #8be9fd;
-      --green: #50fa7b;
-      --orange: #ffb86c;
-      --pink: #ff79c6;
-      --purple: #bd93f9;
-      --red: #ff5555;
-      --yellow: #f1fa8c;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      background: var(--bg);
-      color: var(--fg);
-      line-height: 1.5;
-    }}
-    main {{
-      padding: 20px;
-      max-width: 1400px;
-      margin: 0 auto;
-    }}
-    .prompt {{ color: var(--purple); font-weight: bold; margin-bottom: 4px; font-size: 1.1rem; }}
-    .prompt span {{ color: var(--green); }}
-    .prompt::after {{ content: " list-torrents"; color: var(--fg); font-weight: normal; }}
-    
-    .meta-bar {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 20px;
-      margin-bottom: 24px;
-      font-size: 0.9rem;
-      color: var(--comment);
-    }}
-    .meta-item b {{ color: var(--orange); font-weight: normal; }}
-    .meta-item span {{ color: var(--cyan); }}
+        template_path = os.path.join(
+            os.path.dirname(__file__), "templates", "torrents.html"
+        )
+        try:
+            with open(template_path, "r", encoding="utf-8") as f:
+                template = f.read()
+        except Exception:
+            return "Error loading template"
 
-    .error {{
-      margin-bottom: 20px;
-      color: var(--red);
-      border-left: 3px solid var(--red);
-      padding-left: 10px;
-    }}
-    .label-red {{ color: var(--red); font-weight: bold; }}
-
-    .table-wrap {{ overflow-x: auto; }}
-    table {{
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.85rem;
-    }}
-    th {{
-      text-align: left;
-      padding: 8px;
-      border-bottom: 1px solid var(--selection);
-      color: var(--pink);
-      text-transform: uppercase;
-      letter-spacing: 1px;
-    }}
-    td {{
-      padding: 8px;
-      border-bottom: 1px solid rgba(68, 71, 90, 0.3);
-      vertical-align: top;
-    }}
-    tr:hover {{ background: var(--selection); }}
-    
-    .name {{ color: var(--fg); }}
-    .status {{ font-weight: bold; }}
-    .status-downloaded {{ color: var(--green); }}
-    .status-error {{ color: var(--red); }}
-    .status-uploading {{ color: var(--cyan); }}
-    .status-downloading {{ color: var(--orange); }}
-    
-    .comment {{ color: var(--comment); }}
-    .yellow {{ color: var(--yellow); }}
-    .cyan {{ color: var(--cyan); }}
-    
-    code {{ font-family: inherit; }}
-    .empty {{ color: var(--comment); text-align: center; padding: 40px; }}
-    
-    ::-webkit-scrollbar {{ width: 8px; height: 8px; }}
-    ::-webkit-scrollbar-track {{ background: var(--bg); }}
-    ::-webkit-scrollbar-thumb {{ background: var(--selection); }}
-    ::-webkit-scrollbar-thumb:hover {{ background: var(--comment); }}
-  </style>
-</head>
-<body>
-  <main>
-    <div class="prompt"><span>buzz@local</span>:~$</div>
-    <div class="meta-bar">
-      <div class="meta-item"><b>[torrents]</b> <span>{len(torrents)}</span></div>
-      <div class="meta-item"><b>[last_sync]</b> <span>{html_escape(status.get("last_sync_at") or "never")}</span></div>
-      <div class="meta-item"><b>[state]</b> <span>{html_escape(sync_state)}</span></div>
-      <div class="meta-item"><b>[ready]</b> <span>{"true" if status.get("snapshot_loaded") else "false"}</span></div>
-    </div>
-    
-    {error_html}
-    
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Status</th>
-            <th>Prog</th>
-            <th>Size</th>
-            <th>Files</th>
-            <th>Links</th>
-            <th>Ended</th>
-            <th>ID</th>
-          </tr>
-        </thead>
-        <tbody>
-          {"".join(rows)}
-        </tbody>
-      </table>
-    </div>
-  </main>
-</body>
-</html>"""
+        return (
+            template.replace("{torrents_count}", str(len(torrents)))
+            .replace(
+                "{last_sync_at}", html_escape(status.get("last_sync_at") or "never")
+            )
+            .replace("{sync_state}", html_escape(sync_state))
+            .replace(
+                "{snapshot_ready}",
+                html_escape("true" if status.get("snapshot_loaded") else "false"),
+            )
+            .replace("{error_html}", error_html)
+            .replace("{rows}", "".join(rows))
+        )
 
     def log_message(self, format: str, *args: Any) -> None:
         if not self.state.config.verbose:
