@@ -16,44 +16,26 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib import error, request
 
+# Add project root to sys.path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-VIDEO_EXTENSIONS = {
-    ".3gp",
-    ".avi",
-    ".flv",
-    ".m4v",
-    ".mkv",
-    ".mov",
-    ".mp4",
-    ".mpeg",
-    ".mpg",
-    ".ts",
-    ".webm",
-    ".wmv",
-}
-SIDECAR_EXTENSIONS = {
-    ".ass",
-    ".idx",
-    ".nfo",
-    ".smi",
-    ".srt",
-    ".ssa",
-    ".sub",
-    ".sup",
-    ".txt",
-    ".vtt",
-}
-YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
-SHOW_PATTERNS = (
-    re.compile(r"(?i)\bS(?P<season>\d{1,2})E(?P<episode>\d{1,2})\b"),
-    re.compile(r"(?i)\b(?P<season>\d{1,2})x(?P<episode>\d{1,2})\b"),
+from buzz.core.constants import (
+    NOISE_RE,
+    SHOW_PATTERNS,
+    SIDECAR_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+    YEAR_RE,
 )
-NOISE_RE = re.compile(
-    r"(?i)\b("
-    r"1080p|2160p|720p|480p|4k|bluray|brrip|bdrip|dvdrip|dvd|webrip|web[- ]?dl|"
-    r"hdr|hdr10|remux|proper|repack|extended|unrated|criterion|x264|x265|h\.?264|"
-    r"h\.?265|hevc|av1|aac|ac3|dts|truehd|atmos|yts|rarbg|amzn|nf|dsnp|hmax"
-    r")\b"
+from buzz.core.media import (
+    is_sidecar_file,
+    is_video_file,
+    parse_movie,
+    parse_show,
+)
+from buzz.core.utils import (
+    canonical_spaces,
+    pretty_title,
+    sanitize_path_component,
 )
 
 
@@ -140,36 +122,6 @@ def load_overrides(path: Path) -> dict:
     return overrides
 
 
-def canonical_spaces(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip(" .-_")
-
-
-def pretty_title(raw: str) -> str:
-    cleaned = canonical_spaces(raw.replace(".", " ").replace("_", " "))
-    words = []
-    for word in cleaned.split():
-        if word.isupper() and len(word) <= 4:
-            words.append(word)
-        elif re.fullmatch(r"[ivxlcdm]+", word, re.IGNORECASE):
-            words.append(word.upper())
-        else:
-            words.append(word.capitalize())
-    return " ".join(words)
-
-
-def sanitize_path_component(value: str) -> str:
-    value = value.replace("/", " ").replace("\\", " ")
-    return canonical_spaces(value)
-
-
-def is_video(path: Path) -> bool:
-    return path.suffix.lower() in VIDEO_EXTENSIONS
-
-
-def is_sidecar(path: Path) -> bool:
-    return path.suffix.lower() in SIDECAR_EXTENSIONS
-
-
 def iter_files(root: Path):
     if not root.exists():
         return
@@ -182,44 +134,6 @@ def source_relpath(source_root: Path, path: Path) -> str:
     return path.relative_to(source_root).as_posix()
 
 
-def parse_movie(stem: str):
-    if re.search(r"(?i)\bS\d{1,2}E\d{1,2}\b", stem):
-        return None
-    cleaned = canonical_spaces(
-        stem.replace(".", " ").replace("_", " ").replace("-", " ")
-    )
-    match = YEAR_RE.search(cleaned)
-    if not match:
-        return None
-    title_part = cleaned[: match.start()]
-    title_part = NOISE_RE.sub("", title_part)
-    title = sanitize_path_component(pretty_title(title_part))
-    if not title:
-        return None
-    return {"title": title, "year": int(match.group(1))}
-
-
-def parse_show(stem: str):
-    cleaned = canonical_spaces(
-        stem.replace(".", " ").replace("_", " ").replace("-", " ")
-    )
-    for pattern in SHOW_PATTERNS:
-        match = pattern.search(cleaned)
-        if not match:
-            continue
-        series = cleaned[: match.start()]
-        series = NOISE_RE.sub("", series)
-        series = sanitize_path_component(pretty_title(series))
-        if not series:
-            return None
-        return {
-            "series": series,
-            "season": int(match.group("season")),
-            "episode": int(match.group("episode")),
-        }
-    return None
-
-
 def find_companion_files(path: Path):
     parent = path.parent
     stem = path.stem
@@ -227,7 +141,7 @@ def find_companion_files(path: Path):
     for sibling in parent.iterdir():
         if not sibling.is_file() or sibling == path:
             continue
-        if not is_sidecar(sibling):
+        if not is_sidecar_file(sibling):
             continue
         if sibling.name == f"{stem}{sibling.suffix}" or sibling.name.startswith(
             f"{stem}."
@@ -421,7 +335,7 @@ def build_movies(
         return
     used_targets = set()
     for path in iter_files(source_root):
-        if not is_video(path):
+        if not is_video_file(path):
             continue
         rel_path = source_relpath(all_source_root, path)
         parsed = parse_movie(path.stem)
@@ -478,7 +392,7 @@ def build_shows(
     grouped = {}
     global_targets = set()
     for path in iter_files(source_root):
-        if not is_video(path):
+        if not is_video_file(path):
             continue
         rel = path.relative_to(source_root)
         group_key = rel.parts[0] if len(rel.parts) > 1 else path.stem
