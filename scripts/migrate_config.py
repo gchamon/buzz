@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+
 import yaml
 from pathlib import Path
 
+# Add project root to sys.path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-DEFAULT_ANIME_PATTERN = r"\b[a-fA-F0-9]{8}\b"
+from buzz.core.constants import DEFAULT_ANIME_PATTERN
+from buzz.core.utils import ensure_regex_delimiters, strip_regex_delimiters
+
 DEFAULT_HOOK = "sh /app/media_update.sh"
 
 
@@ -130,13 +136,6 @@ def zurg_to_buzz(zurg: dict) -> dict:
     return buzz
 
 
-def strip_regex_delimiters(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value.startswith("/") and value.endswith("/"):
-        return value[1:-1]
-    return value
-
-
 def parse_buzz_config(raw: str) -> dict:
     return yaml.safe_load(raw)
 
@@ -208,13 +207,6 @@ def buzz_to_zurg(buzz: dict) -> str:
             "",
         ]
     )
-
-
-def ensure_regex_delimiters(value: str) -> str:
-    stripped = value.strip()
-    if stripped.startswith("/") and stripped.endswith("/"):
-        return stripped
-    return f"/{stripped}/"
 
 
 def convert(source_format: str, target_format: str, raw: str) -> str:

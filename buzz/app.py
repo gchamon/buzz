@@ -13,7 +13,6 @@ import shlex
 import subprocess
 import threading
 import time
-from datetime import UTC, datetime
 from email.utils import formatdate
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,53 +22,24 @@ from urllib import error, parse, request
 from xml.sax.saxutils import escape
 
 import yaml
+from buzz.core.constants import DEFAULT_ANIME_PATTERN, SHOW_PATTERNS
+from buzz.core.media import (
+    is_probably_media_content_type,
+    is_video_file,
+    looks_like_markup,
+)
+from buzz.core.utils import (
+    format_bytes,
+    html_escape,
+    http_date,
+    normalize_posix_path,
+    stable_json,
+    utc_now_iso,
+)
 from pydantic import BaseModel, Field
 from rdapi import RD
 
-
-VIDEO_EXTENSIONS = {
-    ".3gp",
-    ".avi",
-    ".flv",
-    ".m4v",
-    ".mkv",
-    ".mov",
-    ".mp4",
-    ".mpeg",
-    ".mpg",
-    ".ts",
-    ".webm",
-    ".wmv",
-}
 DEFAULT_CONFIG_PATH = os.environ.get("BUZZ_CONFIG", "/app/buzz.yml")
-SHOW_PATTERNS = (
-    re.compile(r"(?i)\bS(?P<season>\d{1,2})E(?P<episode>\d{1,2})\b"),
-    re.compile(r"(?i)\b(?P<season>\d{1,2})x(?P<episode>\d{1,2})\b"),
-)
-
-
-def utc_now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def http_date(value: str | None) -> str:
-    if value:
-        try:
-            timestamp = datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-            return formatdate(timestamp, usegmt=True)
-        except ValueError:
-            pass
-    return formatdate(time.time(), usegmt=True)
-
-
-def normalize_posix_path(value: str) -> str:
-    cleaned = value.strip()
-    if not cleaned or cleaned == "/":
-        return ""
-    normalized = posixpath.normpath("/" + cleaned.lstrip("/"))
-    if normalized == "/":
-        return ""
-    return normalized.lstrip("/")
 
 
 def dav_rel_path(raw_path: str) -> str:
@@ -84,56 +54,6 @@ def split_path(value: str) -> tuple[str, ...]:
     if not normalized:
         return ()
     return tuple(part for part in normalized.split("/") if part)
-
-
-def is_video_file(path: str) -> bool:
-    suffix = PurePosixPath(path).suffix.lower()
-    return suffix in VIDEO_EXTENSIONS
-
-
-def stable_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
-
-
-def html_escape(value: Any) -> str:
-    return escape(str(value), {"'": "&#x27;", '"': "&quot;"})
-
-
-def format_bytes(value: Any) -> str:
-    try:
-        size = float(value)
-    except TypeError, ValueError:
-        return "0 B"
-    units = ("B", "KiB", "MiB", "GiB", "TiB")
-    index = 0
-    while size >= 1024 and index < len(units) - 1:
-        size /= 1024
-        index += 1
-    if index == 0:
-        return f"{int(size)} {units[index]}"
-    return f"{size:.1f} {units[index]}"
-
-
-def is_probably_media_content_type(value: str | None) -> bool:
-    if not value:
-        return True
-    normalized = value.split(";", 1)[0].strip().lower()
-    if normalized.startswith(("video/", "audio/", "application/octet-stream")):
-        return True
-    if normalized in {
-        "application/mp4",
-        "application/vnd.apple.mpegurl",
-        "application/force-download",
-        "application/download",
-        "binary/octet-stream",
-    }:
-        return True
-    return False
-
-
-def looks_like_markup(payload: bytes) -> bool:
-    head = payload.lstrip().lower()
-    return head.startswith((b"<!doctype", b"<html", b"<?xml", b"{", b"["))
 
 
 def canonical_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -168,7 +88,7 @@ class Config(BaseModel):
     port: int = 9999
     state_dir: str = "/app/data"
     hook_command: str = ""
-    anime_patterns: tuple[str, ...] = (r"\b[a-fA-F0-9]{8}\b",)
+    anime_patterns: tuple[str, ...] = (DEFAULT_ANIME_PATTERN,)
     enable_all_dir: bool = True
     enable_unplayable_dir: bool = True
     request_timeout_secs: int = 30
@@ -200,7 +120,7 @@ class Config(BaseModel):
             port=int(server.get("port", 9999)),
             state_dir=str(raw.get("state_dir", "/app/data")),
             hook_command=str(hooks.get("on_library_change", "")).strip(),
-            anime_patterns=tuple(anime.get("patterns", [r"\b[a-fA-F0-9]{8}\b"])),
+            anime_patterns=tuple(anime.get("patterns", [DEFAULT_ANIME_PATTERN])),
             enable_all_dir=bool(compat.get("enable_all_dir", True)),
             enable_unplayable_dir=bool(compat.get("enable_unplayable_dir", True)),
             request_timeout_secs=int(raw.get("request_timeout_secs", 30)),
