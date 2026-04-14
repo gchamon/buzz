@@ -1,6 +1,6 @@
 # buzz
 
-`buzz` is a small Debrid WebDAV service for [Jellyfin](https://jellyfin.org/) and (Plex)[https://watch.plex.tv].
+`buzz` is a small Debrid WebDAV service for [Jellyfin](https://jellyfin.org/) and [Plex](https://watch.plex.tv).
 
 ![screenshot](/docs/assets/screenshot.png) 
 
