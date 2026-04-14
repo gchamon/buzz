@@ -769,6 +769,51 @@ class DavAppTests(unittest.TestCase):
         self.assertIn("1.5 MiB", body)
         self.assertIn("2026-01-02T00:00:00Z", body)
         self.assertIn("status-downloaded", body)
+        self.assertIn('href="/static/buzz.css"', body)
+        self.assertIn('src="/static/buzz.js"', body)
+
+    def test_trashcan_page_renders_shared_assets(self):
+        self.state.trashcan = {
+            "trash-1": {
+                "name": "Old & Gone",
+                "bytes": 4096,
+                "file_count": 3,
+                "deleted_at": "2026-01-03T00:00:00Z",
+                "magnet": "magnet:?xt=urn:btih:trash-1",
+            }
+        }
+
+        response = self.client.get("/trashcan")
+        body = response.text
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("buzz: trashcan", body)
+        self.assertIn("Old &amp; Gone", body)
+        self.assertIn('href="/static/buzz.css"', body)
+        self.assertIn('src="/static/buzz.js"', body)
+
+    def test_torrents_page_renders_empty_state_and_error_banner(self):
+        self.state.last_error = "Boom & stuff"
+
+        response = self.client.get("/torrents")
+        body = response.text
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("No cached torrents yet.", body)
+        self.assertIn("Boom &amp; stuff", body)
+
+    def test_trashcan_page_renders_empty_state(self):
+        response = self.client.get("/trashcan")
+        body = response.text
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Trashcan is empty.", body)
+
+    def test_static_assets_are_served(self):
+        response = self.client.get("/static/buzz.js")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("initBuzzPage", response.text)
 
     def test_healthz_and_readyz_use_asgi_routes(self):
         self.state.snapshot_loaded = False

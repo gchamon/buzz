@@ -119,5 +119,5 @@ python3 scripts/migrate_config.py --from buzz --to zurg buzz.yml -o config.yml
 Run tests locally with:
 
 ```sh
-uv run python -m unittest tests.test_buzz tests.test_curator_app
+uv run python -m unittest discover -s tests
 ```

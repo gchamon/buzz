@@ -10,12 +10,12 @@ import jinja2
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from rdapi import RD
 
 from .dav_protocol import open_remote_media, propfind_body
 from .core.utils import (
     format_bytes,
-    html_escape,
     http_date,
 )
 from .models import (
@@ -59,7 +59,13 @@ class DavApp:
         self.templates = jinja2.Environment(
             loader=jinja2.FileSystemLoader(
                 os.path.join(os.path.dirname(__file__), "templates")
-            )
+            ),
+            autoescape=jinja2.select_autoescape(["html", "xml"]),
+        )
+        self.app.mount(
+            "/static",
+            StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
+            name="static",
         )
 
         self._setup_routes()
@@ -294,105 +300,61 @@ class DavApp:
     def _torrents_page(self) -> str:
         status = self.state.status()
         torrents = self.state.torrents()
-        rows = []
+        page_torrents = []
         for torrent in torrents:
-            torrent_id = torrent["id"]
-            rows.append(
-                "<tr>"
-                f"<td class='name trunc-cell'><div class='trunc-content'>{html_escape(torrent['name'])}</div></td>"
-                f'<td><span class="status status-{html_escape(torrent["status"])}">[{html_escape(torrent["status"])}]</span></td>'
-                f"<td data-value='{torrent['progress']}'>{html_escape(torrent['progress'])}%</td>"
-                f"<td data-value='{torrent['bytes']}'>{html_escape(format_bytes(torrent['bytes']))}</td>"
-                f"<td>{html_escape(str(torrent['selected_files']))}</td>"
-                f"<td>{html_escape(str(torrent['links']))}</td>"
-                f"<td class='comment'>{html_escape(torrent['ended'] or '-')}</td>"
-                f"<td class='yellow'><code>{html_escape(torrent_id[:8])}</code></td>"
-                "<td>"
-                f'<div class="delete-container">'
-                f'<div class="confirm-opts" id="confirm-{torrent_id}">'
-                f'<div class="opt opt-y" onclick="deleteTorrent(\'{torrent_id}\', this)" title="Confirm Move to Trashcan">[Y]</div>'
-                f'<div class="opt opt-n" onclick="toggleDelete(\'{torrent_id}\', false)" title="Cancel">[N]</div>'
-                "</div>"
-                f'<div class="btn-x" id="btn-x-{torrent_id}" onclick="toggleDelete(\'{torrent_id}\', true)" title="Move to Trashcan">[X]</div>'
-                "</div>"
-                "</td>"
-                "</tr>"
-            )
-        if not rows:
-            rows.append(
-                '<tr><td colspan="8" class="empty">No cached torrents yet. '
-                "Wait for the first sync or trigger <code>POST /sync</code>.</td></tr>"
+            page_torrents.append(
+                {
+                    "id": torrent["id"],
+                    "name": torrent["name"],
+                    "status": torrent["status"],
+                    "progress": torrent["progress"],
+                    "bytes": torrent["bytes"],
+                    "size": format_bytes(torrent["bytes"]),
+                    "selected_files": torrent["selected_files"],
+                    "links": torrent["links"],
+                    "ended": torrent["ended"] or "-",
+                    "short_id": torrent["id"][:8],
+                }
             )
 
         sync_state = "syncing" if status.get("sync_in_progress") else "idle"
-        error_html = ""
-        if status.get("last_error"):
-            error_html = (
-                '<div class="error"><span class="label-red">[ERROR]</span> '
-                f"{html_escape(status['last_error'])}</div>"
-            )
 
         template = self.templates.get_template("torrents.html")
         return template.render(
             torrents_count=len(torrents),
-            last_sync_at=html_escape(status.get("last_sync_at") or "never"),
-            sync_state=html_escape(sync_state),
-            snapshot_ready=html_escape(
-                "true" if status.get("snapshot_loaded") else "false"
-            ),
-            error_html=error_html,
-            rows="".join(rows),
+            last_sync_at=status.get("last_sync_at") or "never",
+            sync_state=sync_state,
+            snapshot_ready="true" if status.get("snapshot_loaded") else "false",
+            last_error=status.get("last_error"),
+            torrents=page_torrents,
         )
 
     def _trashcan_page(self) -> str:
         status = self.state.status()
         torrents = self.state.trash_torrents()
-        rows = []
+        trash_torrents = []
         for torrent in torrents:
-            thash = torrent["hash"]
-            rows.append(
-                "<tr>"
-                f"<td class='name trunc-cell'><div class='trunc-content'>{html_escape(torrent['name'])}</div></td>"
-                f"<td data-value='{torrent['bytes']}'>{html_escape(format_bytes(torrent['bytes']))}</td>"
-                f"<td>{html_escape(str(torrent['file_count']))}</td>"
-                f"<td class='comment'>{html_escape(torrent['deleted_at'] or '-')}</td>"
-                f'<td class="delete-container">'
-                f'<div class="confirm-opts" id="confirm-restore-{thash}">'
-                f'<div class="opt opt-y" onclick="restoreTrash(\'{thash}\', this)" title="Confirm Restore">[Y]</div>'
-                f'<div class="opt opt-n" onclick="toggleRestore(\'{thash}\', false)" title="Cancel">[N]</div>'
-                "</div>"
-                f'<div class="btn-r" id="btn-r-{thash}" onclick="toggleRestore(\'{thash}\', true)" title="Restore to Cache">[R]</div>'
-                f'<div class="confirm-opts" id="confirm-del-{thash}">'
-                f'<div class="opt opt-y" onclick="deleteTrash(\'{thash}\', this)" title="Confirm Permanent Delete">[Y]</div>'
-                f'<div class="opt opt-n" onclick="toggleDel(\'{thash}\', false)" title="Cancel">[N]</div>'
-                "</div>"
-                f'<div class="btn-x" id="btn-del-{thash}" onclick="toggleDel(\'{thash}\', true)" title="Delete Permanently">[D]</div>'
-                "</td>"
-                "</tr>"
-            )
-        if not rows:
-            rows.append(
-                '<tr><td colspan="5" class="empty">Trashcan is empty.</td></tr>'
+            trash_torrents.append(
+                {
+                    "hash": torrent["hash"],
+                    "name": torrent["name"],
+                    "bytes": torrent["bytes"],
+                    "size": format_bytes(torrent["bytes"]),
+                    "file_count": torrent["file_count"],
+                    "deleted_at": torrent["deleted_at"] or "-",
+                }
             )
 
         sync_state = "syncing" if status.get("sync_in_progress") else "idle"
-        error_html = ""
-        if status.get("last_error"):
-            error_html = (
-                '<div class="error"><span class="label-red">[ERROR]</span> '
-                f"{html_escape(status['last_error'])}</div>"
-            )
 
         template = self.templates.get_template("trashcan.html")
         return template.render(
             torrents_count=len(torrents),
-            last_sync_at=html_escape(status.get("last_sync_at") or "never"),
-            sync_state=html_escape(sync_state),
-            snapshot_ready=html_escape(
-                "true" if status.get("snapshot_loaded") else "false"
-            ),
-            error_html=error_html,
-            rows="".join(rows),
+            last_sync_at=status.get("last_sync_at") or "never",
+            sync_state=sync_state,
+            snapshot_ready="true" if status.get("snapshot_loaded") else "false",
+            last_error=status.get("last_error"),
+            trash_torrents=trash_torrents,
         )
 
     async def _handle_validation_error(
