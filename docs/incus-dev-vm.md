@@ -28,8 +28,8 @@ incus exec "$VM_NAME" -- cloud-init status --wait
 ## Copy The Repo
 
 ```sh
-incus file push -r . "$VM_NAME"/home/dev/plex-zurg
-incus exec "$VM_NAME" -- chown -R dev:dev /home/dev/plex-zurg
+incus file push -r . "$VM_NAME"/home/dev/buzz
+incus exec "$VM_NAME" -- chown -R dev:dev /home/dev/buzz
 ```
 
 Copy or create `buzz.yml` in the VM before starting the stack.
@@ -38,7 +38,7 @@ Copy or create `buzz.yml` in the VM before starting the stack.
 
 ```sh
 incus exec "$VM_NAME" -- sudo -iu dev bash -lc '
-  cd /home/dev/plex-zurg &&
+  cd /home/dev/buzz &&
   docker compose up -d --build buzz rclone
 '
 ```
@@ -47,7 +47,7 @@ incus exec "$VM_NAME" -- sudo -iu dev bash -lc '
 
 ```sh
 incus exec "$VM_NAME" -- sudo -iu dev bash -lc '
-  cd /home/dev/plex-zurg &&
+  cd /home/dev/buzz &&
   docker compose ps &&
   curl -fsS http://127.0.0.1:9999/readyz &&
   ls /mnt/buzz &&

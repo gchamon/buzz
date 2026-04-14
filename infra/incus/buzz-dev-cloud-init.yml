@@ -54,9 +54,9 @@ write_files:
       systemctl enable --now docker
 
       getent group docker >/dev/null || groupadd --system docker
-      install -d -o dev -g dev /home/dev/plex-zurg
+      install -d -o dev -g dev /home/dev/buzz
       usermod -aG docker dev
-      printf 'cd /home/dev/plex-zurg\n' >> /home/dev/.bashrc
+      printf 'cd /home/dev/buzz\n' >> /home/dev/.bashrc
       chown dev:dev /home/dev/.bashrc
 
 runcmd:
