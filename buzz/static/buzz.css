@@ -70,7 +70,7 @@ main {
   display: flex;
   flex-wrap: wrap;
   gap: 20px;
-  margin-bottom: 24px;
+  margin: 20px 15px 20px 0px;
   font-size: 0.9rem;
   color: var(--comment);
 }
@@ -82,6 +82,14 @@ main {
 
 .meta-item span {
   color: var(--cyan);
+}
+
+.meta-item:last-of-type {
+  margin-left: auto
+}
+
+.meta-item:nth-of-type(3) {
+  width: 150px
 }
 
 button {
@@ -200,6 +208,7 @@ tr:hover {
 }
 
 @keyframes scroll-text {
+
   0%,
   10% {
     transform: translateX(0);

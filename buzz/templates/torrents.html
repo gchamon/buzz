@@ -1,10 +1,12 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>buzz: list torrents</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐝</text></svg>">
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐝</text></svg>">
   <link rel="stylesheet" href="/static/buzz.css">
   <style>
     .add-torrent-section {
@@ -89,15 +91,51 @@
       gap: 10px;
     }
 
-    th:nth-child(1), td:nth-child(1) { width: auto; }
-    th:nth-child(2), td:nth-child(2) { width: 110px; }
-    th:nth-child(3), td:nth-child(3) { width: 60px; }
-    th:nth-child(4), td:nth-child(4) { width: 80px; }
-    th:nth-child(5), td:nth-child(5) { width: 60px; }
-    th:nth-child(6), td:nth-child(6) { width: 60px; }
-    th:nth-child(7), td:nth-child(7) { width: 150px; }
-    th:nth-child(8), td:nth-child(8) { width: 85px; }
-    th:nth-child(9), td:nth-child(9) { width: 75px; text-align: right; }
+    th:nth-child(1),
+    td:nth-child(1) {
+      width: auto;
+    }
+
+    th:nth-child(2),
+    td:nth-child(2) {
+      width: 110px;
+    }
+
+    th:nth-child(3),
+    td:nth-child(3) {
+      width: 60px;
+    }
+
+    th:nth-child(4),
+    td:nth-child(4) {
+      width: 80px;
+    }
+
+    th:nth-child(5),
+    td:nth-child(5) {
+      width: 60px;
+    }
+
+    th:nth-child(6),
+    td:nth-child(6) {
+      width: 60px;
+    }
+
+    th:nth-child(7),
+    td:nth-child(7) {
+      width: 150px;
+    }
+
+    th:nth-child(8),
+    td:nth-child(8) {
+      width: 85px;
+    }
+
+    th:nth-child(9),
+    td:nth-child(9) {
+      width: 75px;
+      text-align: right;
+    }
 
     .status {
       font-weight: bold;
@@ -120,6 +158,7 @@
     }
   </style>
 </head>
+
 <body>
   <main>
     <div class="prompt">
@@ -150,7 +189,7 @@
 
     <section class="add-torrent-section">
       <div class="add-torrent-header">
-        <span>Add New Torrent</span>
+        <span>ADD NEW MAGNET TO THE CACHE:</span>
         <span id="add-status" style="text-transform: none; font-size: 0.7rem; color: var(--comment);"></span>
       </div>
 
@@ -196,7 +235,9 @@
         <tbody>
           {% for torrent in torrents %}
           <tr>
-            <td class="name trunc-cell"><div class="trunc-content">{{ torrent.name }}</div></td>
+            <td class="name trunc-cell">
+              <div class="trunc-content">{{ torrent.name }}</div>
+            </td>
             <td><span class="status status-{{ torrent.status }}">[{{ torrent.status }}]</span></td>
             <td data-value="{{ torrent.progress }}">{{ torrent.progress }}%</td>
             <td data-value="{{ torrent.bytes }}">{{ torrent.size }}</td>
@@ -207,16 +248,19 @@
             <td>
               <div class="delete-container">
                 <div class="confirm-opts" id="confirm-{{ torrent.id }}">
-                  <div class="opt opt-y" onclick="deleteTorrent('{{ torrent.id }}', this)" title="Confirm Move to Trashcan">[Y]</div>
+                  <div class="opt opt-y" onclick="deleteTorrent('{{ torrent.id }}', this)"
+                    title="Confirm Move to Trashcan">[Y]</div>
                   <div class="opt opt-n" onclick="toggleDelete('{{ torrent.id }}', false)" title="Cancel">[N]</div>
                 </div>
-                <div class="btn-x" id="btn-x-{{ torrent.id }}" onclick="toggleDelete('{{ torrent.id }}', true)" title="Move to Trashcan">[X]</div>
+                <div class="btn-x" id="btn-x-{{ torrent.id }}" onclick="toggleDelete('{{ torrent.id }}', true)"
+                  title="Move to Trashcan">[X]</div>
               </div>
             </td>
           </tr>
           {% else %}
           <tr>
-            <td colspan="9" class="empty">No cached torrents yet. Wait for the first sync or trigger <code>POST /sync</code>.</td>
+            <td colspan="9" class="empty">No cached torrents yet. Wait for the first sync or trigger <code>POST
+                /sync</code>.</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -244,8 +288,8 @@
       try {
         const res = await fetch("/api/torrents/add", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ magnet })
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({magnet})
         });
 
         const data = await res.json();
@@ -311,8 +355,8 @@
       try {
         const res = await fetch("/api/torrents/select", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ torrent_id: currentTorrentId, file_ids: fileIds })
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({torrent_id: currentTorrentId, file_ids: fileIds})
         });
 
         const data = await res.json();
@@ -325,7 +369,7 @@
 
         resetAddForm();
 
-        await fetch("/sync", { method: "POST" });
+        await fetch("/sync", {method: "POST"});
         setTimeout(() => location.reload(), 1000);
       } catch (err) {
         status.innerText = "Error: " + err.message;
@@ -369,8 +413,8 @@
       try {
         const res = await fetch("/api/torrents/delete", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ torrent_id: id })
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({torrent_id: id})
         });
         const data = await res.json();
         if (data.error) {
@@ -403,4 +447,5 @@
     });
   </script>
 </body>
+
 </html>
