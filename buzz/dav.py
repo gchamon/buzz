@@ -948,14 +948,14 @@ class DavHandler(BaseHTTPRequestHandler):
         for torrent in torrents:
             rows.append(
                 "<tr>"
-                f"<td>{html_escape(torrent['name'])}</td>"
-                f'<td><span class="status status-{html_escape(torrent["status"])}">{html_escape(torrent["status"])}</span></td>'
+                f"<td class='name'>{html_escape(torrent['name'])}</td>"
+                f'<td><span class="status status-{html_escape(torrent["status"])}">[{html_escape(torrent["status"])}]</span></td>'
                 f"<td>{html_escape(torrent['progress'])}%</td>"
                 f"<td>{html_escape(format_bytes(torrent['bytes']))}</td>"
                 f"<td>{html_escape(torrent['selected_files'])}</td>"
                 f"<td>{html_escape(torrent['links'])}</td>"
-                f"<td>{html_escape(torrent['ended'] or '-')}</td>"
-                f"<td><code>{html_escape(torrent['id'])}</code></td>"
+                f"<td class='comment'>{html_escape(torrent['ended'] or '-')}</td>"
+                f"<td class='yellow'><code>{html_escape(torrent['id'][:8])}</code></td>"
                 "</tr>"
             )
         if not rows:
@@ -968,8 +968,8 @@ class DavHandler(BaseHTTPRequestHandler):
         error_html = ""
         if status.get("last_error"):
             error_html = (
-                '<p class="error"><strong>Last error:</strong> '
-                f"{html_escape(status['last_error'])}</p>"
+                '<div class="error"><span class="label-red">[ERROR]</span> '
+                f"{html_escape(status['last_error'])}</div>"
             )
 
         return f"""<!doctype html>
@@ -977,130 +977,119 @@ class DavHandler(BaseHTTPRequestHandler):
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Buzz Torrents</title>
+  <title>buzz@local:~$</title>
   <style>
     :root {{
-      color-scheme: light;
-      --bg: #f4efe6;
-      --panel: #fffaf2;
-      --ink: #1d1a17;
-      --muted: #6c6257;
-      --line: #d8cbb8;
-      --accent: #0e6b5c;
-      --accent-soft: #dff2ed;
-      --danger: #9b2d30;
-      --danger-soft: #f9dfdf;
+      --bg: #282a36;
+      --fg: #f8f8f2;
+      --selection: #44475a;
+      --comment: #6272a4;
+      --cyan: #8be9fd;
+      --green: #50fa7b;
+      --orange: #ffb86c;
+      --pink: #ff79c6;
+      --purple: #bd93f9;
+      --red: #ff5555;
+      --yellow: #f1fa8c;
     }}
     * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
-      font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
-      background:
-        radial-gradient(circle at top left, #fffaf2 0, #f4efe6 45%, #ebe1d3 100%);
-      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.5;
     }}
     main {{
-      max-width: 1200px;
+      padding: 20px;
+      max-width: 1400px;
       margin: 0 auto;
-      padding: 32px 20px 48px;
     }}
-    h1 {{ margin: 0 0 8px; font-size: clamp(2rem, 4vw, 3.4rem); }}
-    p {{ margin: 0; color: var(--muted); }}
-    .meta {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 12px;
-      margin: 24px 0;
+    .prompt {{ color: var(--purple); font-weight: bold; margin-bottom: 4px; font-size: 1.1rem; }}
+    .prompt span {{ color: var(--green); }}
+    .prompt::after {{ content: " list-torrents"; color: var(--fg); font-weight: normal; }}
+    
+    .meta-bar {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+      margin-bottom: 24px;
+      font-size: 0.9rem;
+      color: var(--comment);
     }}
-    .card {{
-      padding: 16px 18px;
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      background: color-mix(in srgb, var(--panel) 88%, white);
-      box-shadow: 0 8px 24px rgba(29, 26, 23, 0.06);
+    .meta-item b {{ color: var(--orange); font-weight: normal; }}
+    .meta-item span {{ color: var(--cyan); }}
+
+    .error {{
+      margin-bottom: 20px;
+      color: var(--red);
+      border-left: 3px solid var(--red);
+      padding-left: 10px;
     }}
-    .label {{
-      display: block;
-      margin-bottom: 6px;
-      font-size: 0.78rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
-    }}
-    .value {{ font-size: 1.1rem; }}
-    .table-wrap {{
-      overflow-x: auto;
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      background: var(--panel);
-      box-shadow: 0 10px 30px rgba(29, 26, 23, 0.08);
-    }}
+    .label-red {{ color: var(--red); font-weight: bold; }}
+
+    .table-wrap {{ overflow-x: auto; }}
     table {{
       width: 100%;
       border-collapse: collapse;
-      min-width: 860px;
-    }}
-    th, td {{
-      padding: 14px 16px;
-      border-bottom: 1px solid var(--line);
-      text-align: left;
-      vertical-align: top;
-      font-size: 0.95rem;
+      font-size: 0.85rem;
     }}
     th {{
-      font-size: 0.78rem;
-      letter-spacing: 0.08em;
+      text-align: left;
+      padding: 8px;
+      border-bottom: 1px solid var(--selection);
+      color: var(--pink);
       text-transform: uppercase;
-      color: var(--muted);
-      background: rgba(216, 203, 184, 0.18);
+      letter-spacing: 1px;
     }}
-    tr:last-child td {{ border-bottom: 0; }}
-    .status {{
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 999px;
-      background: var(--accent-soft);
-      color: var(--accent);
-      font-size: 0.82rem;
-      font-weight: 700;
-      text-transform: lowercase;
+    td {{
+      padding: 8px;
+      border-bottom: 1px solid rgba(68, 71, 90, 0.3);
+      vertical-align: top;
     }}
-    .status-error {{ background: var(--danger-soft); color: var(--danger); }}
-    .empty {{ color: var(--muted); text-align: center; }}
-    .error {{
-      margin: 0 0 20px;
-      padding: 12px 14px;
-      border-radius: 12px;
-      background: var(--danger-soft);
-      color: var(--danger);
-      border: 1px solid rgba(155, 45, 48, 0.2);
-    }}
-    code {{
-      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-      font-size: 0.85em;
-    }}
+    tr:hover {{ background: var(--selection); }}
+    
+    .name {{ color: var(--fg); }}
+    .status {{ font-weight: bold; }}
+    .status-downloaded {{ color: var(--green); }}
+    .status-error {{ color: var(--red); }}
+    .status-uploading {{ color: var(--cyan); }}
+    .status-downloading {{ color: var(--orange); }}
+    
+    .comment {{ color: var(--comment); }}
+    .yellow {{ color: var(--yellow); }}
+    .cyan {{ color: var(--cyan); }}
+    
+    code {{ font-family: inherit; }}
+    .empty {{ color: var(--comment); text-align: center; padding: 40px; }}
+    
+    ::-webkit-scrollbar {{ width: 8px; height: 8px; }}
+    ::-webkit-scrollbar-track {{ background: var(--bg); }}
+    ::-webkit-scrollbar-thumb {{ background: var(--selection); }}
+    ::-webkit-scrollbar-thumb:hover {{ background: var(--comment); }}
   </style>
 </head>
 <body>
   <main>
-    <h1>Real-Debrid Torrents</h1>
-    <p>Server-rendered from Buzz's cached torrent metadata.</p>
-    <section class="meta">
-      <div class="card"><span class="label">Cached Torrents</span><span class="value">{len(torrents)}</span></div>
-      <div class="card"><span class="label">Last Sync</span><span class="value">{html_escape(status.get("last_sync_at") or "never")}</span></div>
-      <div class="card"><span class="label">Sync State</span><span class="value">{html_escape(sync_state)}</span></div>
-      <div class="card"><span class="label">Snapshot Ready</span><span class="value">{html_escape("yes" if status.get("snapshot_loaded") else "no")}</span></div>
-    </section>
+    <div class="prompt"><span>buzz@local</span>:~$</div>
+    <div class="meta-bar">
+      <div class="meta-item"><b>[torrents]</b> <span>{len(torrents)}</span></div>
+      <div class="meta-item"><b>[last_sync]</b> <span>{html_escape(status.get("last_sync_at") or "never")}</span></div>
+      <div class="meta-item"><b>[state]</b> <span>{html_escape(sync_state)}</span></div>
+      <div class="meta-item"><b>[ready]</b> <span>{"true" if status.get("snapshot_loaded") else "false"}</span></div>
+    </div>
+    
     {error_html}
+    
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
             <th>Name</th>
             <th>Status</th>
-            <th>Progress</th>
+            <th>Prog</th>
             <th>Size</th>
-            <th>Selected</th>
+            <th>Files</th>
             <th>Links</th>
             <th>Ended</th>
             <th>ID</th>
