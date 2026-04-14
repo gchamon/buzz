@@ -1,0 +1,9 @@
+[allowlist]
+description = "Global allowlist"
+paths = [
+    '''tests/''',
+    '''docs/''',
+    '''.env.dist''',
+    '''buzz.dist.yml''',
+    '''rclone.conf'''
+]
