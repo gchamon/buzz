@@ -237,7 +237,7 @@
       <div class="meta-item"><b>[state]</b> <span>{sync_state}</span></div>
       <div class="meta-item"><b>[ready]</b> <span>{snapshot_ready}</span></div>
       <div class="meta-item">
-        <button class="secondary" onclick="triggerManualRebuild()" style="font-size: 0.7rem; padding: 2px 8px;">Rebuild Curator</button>
+        <button class="secondary" onclick="triggerManualRebuild()" style="font-size: 0.7rem; padding: 2px 8px;">RESYNC LIB</button>
       </div>
     </div>
     
@@ -401,16 +401,16 @@
 
     async function triggerManualRebuild() {
       const status = document.getElementById('add-status');
-      status.innerText = "Triggering manual rebuild...";
+      status.innerText = "Resyncing library...";
       status.style.color = "var(--orange)";
       try {
         const res = await fetch('/api/curator/rebuild', { method: 'POST' });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
-        status.innerText = "Rebuild triggered!";
+        status.innerText = "Library resynced!";
         status.style.color = "var(--green)";
       } catch (err) {
-        status.innerText = "Rebuild failed: " + err.message;
+        status.innerText = "Resync failed: " + err.message;
         status.style.color = "var(--red)";
       }
     }

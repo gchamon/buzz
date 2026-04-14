@@ -361,7 +361,6 @@ class BuzzState:
         self.last_error = None
         self.sync_in_progress = False
         self.startup_sync_complete = False
-        self.hook_condition = threading.Condition()
         self.hook_pending_paths: list[str] = []
         self.hook_in_progress = False
         self.hook_last_started_at = None
@@ -473,8 +472,7 @@ class BuzzState:
                     self.hook_last_error = None
 
                 try:
-                    self._trigger_curator(paths)
-                    self._run_hook(paths)
+                    self._trigger_curator_and_hooks(paths, skip_delay=False)
                 except Exception as exc:  # noqa: BLE001
                     with self.hook_lock:
                         self.hook_last_error = str(exc)
@@ -487,6 +485,23 @@ class BuzzState:
             with self.hook_lock:
                 self.hook_task_active = False
 
+    def manual_rebuild(self) -> None:
+        """Manually trigger curator rebuild and library hooks without RD delay."""
+        with self.hook_lock:
+            self.hook_in_progress = True
+            self.hook_last_started_at = utc_now_iso()
+            self.hook_last_error = None
+        try:
+            self._trigger_curator_and_hooks([], skip_delay=True)
+        except Exception as exc:
+            with self.hook_lock:
+                self.hook_last_error = str(exc)
+            raise
+        finally:
+            with self.hook_lock:
+                self.hook_in_progress = False
+                self.hook_last_finished_at = utc_now_iso()
+
     def _summary_signature(self, summary: dict[str, Any]) -> dict[str, Any]:
         return {
             "filename": summary.get("filename"),
@@ -497,18 +512,23 @@ class BuzzState:
             "links": len(summary.get("links") or []),
         }
 
+    def _trigger_curator_and_hooks(
+        self, changed_roots: list[str], *, skip_delay: bool = False
+    ) -> None:
+        if not skip_delay and self.config.rd_update_delay_secs > 0:
+            self.verbose_log(
+                f"Waiting {self.config.rd_update_delay_secs}s for Real-Debrid update..."
+            )
+            time.sleep(self.config.rd_update_delay_secs)
+
+        self._trigger_curator(changed_roots)
+        self._run_hook(changed_roots)
+
     def _trigger_curator(self, changed_roots: list[str]) -> None:
         if not self.config.curator_url:
             return
         self.verbose_log(f"Triggering curator rebuild at {self.config.curator_url}...")
         try:
-            # Wait for Real-Debrid inventory to update/settle before triggering curator
-            if self.config.rd_update_delay_secs > 0:
-                self.verbose_log(
-                    f"Waiting {self.config.rd_update_delay_secs}s for Real-Debrid update..."
-                )
-                time.sleep(self.config.rd_update_delay_secs)
-
             req = request.Request(self.config.curator_url, method="POST")
             with request.urlopen(req, timeout=30) as response:
                 if response.status not in (200, 204):
@@ -837,7 +857,7 @@ class DavHandler(BaseHTTPRequestHandler):
 
         if self.path == "/api/curator/rebuild":
             try:
-                self.state._trigger_curator([])
+                self.state.manual_rebuild()
                 self._respond_json(HTTPStatus.OK, {"status": "success"})
             except Exception as exc:  # noqa: BLE001
                 self._respond_json(
