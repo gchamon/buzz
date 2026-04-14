@@ -94,6 +94,8 @@ class DavConfig(BaseModel):
     request_timeout_secs: int = 30
     user_agent: str = "buzz/0.1"
     version_label: str = "buzz/0.1"
+    curator_url: str = "http://buzz-curator:8400/rebuild"
+    curator_delay_secs: int = 2
     verbose: bool = False
 
     @classmethod
@@ -120,6 +122,10 @@ class DavConfig(BaseModel):
             port=int(server.get("port", 9999)),
             state_dir=str(raw.get("state_dir", "/app/data")),
             hook_command=str(hooks.get("on_library_change", "")).strip(),
+            curator_url=str(
+                hooks.get("curator_url", "http://buzz-curator:8400/rebuild")
+            ),
+            curator_delay_secs=int(hooks.get("curator_delay_secs", 2)),
             anime_patterns=tuple(anime.get("patterns", [DEFAULT_ANIME_PATTERN])),
             enable_all_dir=bool(compat.get("enable_all_dir", True)),
             enable_unplayable_dir=bool(compat.get("enable_unplayable_dir", True)),
@@ -466,6 +472,7 @@ class BuzzState:
                 self.hook_last_started_at = utc_now_iso()
                 self.hook_last_error = None
             try:
+                self._trigger_curator(paths)
                 self._run_hook(paths)
             except Exception as exc:  # noqa: BLE001
                 with self.hook_condition:
@@ -485,10 +492,30 @@ class BuzzState:
             "links": len(summary.get("links") or []),
         }
 
+    def _trigger_curator(self, changed_roots: list[str]) -> None:
+        if not self.config.curator_url:
+            return
+        if self.config.curator_delay_secs > 0:
+            self.verbose_log(
+                f"Waiting {self.config.curator_delay_secs}s for mount to settle..."
+            )
+            time.sleep(self.config.curator_delay_secs)
+        self.verbose_log(f"Triggering curator rebuild at {self.config.curator_url}...")
+        try:
+            req = request.Request(self.config.curator_url, method="POST")
+            with request.urlopen(req, timeout=30) as response:
+                if response.status not in (200, 204):
+                    raise ValueError(f"Curator returned HTTP {response.status}")
+                self.verbose_log("Curator rebuild triggered successfully")
+        except Exception as exc:
+            self.verbose_log(f"Curator rebuild failed: {exc}")
+            raise
+
     def _run_hook(self, changed_roots: list[str]) -> None:
         command = shlex.split(self.config.hook_command)
         if not command:
             return
+        self.verbose_log(f"Running hook command: {self.config.hook_command}")
         subprocess.run(command + changed_roots, check=True)
 
     def lookup(self, rel_path: str) -> dict[str, Any] | None:
@@ -795,6 +822,16 @@ class DavHandler(BaseHTTPRequestHandler):
                     return
                 result = self.state.delete_torrent(torrent_id)
                 self._respond_json(HTTPStatus.OK, result)
+            except Exception as exc:  # noqa: BLE001
+                self._respond_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}
+                )
+            return
+
+        if self.path == "/api/curator/rebuild":
+            try:
+                self.state._trigger_curator([])
+                self._respond_json(HTTPStatus.OK, {"status": "success"})
             except Exception as exc:  # noqa: BLE001
                 self._respond_json(
                     HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}

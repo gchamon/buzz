@@ -7,6 +7,7 @@ server:
 state_dir: /app/data
 hooks:
   on_library_change: "sh /app/media_update.sh"
+  curator_url: "http://buzz-curator:8400/rebuild"
 compat:
   enable_all_dir: true
   enable_unplayable_dir: true
