@@ -54,15 +54,91 @@
     }
     .label-red { color: var(--red); font-weight: bold; }
 
+    /* Add Torrent UI */
+    .add-torrent-section {
+      background: var(--selection);
+      padding: 15px;
+      border-radius: 4px;
+      margin-bottom: 24px;
+      border: 1px solid var(--comment);
+    }
+    .add-torrent-header {
+      color: var(--pink);
+      text-transform: uppercase;
+      font-size: 0.8rem;
+      letter-spacing: 1px;
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .input-group {
+      display: flex;
+      gap: 10px;
+    }
+    input[type="text"] {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--comment);
+      color: var(--fg);
+      padding: 8px 12px;
+      font-family: inherit;
+      outline: none;
+    }
+    input[type="text"]:focus { border-color: var(--purple); }
+    button {
+      background: var(--purple);
+      color: var(--bg);
+      border: none;
+      padding: 8px 16px;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: bold;
+      text-transform: uppercase;
+      font-size: 0.8rem;
+    }
+    button:hover { filter: brightness(1.1); }
+    button:disabled { background: var(--comment); cursor: not-allowed; }
+    button.secondary { background: var(--comment); color: var(--fg); }
+
+    #file-selection-area {
+      margin-top: 15px;
+      border-top: 1px solid var(--comment);
+      padding-top: 15px;
+      display: none;
+    }
+    .file-list {
+      max-height: 300px;
+      overflow-y: auto;
+      margin-bottom: 15px;
+      font-size: 0.8rem;
+    }
+    .file-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 4px 0;
+    }
+    .file-item:hover { background: rgba(255,255,255,0.05); }
+    .file-item input { accent-color: var(--purple); }
+    .file-info { display: flex; flex: 1; justify-content: space-between; }
+    .file-size { color: var(--cyan); }
+
+    .file-actions {
+      display: flex;
+      gap: 10px;
+    }
+
     .table-wrap { overflow-x: auto; }
     table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 0.85rem;
+      font-size: 0.8rem;
+      table-layout: fixed;
     }
     th {
       text-align: left;
-      padding: 8px;
+      padding: 8px 4px;
       border-bottom: 1px solid var(--selection);
       color: var(--pink);
       text-transform: uppercase;
@@ -70,19 +146,36 @@
       cursor: pointer;
       user-select: none;
       position: relative;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     th:hover { color: var(--purple); }
-    th.sort-asc::after { content: " ▲"; position: absolute; right: 0; }
-    th.sort-desc::after { content: " ▼"; position: absolute; right: 0; }
+    th.sort-asc::after { content: "▲"; font-size: 0.6rem; margin-left: 2px; }
+    th.sort-desc::after { content: "▼"; font-size: 0.6rem; margin-left: 2px; }
 
     td {
-      padding: 8px;
+      padding: 8px 4px;
       border-bottom: 1px solid rgba(68, 71, 90, 0.3);
       vertical-align: top;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     tr:hover { background: var(--selection); }
     
     .name { color: var(--fg); }
+    
+    /* Column widths */
+    th:nth-child(1), td:nth-child(1) { width: auto; } /* Name */
+    th:nth-child(2), td:nth-child(2) { width: 110px; } /* Status */
+    th:nth-child(3), td:nth-child(3) { width: 60px; }  /* Prog */
+    th:nth-child(4), td:nth-child(4) { width: 80px; }  /* Size */
+    th:nth-child(5), td:nth-child(5) { width: 60px; }  /* Files */
+    th:nth-child(6), td:nth-child(6) { width: 60px; }  /* Links */
+    th:nth-child(7), td:nth-child(7) { width: 150px; } /* Ended */
+    th:nth-child(8), td:nth-child(8) { width: 85px; }  /* ID */
+    th:nth-child(9), td:nth-child(9) { width: 70px; text-align: right; }  /* Act */
     .status { font-weight: bold; }
     .status-downloaded { color: var(--green); }
     .status-error { color: var(--red); }
@@ -94,6 +187,39 @@
     
     code { font-family: inherit; }
     .empty { color: var(--comment); text-align: center; padding: 40px; }
+
+    /* Deletion UI */
+    .delete-container {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .confirm-opts {
+      display: none;
+      flex-direction: column;
+      line-height: 1.3;
+      font-size: 0.7rem;
+      border-right: 1px solid var(--selection);
+      padding-right: 4px;
+      gap: 2px;
+    }
+    .opt { 
+      padding: 0 4px;
+      cursor: pointer;
+      text-align: center;
+    }
+    .opt-y { color: var(--comment); }
+    .opt-y:hover { color: var(--green); background: rgba(80, 250, 123, 0.1); }
+    .opt-n { color: var(--comment); }
+    .opt-n:hover { color: var(--orange); background: rgba(255, 184, 108, 0.1); }
+    .btn-x {
+      color: var(--comment);
+      cursor: pointer;
+      font-weight: bold;
+      padding: 2px 4px;
+    }
+    .btn-x:hover { color: var(--red); background: rgba(255, 85, 85, 0.1); }
     
     ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-track { background: var(--bg); }
@@ -112,6 +238,36 @@
     </div>
     
     {error_html}
+
+    <section class="add-torrent-section">
+      <div class="add-torrent-header">
+        <span>Add New Torrent</span>
+        <span id="add-status" style="text-transform: none; font-size: 0.7rem; color: var(--comment);"></span>
+      </div>
+      
+      <div id="magnet-input-area">
+        <div class="input-group">
+          <input type="text" id="magnet-input" placeholder="magnet:?xt=urn:btih:...">
+          <button id="resolve-btn" onclick="resolveMagnet()">Analyze</button>
+        </div>
+      </div>
+
+      <div id="file-selection-area">
+        <div class="add-torrent-header">
+          <span id="torrent-name-display" style="color: var(--fg); text-transform: none;"></span>
+        </div>
+        <div class="file-actions" style="margin-bottom: 10px;">
+          <button class="secondary" onclick="selectFiles('all')">All</button>
+          <button class="secondary" onclick="selectFiles('video')">Videos</button>
+          <button class="secondary" onclick="selectFiles('none')">None</button>
+        </div>
+        <div class="file-list" id="file-list"></div>
+        <div class="file-actions">
+          <button id="confirm-btn" onclick="confirmTorrent()">Cache Selected Files</button>
+          <button class="secondary" onclick="resetAddForm()">Cancel</button>
+        </div>
+      </div>
+    </section>
     
     <div class="table-wrap">
       <table id="torrent-table">
@@ -125,6 +281,7 @@
             <th onclick="sortTable(5)">Links</th>
             <th onclick="sortTable(6)">Ended</th>
             <th onclick="sortTable(7)">ID</th>
+            <th>Act</th>
           </tr>
         </thead>
         <tbody>
@@ -135,13 +292,157 @@
   </main>
 
   <script>
+    let currentTorrentId = null;
+
+    async function resolveMagnet() {
+      const magnet = document.getElementById('magnet-input').value.trim();
+      if (!magnet) return;
+
+      const btn = document.getElementById('resolve-btn');
+      const status = document.getElementById('add-status');
+      
+      btn.disabled = true;
+      status.innerText = "Resolving magnet...";
+      status.style.color = "var(--orange)";
+
+      try {
+        const res = await fetch('/api/torrents/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ magnet })
+        });
+        
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        if (data.already_exists) {
+          if (!confirm(`Torrent "${data.filename}" already exists. Do you want to continue?`)) {
+            resetAddForm();
+            return;
+          }
+        }
+
+        currentTorrentId = data.id;
+        document.getElementById('torrent-name-display').innerText = data.filename || "Torrent Files";
+        
+        const fileList = document.getElementById('file-list');
+        fileList.innerHTML = '';
+        
+        data.files.forEach(file => {
+          const div = document.createElement('div');
+          div.className = 'file-item';
+          const isVideo = /\.(mkv|mp4|avi|m4v|mov)$/i.test(file.path);
+          
+          div.innerHTML = `
+            <input type="checkbox" value="${file.id}" ${isVideo ? 'checked' : ''} data-video="${isVideo}">
+            <div class="file-info">
+              <span>${file.path}</span>
+              <span class="file-size">${formatBytes(file.bytes)}</span>
+            </div>
+          `;
+          fileList.appendChild(div);
+        });
+
+        document.getElementById('magnet-input-area').style.display = 'none';
+        document.getElementById('file-selection-area').style.display = 'block';
+        status.innerText = "Ready to cache";
+        status.style.color = "var(--green)";
+      } catch (err) {
+        status.innerText = "Error: " + err.message;
+        status.style.color = "var(--red)";
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function confirmTorrent() {
+      const checkboxes = document.querySelectorAll('#file-list input[type="checkbox"]:checked');
+      const fileIds = Array.from(checkboxes).map(cb => cb.value);
+      
+      if (fileIds.length === 0) {
+        alert("Please select at least one file");
+        return;
+      }
+
+      const btn = document.getElementById('confirm-btn');
+      const status = document.getElementById('add-status');
+      
+      btn.disabled = true;
+      status.innerText = "Starting cache...";
+
+      try {
+        const res = await fetch('/api/torrents/select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ torrent_id: currentTorrentId, file_ids: fileIds })
+        });
+        
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        status.innerText = "Torrent added! Refreshing...";
+        status.style.color = "var(--green)";
+        
+        // Trigger sync and refresh page
+        await fetch('/sync', { method: 'POST' });
+        setTimeout(() => location.reload(), 1000);
+      } catch (err) {
+        status.innerText = "Error: " + err.message;
+        status.style.color = "var(--red)";
+        btn.disabled = false;
+      }
+    }
+
+    function selectFiles(type) {
+      const checkboxes = document.querySelectorAll('#file-list input[type="checkbox"]');
+      checkboxes.forEach(cb => {
+        if (type === 'all') cb.checked = true;
+        else if (type === 'none') cb.checked = false;
+        else if (type === 'video') cb.checked = cb.dataset.video === 'true';
+      });
+    }
+
+    function resetAddForm() {
+      currentTorrentId = null;
+      document.getElementById('magnet-input').value = '';
+      document.getElementById('magnet-input-area').style.display = 'block';
+      document.getElementById('file-selection-area').style.display = 'none';
+      document.getElementById('add-status').innerText = '';
+    }
+
+    function toggleDelete(id, show) {
+      document.getElementById('confirm-' + id).style.display = show ? 'flex' : 'none';
+    }
+
+    async function deleteTorrent(id) {
+      try {
+        const res = await fetch('/api/torrents/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ torrent_id: id })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        location.reload();
+      } catch (err) {
+        alert("Delete failed: " + err.message);
+      }
+    }
+
+    function formatBytes(bytes) {
+      if (bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
     function sortTable(n) {
       const table = document.getElementById("torrent-table");
       let rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
       switching = true;
       dir = "asc";
       
-      // Update header styles
       const headers = table.getElementsByTagName("th");
       for (let h = 0; h < headers.length; h++) {
         if (h === n) {
@@ -171,7 +472,6 @@
           let valX = x.getAttribute("data-value") || x.innerText.toLowerCase();
           let valY = y.getAttribute("data-value") || y.innerText.toLowerCase();
           
-          // Try to treat as number if possible
           const numX = parseFloat(valX);
           const numY = parseFloat(valY);
           if (!isNaN(numX) && !isNaN(numY)) {

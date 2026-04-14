@@ -543,6 +543,56 @@ class BuzzState:
             )
         return payload
 
+    def add_magnet(self, magnet: str) -> dict[str, Any]:
+        res = self.client.torrents.add_magnet(magnet).json()
+        torrent_id = res.get("id")
+        if not torrent_id:
+            raise ValueError(f"Failed to add magnet: {res}")
+
+        # Get info to retrieve file list
+        info = self.client.torrents.info(torrent_id).json()
+        filename = info.get("filename")
+
+        # Check if already exists in cache
+        already_exists = False
+        with self.lock:
+            for cached in self.cache.values():
+                cached_info = cached.get("info", {})
+                if (
+                    cached_info.get("filename") == filename
+                    or cached_info.get("original_filename") == filename
+                ):
+                    already_exists = True
+                    break
+
+        return {
+            "id": torrent_id,
+            "filename": filename,
+            "files": info.get("files", []),
+            "already_exists": already_exists,
+        }
+
+    def delete_torrent(self, torrent_id: str) -> dict[str, Any]:
+        res = self.client.torrents.delete(torrent_id)
+        if res.status_code not in (200, 204):
+            raise ValueError(f"Failed to delete torrent: {res.text}")
+
+        # Remove from cache immediately to reflect in UI
+        with self.lock:
+            if torrent_id in self.cache:
+                del self.cache[torrent_id]
+                self._write_json(self.cache_path, self.cache)
+
+        return {"status": "success"}
+
+    def select_files(self, torrent_id: str, file_ids: list[str]) -> dict[str, Any]:
+        files_str = ",".join(map(str, file_ids))
+        res = self.client.torrents.select_files(torrent_id, files_str)
+        # RD API returns 204 No Content on success for select_files
+        if res.status_code not in (200, 204):
+            raise ValueError(f"Failed to select files: {res.text}")
+        return {"status": "success"}
+
     def resolve_download_url(
         self, source_url: str, *, force_refresh: bool = False
     ) -> str:
@@ -687,16 +737,78 @@ class DavHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
-        if self.path != "/sync":
-            self.send_error(HTTPStatus.NOT_FOUND)
+        if self.path == "/sync":
+            try:
+                report = self.state.sync()
+                self._respond_json(HTTPStatus.OK, report)
+            except Exception as exc:  # noqa: BLE001
+                self.state.last_error = str(exc)
+                self._respond_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}
+                )
             return
-        try:
-            report = self.state.sync()
-        except Exception as exc:  # noqa: BLE001
-            self.state.last_error = str(exc)
-            self._respond_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
+        if self.path == "/api/torrents/add":
+            try:
+                data = self._read_json_body()
+                magnet = data.get("magnet")
+                if not magnet:
+                    self._respond_json(
+                        HTTPStatus.BAD_REQUEST, {"error": "Missing magnet link"}
+                    )
+                    return
+                result = self.state.add_magnet(magnet)
+                self._respond_json(HTTPStatus.OK, result)
+            except Exception as exc:  # noqa: BLE001
+                self._respond_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}
+                )
             return
-        self._respond_json(HTTPStatus.OK, report)
+
+        if self.path == "/api/torrents/select":
+            try:
+                data = self._read_json_body()
+                torrent_id = data.get("torrent_id")
+                file_ids = data.get("file_ids")
+                if not torrent_id or file_ids is None:
+                    self._respond_json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "Missing torrent_id or file_ids"},
+                    )
+                    return
+                result = self.state.select_files(torrent_id, file_ids)
+                self._respond_json(HTTPStatus.OK, result)
+            except Exception as exc:  # noqa: BLE001
+                self._respond_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}
+                )
+            return
+
+        if self.path == "/api/torrents/delete":
+            try:
+                data = self._read_json_body()
+                torrent_id = data.get("torrent_id")
+                if not torrent_id:
+                    self._respond_json(
+                        HTTPStatus.BAD_REQUEST, {"error": "Missing torrent_id"}
+                    )
+                    return
+                result = self.state.delete_torrent(torrent_id)
+                self._respond_json(HTTPStatus.OK, result)
+            except Exception as exc:  # noqa: BLE001
+                self._respond_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}
+                )
+            return
+
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _read_json_body(self) -> dict[str, Any]:
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0:
+            return {}
+        body = self.rfile.read(content_length)
+        return json.loads(body.decode("utf-8"))
 
     def do_PROPFIND(self) -> None:
         if not self.path.startswith("/dav"):
@@ -946,6 +1058,7 @@ class DavHandler(BaseHTTPRequestHandler):
         torrents = self.state.torrents()
         rows = []
         for torrent in torrents:
+            torrent_id = torrent["id"]
             rows.append(
                 "<tr>"
                 f"<td class='name'>{html_escape(torrent['name'])}</td>"
@@ -955,7 +1068,16 @@ class DavHandler(BaseHTTPRequestHandler):
                 f"<td>{html_escape(torrent['selected_files'])}</td>"
                 f"<td>{html_escape(torrent['links'])}</td>"
                 f"<td class='comment'>{html_escape(torrent['ended'] or '-')}</td>"
-                f"<td class='yellow'><code>{html_escape(torrent['id'][:8])}</code></td>"
+                f"<td class='yellow'><code>{html_escape(torrent_id[:8])}</code></td>"
+                "<td>"
+                f'<div class="delete-container">'
+                f'<div class="confirm-opts" id="confirm-{torrent_id}">'
+                f'<div class="opt opt-y" onclick="deleteTorrent(\'{torrent_id}\')">[Y]</div>'
+                f'<div class="opt opt-n" onclick="toggleDelete(\'{torrent_id}\', false)">[N]</div>'
+                "</div>"
+                f'<div class="btn-x" id="btn-x-{torrent_id}" onclick="toggleDelete(\'{torrent_id}\', true)">[X]</div>'
+                "</div>"
+                "</td>"
                 "</tr>"
             )
         if not rows:
