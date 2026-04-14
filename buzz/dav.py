@@ -163,7 +163,7 @@ class LibraryBuilder:
             "torrents": len(infos),
             "generated_at": utc_now_iso(),
         }
-        changed_roots: set[str] = set()
+        current_roots: set[str] = set()
         for info in infos:
             torrent_name = self._torrent_name(info)
             selected = self._selected_files(info)
@@ -180,7 +180,7 @@ class LibraryBuilder:
                     self._add_tree(
                         files, dirs, "__all__", torrent_name, linked_playable
                     )
-                changed_roots.add(f"{category}/{torrent_name}")
+                current_roots.add(f"{category}/{torrent_name}")
                 if category == "movies":
                     report["movies"] += len(linked_playable)
                 elif category == "shows":
@@ -193,7 +193,7 @@ class LibraryBuilder:
                     files, dirs, torrent_name, selected, reason
                 )
                 if count:
-                    changed_roots.add(f"__unplayable__/{torrent_name}")
+                    current_roots.add(f"__unplayable__/{torrent_name}")
                     report["unplayable_files"] += count
 
         snapshot = {
@@ -202,7 +202,7 @@ class LibraryBuilder:
             "files": files,
             "report": report,
         }
-        return snapshot, sorted(changed_roots)
+        return snapshot, sorted(current_roots)
 
     def _selected_files(self, info: dict[str, Any]) -> list[dict[str, Any]]:
         selected = [item for item in info.get("files", []) if item.get("selected")]
@@ -384,6 +384,51 @@ class BuzzState:
             json.dump(payload, handle, indent=2, sort_keys=True)
         os.replace(tmp, path)
 
+    def _root_for_snapshot_path(self, path: str) -> str | None:
+        normalized = normalize_posix_path(path)
+        if not normalized:
+            return None
+        parts = tuple(part for part in normalized.split("/") if part)
+        if len(parts) < 2:
+            return None
+        if parts[0] == "__all__":
+            return None
+        if parts[0] not in {"movies", "shows", "anime", "__unplayable__"}:
+            return None
+        return "/".join(parts[:2])
+
+    def _snapshot_root_signatures(self, snapshot: dict[str, Any]) -> dict[str, str]:
+        root_entries: dict[str, dict[str, Any]] = {}
+        canonical = canonical_snapshot(snapshot)
+        for path, node in canonical.get("files", {}).items():
+            root = self._root_for_snapshot_path(path)
+            if not root:
+                continue
+            rel = path[len(root) + 1 :]
+            entries = root_entries.setdefault(root, {})
+            entries[rel] = node
+        return {
+            root: stable_json(entries) for root, entries in root_entries.items()
+        }
+
+    def _classified_changed_roots(
+        self, previous_snapshot: dict[str, Any], new_snapshot: dict[str, Any]
+    ) -> dict[str, list[str]]:
+        previous = self._snapshot_root_signatures(previous_snapshot)
+        current = self._snapshot_root_signatures(new_snapshot)
+        added = sorted(root for root in current if root not in previous)
+        removed = sorted(root for root in previous if root not in current)
+        updated = sorted(
+            root
+            for root in set(previous) & set(current)
+            if previous[root] != current[root]
+        )
+        return {
+            "added_paths": added,
+            "removed_paths": removed,
+            "updated_paths": updated,
+        }
+
     def sync(self, *, trigger_hook: bool = True) -> dict[str, Any]:
         hook_paths: list[str] = []
         with self.lock:
@@ -410,14 +455,31 @@ class BuzzState:
                 new_cache[torrent_id] = {"signature": signature, "info": info}
                 infos.append(info)
 
-            snapshot, changed_roots = self.builder.build(infos)
+            snapshot, _current_roots = self.builder.build(infos)
             digest = stable_json(canonical_snapshot(snapshot))
 
             with self.lock:
                 changed = digest != self.snapshot_digest
+                classified_changes = (
+                    self._classified_changed_roots(self.snapshot, snapshot)
+                    if changed
+                    else {
+                        "added_paths": [],
+                        "removed_paths": [],
+                        "updated_paths": [],
+                    }
+                )
+                changed_paths = sorted(
+                    {
+                        *classified_changes["added_paths"],
+                        *classified_changes["removed_paths"],
+                        *classified_changes["updated_paths"],
+                    }
+                )
                 report = dict(snapshot["report"])
                 report["changed"] = changed
-                report["changed_paths"] = changed_roots if changed else []
+                report["changed_paths"] = changed_paths
+                report.update(classified_changes)
                 report["synced_torrents"] = len(infos)
                 report["timestamp"] = utc_now_iso()
 
@@ -430,7 +492,7 @@ class BuzzState:
                     self._write_json(self.snapshot_path, self.snapshot)
                     self.snapshot_loaded = True
                     if trigger_hook and self.config.hook_command:
-                        hook_paths = changed_roots
+                        hook_paths = changed_paths
 
                 self.last_sync_at = report["timestamp"]
                 self.last_report = report
@@ -1209,7 +1271,9 @@ class Poller(threading.Thread):
                                 "event": "realdebrid_update",
                                 "timestamp": report.get("timestamp"),
                                 "synced_torrents": report.get("synced_torrents"),
-                                "changed_paths": report.get("changed_paths", []),
+                                "added_paths": report.get("added_paths", []),
+                                "removed_paths": report.get("removed_paths", []),
+                                "updated_paths": report.get("updated_paths", []),
                             },
                             sort_keys=True,
                         ),
