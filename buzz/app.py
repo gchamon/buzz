@@ -24,6 +24,7 @@ from xml.sax.saxutils import escape
 
 import yaml
 from pydantic import BaseModel, Field
+from rdapi import RD
 
 
 VIDEO_EXTENSIONS = {
@@ -207,56 +208,6 @@ class Config(BaseModel):
             version_label=str(raw.get("version_label", "buzz/0.1")),
             verbose=bool(logging.get("verbose", False)),
         )
-
-
-class RealDebridClient:
-    def __init__(self, config: Config):
-        self.config = config
-        self.base_url = "https://api.real-debrid.com/rest/1.0"
-
-    def _request_json(
-        self, path: str, *, method: str = "GET", data: bytes | None = None
-    ) -> Any:
-        headers = {
-            "Authorization": f"Bearer {self.config.token}",
-            "User-Agent": self.config.user_agent,
-            "Accept": "application/json",
-        }
-        if data is not None:
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
-        req = request.Request(
-            self.base_url + path,
-            data=data,
-            method=method,
-            headers=headers,
-        )
-        with request.urlopen(req, timeout=self.config.request_timeout_secs) as response:
-            return json.load(response)
-
-    def list_torrents(self) -> list[dict[str, Any]]:
-        payload = self._request_json("/torrents")
-        if not isinstance(payload, list):
-            raise ValueError("Unexpected response for /torrents")
-        return payload
-
-    def torrent_info(self, torrent_id: str) -> dict[str, Any]:
-        payload = self._request_json(f"/torrents/info/{parse.quote(torrent_id)}")
-        if not isinstance(payload, dict):
-            raise ValueError(f"Unexpected response for torrent {torrent_id}")
-        return payload
-
-    def unrestrict_link(self, link: str) -> str:
-        payload = self._request_json(
-            "/unrestrict/link",
-            method="POST",
-            data=parse.urlencode({"link": link}).encode("utf-8"),
-        )
-        if not isinstance(payload, dict):
-            raise ValueError("Unexpected response for /unrestrict/link")
-        download = str(payload.get("download", "")).strip()
-        if not download:
-            raise ValueError("Missing download URL from /unrestrict/link")
-        return download
 
 
 class LibraryBuilder:
@@ -465,7 +416,7 @@ class LibraryBuilder:
 
 
 class BuzzState:
-    def __init__(self, config: Config, client: RealDebridClient):
+    def __init__(self, config: Config, client: RD):
         self.config = config
         self.client = client
         self.builder = LibraryBuilder(config)
@@ -517,7 +468,7 @@ class BuzzState:
         with self.lock:
             self.sync_in_progress = True
         try:
-            summaries = self.client.list_torrents()
+            summaries = self.client.torrents.get().json()
             new_cache: dict[str, dict[str, Any]] = {}
             infos: list[dict[str, Any]] = []
             for summary in summaries:
@@ -534,7 +485,7 @@ class BuzzState:
                 ):
                     info = cached["info"]
                 else:
-                    info = self.client.torrent_info(torrent_id)
+                    info = self.client.torrents.info(torrent_id).json()
                 new_cache[torrent_id] = {"signature": signature, "info": info}
                 infos.append(info)
 
@@ -685,7 +636,9 @@ class BuzzState:
                     return download_url
         if self.client is None:
             raise ValueError("Real-Debrid client unavailable")
-        download_url = self.client.unrestrict_link(source_url)
+        download_url = self.client.unrestrict.link(source_url).json().get("download")
+        if not download_url:
+            raise ValueError("Missing download URL from /unrestrict/link")
         with self.lock:
             self.resolved_urls[source_url] = {
                 "download_url": download_url,
@@ -1302,7 +1255,8 @@ class InitialSync(threading.Thread):
 
 def main() -> None:
     config = Config.load()
-    client = RealDebridClient(config)
+    os.environ["RD_APITOKEN"] = config.token
+    client = RD()
     state = BuzzState(config, client)
     Handler.state = state
     server = ThreadingHTTPServer((config.bind, config.port), Handler)
