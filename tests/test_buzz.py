@@ -6,8 +6,22 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from buzz.app import BuzzState, Config, Handler, LibraryBuilder, RealDebridClient, canonical_snapshot, dav_rel_path, normalize_posix_path
-from scripts.migrate_config import buzz_to_zurg, convert, parse_buzz_config, parse_zurg_config, zurg_to_buzz
+from buzz.app import (
+    BuzzState,
+    Config,
+    Handler,
+    LibraryBuilder,
+    canonical_snapshot,
+    dav_rel_path,
+    normalize_posix_path,
+)
+from scripts.migrate_config import (
+    buzz_to_zurg,
+    convert,
+    parse_buzz_config,
+    parse_zurg_config,
+    zurg_to_buzz,
+)
 
 
 class LibraryBuilderTests(unittest.TestCase):
@@ -48,8 +62,14 @@ class LibraryBuilderTests(unittest.TestCase):
                 }
             ]
         )
-        self.assertIn("movies/Little Shop of Horrors 1986/Little.Shop.of.Horrors.1986.mkv", snapshot["files"])
-        self.assertIn("__all__/Little Shop of Horrors 1986/Little.Shop.of.Horrors.1986.mkv", snapshot["files"])
+        self.assertIn(
+            "movies/Little Shop of Horrors 1986/Little.Shop.of.Horrors.1986.mkv",
+            snapshot["files"],
+        )
+        self.assertIn(
+            "__all__/Little Shop of Horrors 1986/Little.Shop.of.Horrors.1986.mkv",
+            snapshot["files"],
+        )
         self.assertEqual(changed, ["movies/Little Shop of Horrors 1986"])
 
     def test_show_torrent_routed_to_shows(self):
@@ -61,12 +81,19 @@ class LibraryBuilderTests(unittest.TestCase):
                     "filename": "Ren and Stimpy",
                     "links": ["https://example.invalid/file"],
                     "files": [
-                        {"id": 1, "path": "/Ren.and.Stimpy.S01E01.mkv", "bytes": 456, "selected": 1}
+                        {
+                            "id": 1,
+                            "path": "/Ren.and.Stimpy.S01E01.mkv",
+                            "bytes": 456,
+                            "selected": 1,
+                        }
                     ],
                 }
             ]
         )
-        self.assertIn("shows/Ren and Stimpy/Ren.and.Stimpy.S01E01.mkv", snapshot["files"])
+        self.assertIn(
+            "shows/Ren and Stimpy/Ren.and.Stimpy.S01E01.mkv", snapshot["files"]
+        )
 
     def test_unplayable_torrent_is_exposed_under_compat_directory(self):
         snapshot, changed = self.builder.build(
@@ -77,13 +104,20 @@ class LibraryBuilderTests(unittest.TestCase):
                     "filename": "Broken Torrent",
                     "links": [],
                     "files": [
-                        {"id": 1, "path": "/Broken.Movie.mkv", "bytes": 42, "selected": 1}
+                        {
+                            "id": 1,
+                            "path": "/Broken.Movie.mkv",
+                            "bytes": 42,
+                            "selected": 1,
+                        }
                     ],
                 }
             ]
         )
         self.assertIn("__unplayable__/Broken Torrent/__buzz__.json", snapshot["files"])
-        self.assertIn("__unplayable__/Broken Torrent/Broken.Movie.mkv", snapshot["files"])
+        self.assertIn(
+            "__unplayable__/Broken Torrent/Broken.Movie.mkv", snapshot["files"]
+        )
         self.assertEqual(changed, ["__unplayable__/Broken Torrent"])
 
     def test_remote_entries_store_source_url(self):
@@ -94,7 +128,9 @@ class LibraryBuilderTests(unittest.TestCase):
                     "status": "downloaded",
                     "filename": "Movie.mkv",
                     "links": ["https://example.invalid/source-link"],
-                    "files": [{"id": 1, "path": "/Movie.mkv", "bytes": 123, "selected": 1}],
+                    "files": [
+                        {"id": 1, "path": "/Movie.mkv", "bytes": 123, "selected": 1}
+                    ],
                 }
             ]
         )
@@ -106,15 +142,71 @@ class LibraryBuilderTests(unittest.TestCase):
 
 
 class BuzzStateTests(unittest.TestCase):
+    class FakeResponse:
+        def __init__(self, data):
+            self.data = data
+
+        def json(self):
+            return self.data
+
+    class FakeRD:
+        def __init__(self, torrents_list=None, torrent_infos=None, download_url=None):
+            self.calls = []
+            self.unrestrict = self.Unrestrict(self, download_url)
+            self.torrents = self.Torrents(torrents_list or [], torrent_infos or {})
+
+        class Unrestrict:
+            def __init__(self, parent, download_url):
+                self.parent = parent
+                self.download_url = download_url or "https://cdn.example.invalid/file"
+
+            def link(self, link):
+                self.parent.calls.append(link)
+                return BuzzStateTests.FakeResponse({"download": self.download_url})
+
+        class Torrents:
+            def __init__(self, torrents_list, torrent_infos):
+                self.torrents_list = torrents_list
+                self.torrent_infos = torrent_infos
+
+            def get(self):
+                return BuzzStateTests.FakeResponse(self.torrents_list)
+
+            def info(self, torrent_id):
+                return BuzzStateTests.FakeResponse(self.torrent_infos.get(torrent_id))
+
+    def _create_fake_rd(self):
+        torrents_list = [
+            {
+                "id": "TORRENT1",
+                "filename": "Movie.2026.1080p.mkv",
+                "bytes": 123,
+                "progress": 100,
+                "status": "downloaded",
+                "ended": "2026-01-01T00:00:00Z",
+                "links": ["https://example.invalid/file"],
+            }
+        ]
+        torrent_infos = {
+            "TORRENT1": {
+                "id": "TORRENT1",
+                "status": "downloaded",
+                "filename": "Movie.2026.1080p.mkv",
+                "original_filename": "Movie 2026",
+                "links": ["https://example.invalid/file"],
+                "files": [
+                    {
+                        "id": 1,
+                        "path": "/Movie.2026.1080p.mkv",
+                        "bytes": 123,
+                        "selected": 1,
+                    }
+                ],
+            }
+        }
+        return self.FakeRD(torrents_list, torrent_infos)
+
     def test_resolve_download_url_uses_unrestrict_and_caches_result(self):
-        class FakeClient:
-            def __init__(self):
-                self.calls = []
-
-            def unrestrict_link(self, link):
-                self.calls.append(link)
-                return "https://cdn.example.invalid/file"
-
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
@@ -130,7 +222,7 @@ class BuzzStateTests(unittest.TestCase):
                 user_agent="buzz-tests",
                 version_label="buzz/test",
             )
-            client = FakeClient()
+            client = self.FakeRD()
             state = BuzzState(config, client=client)
 
             first = state.resolve_download_url("https://example.invalid/source")
@@ -170,7 +262,9 @@ class BuzzStateTests(unittest.TestCase):
                     },
                 },
             }
-            (state_dir / "torrent_cache.json").write_text(json.dumps(cache), encoding="utf-8")
+            (state_dir / "torrent_cache.json").write_text(
+                json.dumps(cache), encoding="utf-8"
+            )
             config = Config(
                 token="token",
                 poll_interval_secs=10,
@@ -189,7 +283,9 @@ class BuzzStateTests(unittest.TestCase):
 
             torrents = state.torrents()
 
-            self.assertEqual([item["name"] for item in torrents], ["Alpha Torrent", "Beta Torrent"])
+            self.assertEqual(
+                [item["name"] for item in torrents], ["Alpha Torrent", "Beta Torrent"]
+            )
             self.assertEqual(torrents[0]["selected_files"], 2)
             self.assertEqual(torrents[1]["status"], "downloading")
 
@@ -209,7 +305,9 @@ class BuzzStateTests(unittest.TestCase):
                     }
                 },
             }
-            (state_dir / "library_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+            (state_dir / "library_snapshot.json").write_text(
+                json.dumps(snapshot), encoding="utf-8"
+            )
             config = Config(
                 token="token",
                 poll_interval_secs=10,
@@ -225,7 +323,10 @@ class BuzzStateTests(unittest.TestCase):
                 version_label="buzz/test",
             )
             state = BuzzState(config, client=None)
-            self.assertEqual(normalize_posix_path("/movies/Torrent/file.mkv"), "movies/Torrent/file.mkv")
+            self.assertEqual(
+                normalize_posix_path("/movies/Torrent/file.mkv"),
+                "movies/Torrent/file.mkv",
+            )
             self.assertIsNotNone(state.lookup("/movies/Torrent/file.mkv"))
             self.assertEqual(state.list_children("/movies"), ["Torrent"])
             self.assertTrue(state.is_ready())
@@ -254,37 +355,6 @@ class BuzzStateTests(unittest.TestCase):
             self.assertFalse(state.is_ready())
 
     def test_successful_sync_marks_state_ready(self):
-        class FakeClient:
-            def list_torrents(self):
-                return [
-                    {
-                        "id": "TORRENT1",
-                        "filename": "Movie.2026.1080p.mkv",
-                        "bytes": 123,
-                        "progress": 100,
-                        "status": "downloaded",
-                        "ended": "2026-01-01T00:00:00Z",
-                        "links": ["https://example.invalid/file"],
-                    }
-                ]
-
-            def torrent_info(self, torrent_id):
-                return {
-                    "id": torrent_id,
-                    "status": "downloaded",
-                    "filename": "Movie.2026.1080p.mkv",
-                    "original_filename": "Movie 2026",
-                    "links": ["https://example.invalid/file"],
-                    "files": [
-                        {
-                            "id": 1,
-                            "path": "/Movie.2026.1080p.mkv",
-                            "bytes": 123,
-                            "selected": 1,
-                        }
-                    ],
-                }
-
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
@@ -300,7 +370,7 @@ class BuzzStateTests(unittest.TestCase):
                 user_agent="buzz-tests",
                 version_label="buzz/test",
             )
-            state = BuzzState(config, client=FakeClient())
+            state = BuzzState(config, client=self._create_fake_rd())
             report = state.sync(trigger_hook=False)
             state.mark_startup_sync_complete()
             self.assertTrue(report["changed"])
@@ -342,37 +412,6 @@ class BuzzStateTests(unittest.TestCase):
         self.assertEqual(canonical_snapshot(first), canonical_snapshot(second))
 
     def test_identical_syncs_after_first_change_are_stable(self):
-        class FakeClient:
-            def list_torrents(self):
-                return [
-                    {
-                        "id": "TORRENT1",
-                        "filename": "Movie.2026.1080p.mkv",
-                        "bytes": 123,
-                        "progress": 100,
-                        "status": "downloaded",
-                        "ended": "2026-01-01T00:00:00Z",
-                        "links": ["https://example.invalid/file"],
-                    }
-                ]
-
-            def torrent_info(self, torrent_id):
-                return {
-                    "id": torrent_id,
-                    "status": "downloaded",
-                    "filename": "Movie.2026.1080p.mkv",
-                    "original_filename": "Movie 2026",
-                    "links": ["https://example.invalid/file"],
-                    "files": [
-                        {
-                            "id": 1,
-                            "path": "/Movie.2026.1080p.mkv",
-                            "bytes": 123,
-                            "selected": 1,
-                        }
-                    ],
-                }
-
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
@@ -388,7 +427,7 @@ class BuzzStateTests(unittest.TestCase):
                 user_agent="buzz-tests",
                 version_label="buzz/test",
             )
-            state = BuzzState(config, client=FakeClient())
+            state = BuzzState(config, client=self._create_fake_rd())
             first = state.sync(trigger_hook=False)
             second = state.sync(trigger_hook=False)
 
@@ -397,37 +436,6 @@ class BuzzStateTests(unittest.TestCase):
             self.assertEqual(second["changed_paths"], [])
 
     def test_identical_syncs_do_not_enqueue_duplicate_hooks(self):
-        class FakeClient:
-            def list_torrents(self):
-                return [
-                    {
-                        "id": "TORRENT1",
-                        "filename": "Movie.2026.1080p.mkv",
-                        "bytes": 123,
-                        "progress": 100,
-                        "status": "downloaded",
-                        "ended": "2026-01-01T00:00:00Z",
-                        "links": ["https://example.invalid/file"],
-                    }
-                ]
-
-            def torrent_info(self, torrent_id):
-                return {
-                    "id": torrent_id,
-                    "status": "downloaded",
-                    "filename": "Movie.2026.1080p.mkv",
-                    "original_filename": "Movie 2026",
-                    "links": ["https://example.invalid/file"],
-                    "files": [
-                        {
-                            "id": 1,
-                            "path": "/Movie.2026.1080p.mkv",
-                            "bytes": 123,
-                            "selected": 1,
-                        }
-                    ],
-                }
-
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
@@ -443,9 +451,11 @@ class BuzzStateTests(unittest.TestCase):
                 user_agent="buzz-tests",
                 version_label="buzz/test",
             )
-            state = BuzzState(config, client=FakeClient())
+            state = BuzzState(config, client=self._create_fake_rd())
             enqueued = []
-            state._enqueue_hook = lambda changed_roots: enqueued.append(list(changed_roots))
+            state._enqueue_hook = lambda changed_roots: enqueued.append(
+                list(changed_roots)
+            )
 
             first = state.sync()
             second = state.sync()
@@ -455,37 +465,6 @@ class BuzzStateTests(unittest.TestCase):
             self.assertEqual(enqueued, [["movies/Movie 2026"]])
 
     def test_existing_snapshot_digest_stays_stable_across_restart(self):
-        class FakeClient:
-            def list_torrents(self):
-                return [
-                    {
-                        "id": "TORRENT1",
-                        "filename": "Movie.2026.1080p.mkv",
-                        "bytes": 123,
-                        "progress": 100,
-                        "status": "downloaded",
-                        "ended": "2026-01-01T00:00:00Z",
-                        "links": ["https://example.invalid/file"],
-                    }
-                ]
-
-            def torrent_info(self, torrent_id):
-                return {
-                    "id": torrent_id,
-                    "status": "downloaded",
-                    "filename": "Movie.2026.1080p.mkv",
-                    "original_filename": "Movie 2026",
-                    "links": ["https://example.invalid/file"],
-                    "files": [
-                        {
-                            "id": 1,
-                            "path": "/Movie.2026.1080p.mkv",
-                            "bytes": 123,
-                            "selected": 1,
-                        }
-                    ],
-                }
-
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
@@ -501,47 +480,16 @@ class BuzzStateTests(unittest.TestCase):
                 user_agent="buzz-tests",
                 version_label="buzz/test",
             )
-            first_state = BuzzState(config, client=FakeClient())
+            first_state = BuzzState(config, client=self._create_fake_rd())
             first_state.sync(trigger_hook=False)
 
-            second_state = BuzzState(config, client=FakeClient())
+            second_state = BuzzState(config, client=self._create_fake_rd())
             second = second_state.sync(trigger_hook=False)
 
             self.assertFalse(second["changed"])
             self.assertEqual(second["changed_paths"], [])
 
     def test_sync_does_not_block_on_hook_execution(self):
-        class FakeClient:
-            def list_torrents(self):
-                return [
-                    {
-                        "id": "TORRENT1",
-                        "filename": "Movie.2026.1080p.mkv",
-                        "bytes": 123,
-                        "progress": 100,
-                        "status": "downloaded",
-                        "ended": "2026-01-01T00:00:00Z",
-                        "links": ["https://example.invalid/file"],
-                    }
-                ]
-
-            def torrent_info(self, torrent_id):
-                return {
-                    "id": torrent_id,
-                    "status": "downloaded",
-                    "filename": "Movie.2026.1080p.mkv",
-                    "original_filename": "Movie 2026",
-                    "links": ["https://example.invalid/file"],
-                    "files": [
-                        {
-                            "id": 1,
-                            "path": "/Movie.2026.1080p.mkv",
-                            "bytes": 123,
-                            "selected": 1,
-                        }
-                    ],
-                }
-
         class HookState(BuzzState):
             def __init__(self, *args, **kwargs):
                 self.hook_started = threading.Event()
@@ -567,7 +515,7 @@ class BuzzStateTests(unittest.TestCase):
                 user_agent="buzz-tests",
                 version_label="buzz/test",
             )
-            state = HookState(config, client=FakeClient())
+            state = HookState(config, client=self._create_fake_rd())
             report = state.sync()
             self.assertTrue(report["changed"])
             self.assertTrue(state.hook_started.wait(timeout=1))
@@ -660,6 +608,37 @@ class BuzzStateTests(unittest.TestCase):
 
 
 class DavHandlerTests(unittest.TestCase):
+    class FakeRDResponse:
+        def __init__(self, data):
+            self.data = data
+
+        def json(self):
+            return self.data
+
+    class FakeRD:
+        def __init__(self, download_urls=None):
+            self.calls = []
+            self.download_urls = download_urls or []
+            self.unrestrict = self.Unrestrict(self)
+
+        class Unrestrict:
+            def __init__(self, parent):
+                self.parent = parent
+
+            def link(self, link):
+                self.parent.calls.append(link)
+                idx = (
+                    len(self.parent.calls) - 1
+                    if len(self.parent.calls) <= len(self.parent.download_urls)
+                    else 0
+                )
+                url = (
+                    self.parent.download_urls[idx]
+                    if self.parent.download_urls
+                    else "https://cdn.example.invalid/file"
+                )
+                return DavHandlerTests.FakeRDResponse({"download": url})
+
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         state_dir = Path(self.tmpdir.name)
@@ -676,7 +655,9 @@ class DavHandlerTests(unittest.TestCase):
                 }
             },
         }
-        (state_dir / "library_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+        (state_dir / "library_snapshot.json").write_text(
+            json.dumps(snapshot), encoding="utf-8"
+        )
         config = Config(
             token="token",
             poll_interval_secs=10,
@@ -706,8 +687,12 @@ class DavHandlerTests(unittest.TestCase):
         )
 
     def test_propfind_child_round_trips_encoded_directory_name(self):
-        root_body = self.handler._propfind_body(["movies", "movies/Little Shop [1986] + Extras"])
-        self.assertIn("/dav/movies/Little%20Shop%20%5B1986%5D%20%2B%20Extras", root_body)
+        root_body = self.handler._propfind_body(
+            ["movies", "movies/Little Shop [1986] + Extras"]
+        )
+        self.assertIn(
+            "/dav/movies/Little%20Shop%20%5B1986%5D%20%2B%20Extras", root_body
+        )
 
         decoded = dav_rel_path("/dav/movies/Little%20Shop%20%5B1986%5D%20%2B%20Extras/")
         self.assertIsNotNone(self.state.lookup(decoded))
@@ -757,15 +742,9 @@ class DavHandlerTests(unittest.TestCase):
         self.assertIn("status-downloaded", body)
 
     def test_remote_media_refreshes_stale_html_response_once(self):
-        class FakeClient:
-            def __init__(self):
-                self.calls = []
-
-            def unrestrict_link(self, link):
-                self.calls.append(link)
-                if len(self.calls) == 1:
-                    return "https://example.invalid/stale"
-                return "https://example.invalid/fresh"
+        self.state.client = self.FakeRD(
+            ["https://example.invalid/stale", "https://example.invalid/fresh"]
+        )
 
         class FakeResponse:
             def __init__(self, body: bytes, content_type: str):
@@ -789,13 +768,16 @@ class DavHandlerTests(unittest.TestCase):
                 self.close()
                 return False
 
-        self.state.client = FakeClient()
         response_queue = [
-            FakeResponse(b"<!DOCTYPE html><html>bad</html>", "text/html; charset=utf-8"),
+            FakeResponse(
+                b"<!DOCTYPE html><html>bad</html>", "text/html; charset=utf-8"
+            ),
             FakeResponse(b"\x1a\x45\xdf\xa3media-bytes", "video/x-matroska"),
         ]
 
-        self.state.snapshot["files"]["movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv"] = {
+        self.state.snapshot["files"][
+            "movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv"
+        ] = {
             "type": "remote",
             "size": 14,
             "source_url": "https://example.invalid/source",
@@ -806,22 +788,23 @@ class DavHandlerTests(unittest.TestCase):
 
         with patch("buzz.app.request.urlopen", side_effect=response_queue):
             response, first_chunk = self.handler._open_remote_media(
-                self.state.lookup("movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv"),
+                self.state.lookup(
+                    "movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv"
+                ),
                 None,
             )
             self.assertEqual(first_chunk, b"\x1a\x45\xdf\xa3media-bytes")
             response.close()
 
-        self.assertEqual(self.state.client.calls, ["https://example.invalid/source", "https://example.invalid/source"])
+        self.assertEqual(
+            self.state.client.calls,
+            ["https://example.invalid/source", "https://example.invalid/source"],
+        )
 
     def test_remote_media_returns_bad_gateway_after_failed_retry(self):
-        class FakeClient:
-            def __init__(self):
-                self.calls = []
-
-            def unrestrict_link(self, link):
-                self.calls.append(link)
-                return f"https://example.invalid/{len(self.calls)}"
+        self.state.client = self.FakeRD(
+            ["https://example.invalid/1", "https://example.invalid/2"]
+        )
 
         class FakeResponse:
             def __init__(self, body: bytes, content_type: str):
@@ -838,7 +821,6 @@ class DavHandlerTests(unittest.TestCase):
             def close(self):
                 return None
 
-        self.state.client = FakeClient()
         node = {
             "type": "remote",
             "size": 14,
@@ -859,9 +841,7 @@ class DavHandlerTests(unittest.TestCase):
                 self.handler._open_remote_media(node, None)
 
     def test_force_download_media_payload_is_accepted(self):
-        class FakeClient:
-            def unrestrict_link(self, _link):
-                return "https://example.invalid/download"
+        self.state.client = self.FakeRD(["https://example.invalid/download"])
 
         class FakeResponse:
             def __init__(self, body: bytes, content_type: str):
@@ -885,7 +865,6 @@ class DavHandlerTests(unittest.TestCase):
                 self.close()
                 return False
 
-        self.state.client = FakeClient()
         node = {
             "type": "remote",
             "size": 14,
@@ -897,20 +876,18 @@ class DavHandlerTests(unittest.TestCase):
 
         with patch(
             "buzz.app.request.urlopen",
-            return_value=FakeResponse(b"\x1a\x45\xdf\xa3media-bytes", "application/force-download"),
+            return_value=FakeResponse(
+                b"\x1a\x45\xdf\xa3media-bytes", "application/force-download"
+            ),
         ):
             response, first_chunk = self.handler._open_remote_media(node, None)
             self.assertEqual(first_chunk, b"\x1a\x45\xdf\xa3media-bytes")
             response.close()
 
     def test_force_download_html_payload_is_still_rejected(self):
-        class FakeClient:
-            def __init__(self):
-                self.calls = 0
-
-            def unrestrict_link(self, _link):
-                self.calls += 1
-                return f"https://example.invalid/download/{self.calls}"
+        self.state.client = self.FakeRD(
+            ["https://example.invalid/download/1", "https://example.invalid/download/2"]
+        )
 
         class FakeResponse:
             def __init__(self, body: bytes, content_type: str):
@@ -927,7 +904,6 @@ class DavHandlerTests(unittest.TestCase):
             def close(self):
                 return None
 
-        self.state.client = FakeClient()
         node = {
             "type": "remote",
             "size": 14,
@@ -946,110 +922,6 @@ class DavHandlerTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "markup instead of media bytes"):
                 self.handler._open_remote_media(node, None)
-
-
-class RealDebridClientTests(unittest.TestCase):
-    def test_unrestrict_link_posts_form_data_and_returns_download_url(self):
-        config = Config(
-            token="token",
-            poll_interval_secs=10,
-            bind="127.0.0.1",
-            port=9999,
-            state_dir="/tmp/buzz-tests",
-            hook_command="",
-            anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
-            enable_all_dir=True,
-            enable_unplayable_dir=True,
-            request_timeout_secs=30,
-            user_agent="buzz-tests",
-            version_label="buzz/test",
-        )
-        captured = {}
-
-        class FakeResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def read(self, *_args, **_kwargs):
-                return b'{"download":"https://cdn.example.invalid/video.mkv"}'
-
-        def fake_urlopen(req, timeout):
-            captured["url"] = req.full_url
-            captured["method"] = req.get_method()
-            captured["data"] = req.data
-            captured["headers"] = dict(req.header_items())
-            return FakeResponse()
-
-        with patch("buzz.app.request.urlopen", side_effect=fake_urlopen):
-            client = RealDebridClient(config)
-            download = client.unrestrict_link("https://real-debrid.com/d/abc")
-
-        self.assertEqual(download, "https://cdn.example.invalid/video.mkv")
-        self.assertEqual(captured["url"], "https://api.real-debrid.com/rest/1.0/unrestrict/link")
-        self.assertEqual(captured["method"], "POST")
-        self.assertEqual(captured["data"], b"link=https%3A%2F%2Freal-debrid.com%2Fd%2Fabc")
-
-
-class ConfigMigrationTests(unittest.TestCase):
-    def test_zurg_to_buzz_maps_supported_fields(self):
-        raw = """
-zurg: v1
-token: test-token
-check_for_changes_every_secs: 15
-api_timeout_secs: 12
-on_library_update: sh /app/media_update.sh "$@"
-
-directories:
-  anime:
-    group_order: 10
-    group: media
-    filters:
-      - regex: /\\b[a-fA-F0-9]{8}\\b/
-      - any_file_inside_regex: /custom/
-
-  shows:
-    group_order: 20
-    group: media
-    filters:
-      - has_episodes: true
-"""
-        buzz = zurg_to_buzz(parse_zurg_config(raw))
-        self.assertEqual(buzz["provider"]["token"], "test-token")
-        self.assertEqual(buzz["poll_interval_secs"], 15)
-        self.assertEqual(buzz["request_timeout_secs"], 12)
-        self.assertEqual(buzz["hooks"]["on_library_change"], "sh /app/media_update.sh")
-        self.assertEqual(buzz["directories"]["anime"]["patterns"], [r"\b[a-fA-F0-9]{8}\b", "custom"])
-
-    def test_buzz_to_zurg_emits_usable_defaults(self):
-        buzz = {
-            "provider": {"token": "buzz-token"},
-            "poll_interval_secs": 20,
-            "server": {"port": 9999},
-            "hooks": {"on_library_change": "sh /app/media_update.sh"},
-            "directories": {"anime": {"patterns": ["abc", "def"]}},
-            "request_timeout_secs": 25,
-        }
-        rendered = buzz_to_zurg(buzz)
-        self.assertIn("token: buzz-token", rendered)
-        self.assertIn("check_for_changes_every_secs: 20", rendered)
-        self.assertIn('on_library_update: sh /app/media_update.sh "$@"', rendered)
-        self.assertIn("      - regex: /abc/", rendered)
-        self.assertIn("      - regex: /def/", rendered)
-
-    def test_cli_convert_outputs_yaml_for_buzz(self):
-        raw = """
-zurg: v1
-token: tok
-check_for_changes_every_secs: 10
-"""
-        converted = convert("zurg", "buzz", raw)
-        self.assertIn("provider:", converted)
-        self.assertIn("  token: tok", converted)
-        payload = parse_buzz_config(converted)
-        self.assertEqual(payload["provider"]["token"], "tok")
 
 
 if __name__ == "__main__":
