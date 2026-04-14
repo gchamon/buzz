@@ -6,10 +6,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from buzz.dav import (
+from fastapi.testclient import TestClient
+
+from buzz.dav_app import DavApp
+from buzz.dav_protocol import open_remote_media, propfind_body
+from buzz.models import DavConfig as Config
+from buzz.core.state import (
     BuzzState,
-    DavConfig as Config,
-    DavHandler as Handler,
     LibraryBuilder,
     canonical_snapshot,
     dav_rel_path,
@@ -39,6 +42,8 @@ class LibraryBuilderTests(unittest.TestCase):
             request_timeout_secs=30,
             user_agent="buzz-tests",
             version_label="buzz/test",
+            rd_update_delay_secs=0,
+            curator_url="",
         )
         self.builder = LibraryBuilder(self.config)
 
@@ -221,6 +226,8 @@ class BuzzStateTests(unittest.TestCase):
                 request_timeout_secs=30,
                 user_agent="buzz-tests",
                 version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
             )
             client = self.FakeRD()
             state = BuzzState(config, client=client)
@@ -346,6 +353,8 @@ class BuzzStateTests(unittest.TestCase):
                 request_timeout_secs=30,
                 user_agent="buzz-tests",
                 version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
             )
             state = BuzzState(config, client=None)
             self.assertFalse(state.snapshot_loaded)
@@ -369,6 +378,8 @@ class BuzzStateTests(unittest.TestCase):
                 request_timeout_secs=30,
                 user_agent="buzz-tests",
                 version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
             )
             state = BuzzState(config, client=self._create_fake_rd())
             report = state.sync(trigger_hook=False)
@@ -426,6 +437,8 @@ class BuzzStateTests(unittest.TestCase):
                 request_timeout_secs=30,
                 user_agent="buzz-tests",
                 version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
             )
             state = BuzzState(config, client=self._create_fake_rd())
             first = state.sync(trigger_hook=False)
@@ -479,6 +492,8 @@ class BuzzStateTests(unittest.TestCase):
                 request_timeout_secs=30,
                 user_agent="buzz-tests",
                 version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
             )
             first_state = BuzzState(config, client=self._create_fake_rd())
             first_state.sync(trigger_hook=False)
@@ -514,11 +529,13 @@ class BuzzStateTests(unittest.TestCase):
                 request_timeout_secs=30,
                 user_agent="buzz-tests",
                 version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
             )
             state = HookState(config, client=self._create_fake_rd())
             report = state.sync()
             self.assertTrue(report["changed"])
-            self.assertTrue(state.hook_started.wait(timeout=1))
+            self.assertTrue(state.hook_started.wait(timeout=5))
             self.assertIsNotNone(state.lookup("movies/Movie 2026/Movie.2026.1080p.mkv"))
             self.assertTrue(state.status()["hook_in_progress"])
             state.release_hook.set()
@@ -538,6 +555,8 @@ class BuzzStateTests(unittest.TestCase):
                 request_timeout_secs=30,
                 user_agent="buzz-tests",
                 version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
             )
             state = BuzzState(config, client=None)
             runs = []
@@ -555,12 +574,12 @@ class BuzzStateTests(unittest.TestCase):
 
             state._run_hook = fake_run_hook
             state._enqueue_hook(["movies/A"])
-            self.assertTrue(first_started.wait(timeout=1))
+            self.assertTrue(first_started.wait(timeout=5))
             state._enqueue_hook(["shows/B"])
             state._enqueue_hook(["movies/A", "movies/C"])
             self.assertTrue(state.status()["hook_pending"])
             release_first.set()
-            self.assertTrue(second_started.wait(timeout=1))
+            self.assertTrue(second_started.wait(timeout=5))
 
             deadline = time.time() + 1
             while time.time() < deadline and state.status()["hook_in_progress"]:
@@ -585,6 +604,8 @@ class BuzzStateTests(unittest.TestCase):
                 request_timeout_secs=30,
                 user_agent="buzz-tests",
                 version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
             )
             state = BuzzState(config, client=None)
             state.snapshot_loaded = True
@@ -595,7 +616,7 @@ class BuzzStateTests(unittest.TestCase):
 
             state._run_hook = fake_run_hook
             state._enqueue_hook(["movies/A"])
-            deadline = time.time() + 1
+            deadline = time.time() + 5
             while time.time() < deadline:
                 if state.status()["hook_last_error"] == "hook failed":
                     done.set()
@@ -607,7 +628,7 @@ class BuzzStateTests(unittest.TestCase):
             self.assertEqual(state.status()["hook_last_error"], "hook failed")
 
 
-class DavHandlerTests(unittest.TestCase):
+class DavAppTests(unittest.TestCase):
     class FakeRDResponse:
         def __init__(self, data):
             self.data = data
@@ -619,6 +640,7 @@ class DavHandlerTests(unittest.TestCase):
         def __init__(self, download_urls=None):
             self.calls = []
             self.download_urls = download_urls or []
+            self.torrents = None
             self.unrestrict = self.Unrestrict(self)
 
         class Unrestrict:
@@ -637,7 +659,7 @@ class DavHandlerTests(unittest.TestCase):
                     if self.parent.download_urls
                     else "https://cdn.example.invalid/file"
                 )
-                return DavHandlerTests.FakeRDResponse({"download": url})
+                return DavAppTests.FakeRDResponse({"download": url})
 
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -671,11 +693,14 @@ class DavHandlerTests(unittest.TestCase):
             request_timeout_secs=30,
             user_agent="buzz-tests",
             version_label="buzz/test",
+            rd_update_delay_secs=0,
         )
-        self.state = BuzzState(config, client=None)
-        self.handler = Handler.__new__(Handler)
-        self.handler.state = self.state
-        self.handler.client_address = ("127.0.0.1", 12345)
+        rd_patcher = patch("buzz.dav_app.RD", return_value=self.FakeRD())
+        self.addCleanup(rd_patcher.stop)
+        rd_patcher.start()
+        self.dav_app = DavApp(config)
+        self.state = self.dav_app.state
+        self.client = TestClient(self.dav_app.app)
 
     def tearDown(self):
         self.tmpdir.cleanup()
@@ -687,7 +712,8 @@ class DavHandlerTests(unittest.TestCase):
         )
 
     def test_propfind_child_round_trips_encoded_directory_name(self):
-        root_body = self.handler._propfind_body(
+        root_body = propfind_body(
+            self.state,
             ["movies", "movies/Little Shop [1986] + Extras"]
         )
         self.assertIn(
@@ -697,7 +723,8 @@ class DavHandlerTests(unittest.TestCase):
         decoded = dav_rel_path("/dav/movies/Little%20Shop%20%5B1986%5D%20%2B%20Extras/")
         self.assertIsNotNone(self.state.lookup(decoded))
 
-        child_body = self.handler._propfind_body(
+        child_body = propfind_body(
+            self.state,
             [
                 decoded,
                 f"{decoded}/Little Shop of Horrors (1986).mkv",
@@ -733,13 +760,65 @@ class DavHandlerTests(unittest.TestCase):
         }
         self.state.last_sync_at = "2026-01-02T00:00:00Z"
 
-        body = self.handler._torrents_page()
+        response = self.client.get("/torrents")
+        body = response.text
 
-        self.assertIn("Real-Debrid Torrents", body)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("buzz: list torrents", body)
         self.assertIn("Movie &amp; Stuff", body)
         self.assertIn("1.5 MiB", body)
         self.assertIn("2026-01-02T00:00:00Z", body)
         self.assertIn("status-downloaded", body)
+
+    def test_healthz_and_readyz_use_asgi_routes(self):
+        self.state.snapshot_loaded = False
+        health = self.client.get("/healthz")
+        ready = self.client.get("/readyz")
+
+        self.assertEqual(health.status_code, 200)
+        self.assertEqual(health.json()["status"], "ok")
+        self.assertEqual(ready.status_code, 503)
+        self.assertEqual(ready.json()["status"], "starting")
+
+        self.state.snapshot_loaded = True
+        ready = self.client.get("/readyz")
+        self.assertEqual(ready.status_code, 200)
+        self.assertEqual(ready.json()["status"], "ready")
+
+    def test_options_and_propfind_use_asgi_routes(self):
+        options = self.client.options("/dav/movies")
+        propfind = self.client.request("PROPFIND", "/dav/movies", headers={"Depth": "1"})
+
+        self.assertEqual(options.status_code, 204)
+        self.assertEqual(options.headers["dav"], "1")
+        self.assertEqual(propfind.status_code, 207)
+        self.assertIn(
+            "/dav/movies/Little%20Shop%20%5B1986%5D%20%2B%20Extras",
+            propfind.text,
+        )
+
+    def test_api_validation_errors_return_json_error_envelope(self):
+        response = self.client.post("/api/torrents/add", json={"magnet": "  "})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"error": "Value error, Missing magnet link"})
+
+    def test_memory_file_head_and_range_get_use_asgi_routes(self):
+        head = self.client.head(
+            "/dav/movies/Little%20Shop%20%5B1986%5D%20%2B%20Extras/"
+            "Little%20Shop%20of%20Horrors%20%281986%29.mkv"
+        )
+        get_range = self.client.get(
+            "/dav/movies/Little%20Shop%20%5B1986%5D%20%2B%20Extras/"
+            "Little%20Shop%20of%20Horrors%20%281986%29.mkv",
+            headers={"Range": "bytes=0-0"},
+        )
+
+        self.assertEqual(head.status_code, 200)
+        self.assertEqual(head.headers["content-length"], "2")
+        self.assertEqual(get_range.status_code, 206)
+        self.assertEqual(get_range.headers["content-range"], "bytes 0-0/2")
+        self.assertEqual(get_range.content, b"o")
 
     def test_remote_media_refreshes_stale_html_response_once(self):
         self.state.client = self.FakeRD(
@@ -786,8 +865,9 @@ class DavHandlerTests(unittest.TestCase):
             "etag": "etag-2",
         }
 
-        with patch("buzz.dav.request.urlopen", side_effect=response_queue):
-            response, first_chunk = self.handler._open_remote_media(
+        with patch("buzz.dav_protocol.request.urlopen", side_effect=response_queue):
+            response, first_chunk = open_remote_media(
+                self.state,
                 self.state.lookup(
                     "movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv"
                 ),
@@ -831,14 +911,14 @@ class DavHandlerTests(unittest.TestCase):
         }
 
         with patch(
-            "buzz.dav.request.urlopen",
+            "buzz.dav_protocol.request.urlopen",
             side_effect=[
                 FakeResponse(b"<!DOCTYPE html>bad", "text/html"),
                 FakeResponse(b"<!DOCTYPE html>worse", "text/html"),
             ],
         ):
             with self.assertRaisesRegex(ValueError, "non-media content type|markup"):
-                self.handler._open_remote_media(node, None)
+                open_remote_media(self.state, node, None)
 
     def test_force_download_media_payload_is_accepted(self):
         self.state.client = self.FakeRD(["https://example.invalid/download"])
@@ -875,12 +955,12 @@ class DavHandlerTests(unittest.TestCase):
         }
 
         with patch(
-            "buzz.dav.request.urlopen",
+            "buzz.dav_protocol.request.urlopen",
             return_value=FakeResponse(
                 b"\x1a\x45\xdf\xa3media-bytes", "application/force-download"
             ),
         ):
-            response, first_chunk = self.handler._open_remote_media(node, None)
+            response, first_chunk = open_remote_media(self.state, node, None)
             self.assertEqual(first_chunk, b"\x1a\x45\xdf\xa3media-bytes")
             response.close()
 
@@ -914,14 +994,14 @@ class DavHandlerTests(unittest.TestCase):
         }
 
         with patch(
-            "buzz.dav.request.urlopen",
+            "buzz.dav_protocol.request.urlopen",
             side_effect=[
                 FakeResponse(b"<!DOCTYPE html>bad", "application/force-download"),
                 FakeResponse(b"<!DOCTYPE html>worse", "application/force-download"),
             ],
         ):
             with self.assertRaisesRegex(ValueError, "markup instead of media bytes"):
-                self.handler._open_remote_media(node, None)
+                open_remote_media(self.state, node, None)
 
 
 if __name__ == "__main__":

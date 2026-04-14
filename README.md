@@ -86,7 +86,8 @@ That script dispatches to Plex or Jellyfin based on `MEDIA_SERVER`.
 
 ## Development
 
-- Service code lives in [buzz/app.py](./buzz/app.py).
+- DAV service code lives in [buzz/dav_app.py](./buzz/dav_app.py).
+- Curator service code lives in [buzz/curator_app.py](./buzz/curator_app.py).
 - The container image is built from [buzz/Dockerfile](./buzz/Dockerfile).
 - The `buzz/` package is bind-mounted into the Buzz container from the repo, so source changes take effect after `docker compose up -d --force-recreate buzz` without an image rebuild.
 - Persisted RD cache and committed library snapshots live under the `buzzdata` volume at `/app/data` in the Buzz container.
@@ -108,5 +109,5 @@ python3 scripts/migrate_config.py --from buzz --to zurg buzz.yml -o config.yml
 Run tests locally with:
 
 ```sh
-python3 -m unittest discover -s tests
+uv run python -m unittest tests.test_buzz tests.test_curator_app
 ```
