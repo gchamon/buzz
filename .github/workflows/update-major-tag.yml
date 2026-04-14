@@ -1,0 +1,33 @@
+name: update major tag
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  MAJOR_TAG: v1
+
+jobs:
+  move-tag:
+    name: move major tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Update moving tag
+        run: |
+          git fetch --tags --force
+          git tag -fa "$MAJOR_TAG" -m "Update $MAJOR_TAG to $GITHUB_SHA" "$GITHUB_SHA"
+          git push origin "refs/tags/$MAJOR_TAG" --force
