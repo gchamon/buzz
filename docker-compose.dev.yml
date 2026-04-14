@@ -1,0 +1,8 @@
+services:
+  buzz-dav:
+    volumes:
+      - ./:/app
+
+  buzz-curator:
+    volumes:
+      - ./:/app

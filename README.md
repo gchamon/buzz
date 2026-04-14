@@ -49,48 +49,59 @@ If you change `buzz.yml`, restart the service:
 docker compose restart buzz
 ```
 
-## Config
+## Configuration Reference
 
-`buzz.yml` is YAML and currently supports:
+### `buzz.yml`
 
-- `provider.token`
-- `poll_interval_secs`
-- `hooks.on_library_change`
-- `logging.verbose`
-- `compat.enable_all_dir`
-- `compat.enable_unplayable_dir`
-- `directories.anime.patterns`
+This file handles the DAV server logic and RD polling.
 
-The default hook is:
+| Key | Default | Description |
+| :--- | :--- | :--- |
+| `provider.token` | *(Required)* | Your Real-Debrid API token. |
+| `poll_interval_secs` | `10` | How often Buzz polls Real-Debrid for changes. |
+| `server.bind` | `0.0.0.0` | IP address the DAV server binds to. |
+| `server.port` | `9999` | Port for the DAV server. |
+| `state_dir` | `/app/data` | Path to store the SQLite DB and snapshots inside the container. |
+| `hooks.on_library_change` | `sh /app/scripts/media_update.sh` | Shell command executed when a change in the library is detected. |
+| `hooks.curator_url` | `http://buzz-curator:8400/rebuild` | Internal URL to trigger the Curator rebuild. |
+| `hooks.rd_update_delay_secs` | `15` | Delay before triggering a hook on RD updates (allows inventory to settle). |
+| `compat.enable_all_dir` | `true` | Exposes an `__all__` directory via WebDAV containing all playable files. |
+| `compat.enable_unplayable_dir` | `true` | Exposes an `__unplayable__` directory for files that aren't video files. |
+| `directories.anime.patterns` | *(Default regex list)* | List of regex patterns used to categorize files as Anime. |
+| `request_timeout_secs` | `30` | Timeout in seconds for API requests to Real-Debrid. |
+| `logging.verbose` | `false` | Enable verbose request and debug logging. |
 
-```json
-{
-  "hooks": {
-    "on_library_change": "sh /app/media_update.sh"
-  }
-}
-```
+### `.env`
 
-That script dispatches to Plex or Jellyfin based on `MEDIA_SERVER`.
+This file handles the stack deployment and media-server integration.
 
-## Media Server Notes
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `MEDIA_SERVER` | `jellyfin` | Controls which media server services are started and which update script Buzz uses (matches `COMPOSE_PROFILES`). |
+| `LIBRARY_MOUNT` | `/mnt/buzz` | Path where the library is mounted. |
+| `PUID` / `PGID` | `1000` | User and Group ID used for creating host-owned files and for running services. |
+| `PLEX_URL` | *(Empty)* | URL to the Plex server (e.g., `http://127.0.0.1:32400`). |
+| `PLEX_TOKEN` | *(Empty)* | Plex Access Token for library update API calls. |
+| `JELLYFIN_URL` | `http://jellyfin:8096` | URL to the Jellyfin server (must be reachable from the Buzz container). |
+| `JELLYFIN_API_KEY` | *(Empty)* | Jellyfin API Key used to trigger library scans. |
+| `JELLYFIN_SCAN_TASK_ID` | *(Empty)* | Optional. Used if automatic task discovery fails. |
 
-- `COMPOSE_PROFILES` controls which media-server services Docker starts.
-- `MEDIA_SERVER` controls which update script Buzz invokes and should match `COMPOSE_PROFILES`.
-- Plex refreshes changed library roots via [`scripts/plex_update.sh`](./scripts/plex_update.sh).
-- Jellyfin uses [`scripts/jellyfin_update.sh`](./scripts/jellyfin_update.sh) to trigger the existing `presentation-builder` sidecar.
-- In Jellyfin mode, set `JELLYFIN_URL=http://jellyfin:8096` so the Buzz container can reach Jellyfin over the Compose network.
-- Point Jellyfin libraries at `/mnt/buzz/curated/movies`, `/mnt/buzz/curated/shows`, and `/mnt/buzz/curated/animes`.
-- `logging.verbose: true` re-enables Buzz request/access logs and client-disconnect diagnostics when you need to debug stream behavior.
-- `HEALTHCHECK_VERBOSE=true` re-enables the sidecar “mountpoint seems to be working” message; the default is quiet success logs.
+## Architecture
+
+For a deep dive into how Buzz works, components, and data flow, see the [Architecture Documentation](./docs/architecture.md).
 
 ## Development
 
 - DAV service code lives in [buzz/dav_app.py](./buzz/dav_app.py).
 - Curator service code lives in [buzz/curator_app.py](./buzz/curator_app.py).
 - The container image is built from [buzz/Dockerfile](./buzz/Dockerfile).
-- The `buzz/` package is bind-mounted into the Buzz container from the repo, so source changes take effect after `docker compose up -d --force-recreate buzz` without an image rebuild.
-- Persisted RD cache and committed library snapshots live under the `buzzdata` volume at `/app/data` in the Buzz container.
+- **Local Development:** Use the development override to mount your local code directly into the containers (`- ./:/app`):
+  ```sh
+  docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+  ```
+  Source changes take effect immediately after a service restart (`docker compose restart buzz-dav`) without rebuilding the image.
+- **Isolated Development VM:** You can also deploy an isolated development environment using [Incus](./docs/incus-dev-vm.md).
+- **Production (Default):** Running `docker compose up -d` uses the stable, immutable code baked into the container image. To rebuild the production image after code changes, use `docker compose up -d --build`.
 - Tests live in [tests/test_buzz.py](./tests/test_buzz.py).
 - Config migration helper lives in [scripts/migrate_config.py](./scripts/migrate_config.py).
 
