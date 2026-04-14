@@ -11,6 +11,11 @@ if [ -z "$jellyfin_token" ] || [ "$jellyfin_token" = "<token>" ]; then
     exit 0
 fi
 
+if [ -z "$jellyfin_url" ]; then
+    echo "JELLYFIN_URL is not set, skipping library refresh"
+    exit 0
+fi
+
 echo "Triggering Jellyfin library scan at: $jellyfin_url"
 
 # Trigger a full library scan

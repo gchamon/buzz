@@ -95,7 +95,7 @@ class DavConfig(BaseModel):
     user_agent: str = "buzz/0.1"
     version_label: str = "buzz/0.1"
     curator_url: str = "http://buzz-curator:8400/rebuild"
-    curator_delay_secs: int = 2
+    rd_update_delay_secs: int = 15
     verbose: bool = False
 
     @classmethod
@@ -125,7 +125,7 @@ class DavConfig(BaseModel):
             curator_url=str(
                 hooks.get("curator_url", "http://buzz-curator:8400/rebuild")
             ),
-            curator_delay_secs=int(hooks.get("curator_delay_secs", 2)),
+            rd_update_delay_secs=int(hooks.get("rd_update_delay_secs", 15)),
             anime_patterns=tuple(anime.get("patterns", [DEFAULT_ANIME_PATTERN])),
             enable_all_dir=bool(compat.get("enable_all_dir", True)),
             enable_unplayable_dir=bool(compat.get("enable_unplayable_dir", True)),
@@ -368,12 +368,8 @@ class BuzzState:
         self.hook_last_finished_at = None
         self.hook_last_error = None
         self.resolved_urls: dict[str, dict[str, str]] = {}
-        self.hook_worker = None
-        if self.config.hook_command:
-            self.hook_worker = threading.Thread(
-                target=self._hook_worker_loop, daemon=True
-            )
-            self.hook_worker.start()
+        self.hook_lock = threading.Lock()
+        self.hook_task_active = False
 
     def _load_json(self, path: str, default: Any) -> Any:
         try:
@@ -455,32 +451,41 @@ class BuzzState:
         pending = set(changed_roots)
         if not pending:
             return
-        with self.hook_condition:
+        with self.hook_lock:
             merged = set(self.hook_pending_paths)
             merged.update(pending)
             self.hook_pending_paths = sorted(merged)
-            self.hook_condition.notify()
+            if not self.hook_task_active:
+                self.hook_task_active = True
+                threading.Thread(target=self._run_hook_task, daemon=True).start()
 
-    def _hook_worker_loop(self) -> None:
-        while True:
-            with self.hook_condition:
-                while not self.hook_pending_paths:
-                    self.hook_condition.wait()
-                paths = self.hook_pending_paths
-                self.hook_pending_paths = []
-                self.hook_in_progress = True
-                self.hook_last_started_at = utc_now_iso()
-                self.hook_last_error = None
-            try:
-                self._trigger_curator(paths)
-                self._run_hook(paths)
-            except Exception as exc:  # noqa: BLE001
-                with self.hook_condition:
-                    self.hook_last_error = str(exc)
-            finally:
-                with self.hook_condition:
-                    self.hook_in_progress = False
-                    self.hook_last_finished_at = utc_now_iso()
+    def _run_hook_task(self) -> None:
+        try:
+            while True:
+                with self.hook_lock:
+                    if not self.hook_pending_paths:
+                        self.hook_task_active = False
+                        return
+                    paths = self.hook_pending_paths
+                    self.hook_pending_paths = []
+                    self.hook_in_progress = True
+                    self.hook_last_started_at = utc_now_iso()
+                    self.hook_last_error = None
+
+                try:
+                    self._trigger_curator(paths)
+                    self._run_hook(paths)
+                except Exception as exc:  # noqa: BLE001
+                    with self.hook_lock:
+                        self.hook_last_error = str(exc)
+                finally:
+                    with self.hook_lock:
+                        self.hook_in_progress = False
+                        self.hook_last_finished_at = utc_now_iso()
+        except Exception as exc:  # noqa: BLE001
+            print(f"Hook task failed unexpectedly: {exc}", flush=True)
+            with self.hook_lock:
+                self.hook_task_active = False
 
     def _summary_signature(self, summary: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -495,13 +500,15 @@ class BuzzState:
     def _trigger_curator(self, changed_roots: list[str]) -> None:
         if not self.config.curator_url:
             return
-        if self.config.curator_delay_secs > 0:
-            self.verbose_log(
-                f"Waiting {self.config.curator_delay_secs}s for mount to settle..."
-            )
-            time.sleep(self.config.curator_delay_secs)
         self.verbose_log(f"Triggering curator rebuild at {self.config.curator_url}...")
         try:
+            # Wait for Real-Debrid inventory to update/settle before triggering curator
+            if self.config.rd_update_delay_secs > 0:
+                self.verbose_log(
+                    f"Waiting {self.config.rd_update_delay_secs}s for Real-Debrid update..."
+                )
+                time.sleep(self.config.rd_update_delay_secs)
+
             req = request.Request(self.config.curator_url, method="POST")
             with request.urlopen(req, timeout=30) as response:
                 if response.status not in (200, 204):
@@ -558,7 +565,7 @@ class BuzzState:
                 "snapshot_loaded": self.snapshot_loaded,
                 "ready": self.is_ready(),
             }
-        with self.hook_condition:
+        with self.hook_lock:
             payload.update(
                 {
                     "hook_in_progress": self.hook_in_progress,

@@ -6,7 +6,7 @@ services:
     container_name: buzz-dav
     restart: unless-stopped
     environment:
-      - MEDIA_SERVER=${MEDIA_SERVER:-plex}
+      - MEDIA_SERVER=${MEDIA_SERVER:-jellyfin}
       - PLEX_URL=${PLEX_URL:-}
       - PLEX_TOKEN=${PLEX_TOKEN:-}
       - LIBRARY_MOUNT=/mnt/buzz/raw

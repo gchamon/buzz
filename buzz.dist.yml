@@ -6,8 +6,9 @@ server:
   port: 9999
 state_dir: /app/data
 hooks:
-  on_library_change: "sh /app/media_update.sh"
+  on_library_change: "bash /app/media_update.sh"
   curator_url: "http://buzz-curator:8400/rebuild"
+  rd_update_delay_secs: 15
 compat:
   enable_all_dir: true
   enable_unplayable_dir: true
