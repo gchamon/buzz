@@ -2,9 +2,10 @@ import argparse
 import json
 import sys
 
-from .curator_api import run_curator_server
-from .core.curator import PresentationConfig, rebuild_and_trigger
-from .dav import DavConfig, run_dav_server
+from .curator_app import run_curator_server
+from .models import DavConfig, PresentationConfig
+from .core.curator import rebuild_and_trigger
+from .dav_app import run_dav_server
 
 
 def main():

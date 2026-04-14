@@ -11,6 +11,7 @@ packages:
   - jq
   - uidmap
   - kitty-terminfo
+  - ffmpeg
 
 users:
   - default
