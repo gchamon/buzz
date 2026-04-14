@@ -3,8 +3,6 @@ on:
   pull_request:
   push:
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 * * *' # Daily at midnight
 
 jobs:
   scan:
