@@ -1,61 +1,14 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>buzz: list torrents</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐝</text></svg>">
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐝</text></svg>">
+  <link rel="stylesheet" href="/static/buzz.css">
   <style>
-    :root {
-      --bg: #282a36;
-      --fg: #f8f8f2;
-      --selection: #44475a;
-      --comment: #6272a4;
-      --cyan: #8be9fd;
-      --green: #50fa7b;
-      --orange: #ffb86c;
-      --pink: #ff79c6;
-      --purple: #bd93f9;
-      --red: #ff5555;
-      --yellow: #f1fa8c;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      background: var(--bg);
-      color: var(--fg);
-      line-height: 1.5;
-    }
-    main {
-      padding: 20px;
-      max-width: 1400px;
-      margin: 0 auto;
-    }
-    .prompt { margin-bottom: 4px; font-size: 1.1rem; }
-    .prompt b { color: var(--purple); font-weight: bold; }
-    .prompt span { color: var(--fg); }
-    
-    .meta-bar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 20px;
-      margin-bottom: 24px;
-      font-size: 0.9rem;
-      color: var(--comment);
-    }
-    .meta-item b { color: var(--orange); font-weight: normal; }
-    .meta-item span { color: var(--cyan); }
-
-    .error {
-      margin-bottom: 20px;
-      color: var(--red);
-      border-left: 3px solid var(--red);
-      padding-left: 10px;
-    }
-    .label-red { color: var(--red); font-weight: bold; }
-
-    /* Add Torrent UI */
     .add-torrent-section {
       background: var(--selection);
       padding: 15px;
@@ -63,6 +16,7 @@
       margin-bottom: 24px;
       border: 1px solid var(--comment);
     }
+
     .add-torrent-header {
       color: var(--pink);
       text-transform: uppercase;
@@ -73,10 +27,12 @@
       justify-content: space-between;
       align-items: center;
     }
+
     .input-group {
       display: flex;
       gap: 10px;
     }
+
     input[type="text"] {
       flex: 1;
       background: var(--bg);
@@ -86,21 +42,10 @@
       font-family: inherit;
       outline: none;
     }
-    input[type="text"]:focus { border-color: var(--purple); }
-    button {
-      background: var(--purple);
-      color: var(--bg);
-      border: none;
-      padding: 8px 16px;
-      cursor: pointer;
-      font-family: inherit;
-      font-weight: bold;
-      text-transform: uppercase;
-      font-size: 0.8rem;
+
+    input[type="text"]:focus {
+      border-color: var(--purple);
     }
-    button:hover { filter: brightness(1.1); }
-    button:disabled { background: var(--comment); cursor: not-allowed; }
-    button.secondary { background: var(--comment); color: var(--fg); }
 
     #file-selection-area {
       margin-top: 15px;
@@ -108,147 +53,146 @@
       padding-top: 15px;
       display: none;
     }
+
     .file-list {
       max-height: 300px;
       overflow-y: auto;
       margin-bottom: 15px;
       font-size: 0.8rem;
     }
+
     .file-item {
       display: flex;
       align-items: center;
       gap: 10px;
       padding: 4px 0;
     }
-    .file-item:hover { background: rgba(255,255,255,0.05); }
-    .file-item input { accent-color: var(--purple); }
-    .file-info { display: flex; flex: 1; justify-content: space-between; }
-    .file-size { color: var(--cyan); }
+
+    .file-item:hover {
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .file-item input {
+      accent-color: var(--purple);
+    }
+
+    .file-info {
+      display: flex;
+      flex: 1;
+      justify-content: space-between;
+    }
+
+    .file-size {
+      color: var(--cyan);
+    }
 
     .file-actions {
       display: flex;
       gap: 10px;
     }
 
-    .table-wrap { overflow-x: auto; }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.8rem;
-      table-layout: fixed;
+    th:nth-child(1),
+    td:nth-child(1) {
+      width: auto;
     }
-    th {
-      text-align: left;
-      padding: 8px 4px;
-      border-bottom: 1px solid var(--selection);
-      color: var(--pink);
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      cursor: pointer;
-      user-select: none;
-      position: relative;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    th:hover { color: var(--purple); }
-    th.sort-asc::after { content: "▲"; font-size: 0.6rem; margin-left: 2px; }
-    th.sort-desc::after { content: "▼"; font-size: 0.6rem; margin-left: 2px; }
 
-    td {
-      padding: 8px 4px;
-      border-bottom: 1px solid rgba(68, 71, 90, 0.3);
-      vertical-align: top;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+    th:nth-child(2),
+    td:nth-child(2) {
+      width: 110px;
     }
-    tr:hover { background: var(--selection); }
-    
-    .name { color: var(--fg); }
-    
-    /* Column widths */
-    th:nth-child(1), td:nth-child(1) { width: auto; } /* Name */
-    th:nth-child(2), td:nth-child(2) { width: 110px; } /* Status */
-    th:nth-child(3), td:nth-child(3) { width: 60px; }  /* Prog */
-    th:nth-child(4), td:nth-child(4) { width: 80px; }  /* Size */
-    th:nth-child(5), td:nth-child(5) { width: 60px; }  /* Files */
-    th:nth-child(6), td:nth-child(6) { width: 60px; }  /* Links */
-    th:nth-child(7), td:nth-child(7) { width: 150px; } /* Ended */
-    th:nth-child(8), td:nth-child(8) { width: 85px; }  /* ID */
-    th:nth-child(9), td:nth-child(9) { width: 70px; text-align: right; }  /* Act */
-    .status { font-weight: bold; }
-    .status-downloaded { color: var(--green); }
-    .status-error { color: var(--red); }
-    .status-uploading { color: var(--cyan); }
-    .status-downloading { color: var(--orange); }
-    
-    .comment { color: var(--comment); }
-    .yellow { color: var(--yellow); }
-    
-    code { font-family: inherit; }
-    .empty { color: var(--comment); text-align: center; padding: 40px; }
 
-    /* Deletion UI */
-    .delete-container {
-      display: flex;
-      align-items: center;
-      justify-content: flex-end;
-      gap: 8px;
+    th:nth-child(3),
+    td:nth-child(3) {
+      width: 60px;
     }
-    .confirm-opts {
-      display: none;
-      flex-direction: column;
-      line-height: 1.3;
-      font-size: 0.7rem;
-      border-right: 1px solid var(--selection);
-      padding-right: 4px;
-      gap: 2px;
+
+    th:nth-child(4),
+    td:nth-child(4) {
+      width: 80px;
     }
-    .opt { 
-      padding: 0 4px;
-      cursor: pointer;
-      text-align: center;
+
+    th:nth-child(5),
+    td:nth-child(5) {
+      width: 60px;
     }
-    .opt-y { color: var(--comment); }
-    .opt-y:hover { color: var(--green); background: rgba(80, 250, 123, 0.1); }
-    .opt-n { color: var(--comment); }
-    .opt-n:hover { color: var(--orange); background: rgba(255, 184, 108, 0.1); }
-    .btn-x {
-      color: var(--comment);
-      cursor: pointer;
+
+    th:nth-child(6),
+    td:nth-child(6) {
+      width: 60px;
+    }
+
+    th:nth-child(7),
+    td:nth-child(7) {
+      width: 150px;
+    }
+
+    th:nth-child(8),
+    td:nth-child(8) {
+      width: 85px;
+    }
+
+    th:nth-child(9),
+    td:nth-child(9) {
+      width: 75px;
+      text-align: right;
+    }
+
+    .status {
       font-weight: bold;
-      padding: 2px 4px;
     }
-    .btn-x:hover { color: var(--red); background: rgba(255, 85, 85, 0.1); }
-    
-    ::-webkit-scrollbar { width: 8px; height: 8px; }
-    ::-webkit-scrollbar-track { background: var(--bg); }
-    ::-webkit-scrollbar-thumb { background: var(--selection); }
-    ::-webkit-scrollbar-thumb:hover { background: var(--comment); }
+
+    .status-downloaded {
+      color: var(--green);
+    }
+
+    .status-error {
+      color: var(--red);
+    }
+
+    .status-uploading {
+      color: var(--cyan);
+    }
+
+    .status-downloading {
+      color: var(--orange);
+    }
   </style>
 </head>
+
 <body>
   <main>
-    <div class="prompt"><b>buzz:</b> <span>list torrents</span></div>
+    <div class="prompt">
+      <b>buzz:</b>
+      <a href="/torrents" class="nav-link active">🪎 cache</a>
+      <span class="nav-sep">◈</span>
+      <a href="/trashcan" class="nav-link">🗑 trashcan</a>
+    </div>
+
     <div class="meta-bar">
       <div class="meta-item"><b>[torrents]</b> <span>{{ torrents_count }}</span></div>
-      <div class="meta-item"><b>[last_sync]</b> <span>{{ last_sync_at }}</span></div>
-      <div class="meta-item"><b>[state]</b> <span>{{ sync_state }}</span></div>
-      <div class="meta-item"><b>[ready]</b> <span>{{ snapshot_ready }}</span></div>
+      <div class="meta-item"><b>[last_sync]</b> <span id="status-last-sync">{{ last_sync_at }}</span></div>
+      <div class="meta-item"><b>[state]</b> <span id="status-sync">{{ sync_state }}</span></div>
       <div class="meta-item">
-        <button class="secondary" onclick="triggerManualRebuild()" style="font-size: 0.7rem; padding: 2px 8px;">RESYNC LIB</button>
+        <b id="status-ready-label">[ready]</b>
+        <span id="status-ready" style="display: none;">{{ snapshot_ready }}</span>
+      </div>
+      <div class="meta-item">
+        <button class="secondary" onclick="triggerManualRebuild()" style="font-size: 0.7rem; padding: 2px 8px;">
+          RESYNC LIB
+        </button>
       </div>
     </div>
-    
-    {{ error_html | safe }}
+
+    {% if last_error %}
+    <div class="error"><span class="label-red">[ERROR]</span> {{ last_error }}</div>
+    {% endif %}
 
     <section class="add-torrent-section">
       <div class="add-torrent-header">
-        <span>Add New Torrent</span>
+        <span>ADD NEW MAGNET TO THE CACHE:</span>
         <span id="add-status" style="text-transform: none; font-size: 0.7rem; color: var(--comment);"></span>
       </div>
-      
+
       <div id="magnet-input-area">
         <div class="input-group">
           <input type="text" id="magnet-input" placeholder="magnet:?xt=urn:btih:...">
@@ -272,7 +216,7 @@
         </div>
       </div>
     </section>
-    
+
     <div class="table-wrap">
       <table id="torrent-table">
         <thead>
@@ -289,35 +233,69 @@
           </tr>
         </thead>
         <tbody>
-          {{ rows | safe }}
+          {% for torrent in torrents %}
+          <tr>
+            <td class="name trunc-cell" data-value="{{ torrent.name }}">
+              <div class="trunc-content">{{ torrent.name }}</div>
+            </td>
+            <td data-value="{{ torrent.status }}"><span class="status status-{{ torrent.status }}">[{{ torrent.status }}]</span></td>
+            <td data-value="{{ torrent.progress }}">{{ torrent.progress }}%</td>
+            <td data-value="{{ torrent.bytes }}">{{ torrent.size }}</td>
+            <td>{{ torrent.selected_files }}</td>
+            <td>{{ torrent.links }}</td>
+            <td class="comment" data-value="{{ torrent.ended }}">{{ torrent.ended }}</td>
+            <td class="yellow" data-value="{{ torrent.short_id }}"><code>{{ torrent.short_id }}</code></td>
+            <td>
+              <div class="delete-container">
+                <div class="confirm-opts" id="confirm-{{ torrent.id }}">
+                  <div class="opt opt-y" onclick="deleteTorrent('{{ torrent.id }}', this)"
+                    title="Confirm Move to Trashcan">[Y]</div>
+                  <div class="opt opt-n" onclick="toggleDelete('{{ torrent.id }}', false)" title="Cancel">[N]</div>
+                </div>
+                <div class="btn-x" id="btn-x-{{ torrent.id }}" onclick="toggleDelete('{{ torrent.id }}', true)"
+                  title="Move to Trashcan">[X]</div>
+              </div>
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="9" class="empty">No cached torrents yet. Wait for the first sync or trigger <code>POST
+                /sync</code>.</td>
+          </tr>
+          {% endfor %}
         </tbody>
       </table>
     </div>
   </main>
 
+  <script src="/static/buzz.js"></script>
   <script>
     let currentTorrentId = null;
 
     async function resolveMagnet() {
-      const magnet = document.getElementById('magnet-input').value.trim();
-      if (!magnet) return;
+      const magnet = document.getElementById("magnet-input").value.trim();
+      if (!magnet) {
+        return;
+      }
 
-      const btn = document.getElementById('resolve-btn');
-      const status = document.getElementById('add-status');
-      
+      const btn = document.getElementById("resolve-btn");
+      const status = document.getElementById("add-status");
+
       btn.disabled = true;
       status.innerText = "Resolving magnet...";
       status.style.color = "var(--orange)";
 
       try {
-        const res = await fetch('/api/torrents/add', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ magnet })
+        const res = await fetch("/api/torrents/add", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({magnet})
         });
-        
+
         const data = await res.json();
-        if (data.error) throw new Error(data.error);
+        if (data.error) {
+          throw new Error(data.error);
+        }
 
         if (data.already_exists) {
           if (!confirm(`Torrent "${data.filename}" already exists. Do you want to continue?`)) {
@@ -327,18 +305,18 @@
         }
 
         currentTorrentId = data.id;
-        document.getElementById('torrent-name-display').innerText = data.filename || "Torrent Files";
-        
-        const fileList = document.getElementById('file-list');
-        fileList.innerHTML = '';
-        
+        document.getElementById("torrent-name-display").innerText = data.filename || "Torrent Files";
+
+        const fileList = document.getElementById("file-list");
+        fileList.innerHTML = "";
+
         data.files.forEach(file => {
-          const div = document.createElement('div');
-          div.className = 'file-item';
+          const div = document.createElement("div");
+          div.className = "file-item";
           const isVideo = /\.(mkv|mp4|avi|m4v|mov)$/i.test(file.path);
-          
+
           div.innerHTML = `
-            <input type="checkbox" value="${file.id}" ${isVideo ? 'checked' : ''} data-video="${isVideo}">
+            <input type="checkbox" value="${file.id}" ${isVideo ? "checked" : ""} data-video="${isVideo}">
             <div class="file-info">
               <span>${file.path}</span>
               <span class="file-size">${formatBytes(file.bytes)}</span>
@@ -347,8 +325,8 @@
           fileList.appendChild(div);
         });
 
-        document.getElementById('magnet-input-area').style.display = 'none';
-        document.getElementById('file-selection-area').style.display = 'block';
+        document.getElementById("magnet-input-area").style.display = "none";
+        document.getElementById("file-selection-area").style.display = "block";
         status.innerText = "Ready to cache";
         status.style.color = "var(--green)";
       } catch (err) {
@@ -362,35 +340,36 @@
     async function confirmTorrent() {
       const checkboxes = document.querySelectorAll('#file-list input[type="checkbox"]:checked');
       const fileIds = Array.from(checkboxes).map(cb => cb.value);
-      
+
       if (fileIds.length === 0) {
         alert("Please select at least one file");
         return;
       }
 
-      const btn = document.getElementById('confirm-btn');
-      const status = document.getElementById('add-status');
-      
+      const btn = document.getElementById("confirm-btn");
+      const status = document.getElementById("add-status");
+
       btn.disabled = true;
       status.innerText = "Starting cache...";
 
       try {
-        const res = await fetch('/api/torrents/select', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ torrent_id: currentTorrentId, file_ids: fileIds })
+        const res = await fetch("/api/torrents/select", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({torrent_id: currentTorrentId, file_ids: fileIds})
         });
-        
+
         const data = await res.json();
-        if (data.error) throw new Error(data.error);
+        if (data.error) {
+          throw new Error(data.error);
+        }
 
         status.innerText = "Torrent added! Refreshing...";
         status.style.color = "var(--green)";
-        
+
         resetAddForm();
 
-        // Trigger sync and refresh page
-        await fetch('/sync', { method: 'POST' });
+        await fetch("/sync", {method: "POST"});
         setTimeout(() => location.reload(), 1000);
       } catch (err) {
         status.innerText = "Error: " + err.message;
@@ -399,132 +378,74 @@
       }
     }
 
-    async function triggerManualRebuild() {
-      const status = document.getElementById('add-status');
-      status.innerText = "Resyncing library...";
-      status.style.color = "var(--orange)";
-      try {
-        const res = await fetch('/api/curator/rebuild', { method: 'POST' });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        status.innerText = "Library resynced!";
-        status.style.color = "var(--green)";
-      } catch (err) {
-        status.innerText = "Resync failed: " + err.message;
-        status.style.color = "var(--red)";
-      }
-    }
-
     function selectFiles(type) {
       const checkboxes = document.querySelectorAll('#file-list input[type="checkbox"]');
       checkboxes.forEach(cb => {
-        if (type === 'all') cb.checked = true;
-        else if (type === 'none') cb.checked = false;
-        else if (type === 'video') cb.checked = cb.dataset.video === 'true';
+        if (type === "all") {
+          cb.checked = true;
+        } else if (type === "none") {
+          cb.checked = false;
+        } else if (type === "video") {
+          cb.checked = cb.dataset.video === "true";
+        }
       });
     }
 
     function resetAddForm() {
       currentTorrentId = null;
-      document.getElementById('magnet-input').value = '';
-      document.getElementById('magnet-input-area').style.display = 'block';
-      document.getElementById('file-selection-area').style.display = 'none';
-      document.getElementById('add-status').innerText = '';
+      document.getElementById("magnet-input").value = "";
+      document.getElementById("magnet-input-area").style.display = "block";
+      document.getElementById("file-selection-area").style.display = "none";
+      document.getElementById("add-status").innerText = "";
     }
 
     function toggleDelete(id, show) {
-      document.getElementById('confirm-' + id).style.display = show ? 'flex' : 'none';
+      document.getElementById("confirm-" + id).style.display = show ? "flex" : "none";
+      document.getElementById("btn-x-" + id).style.display = show ? "none" : "flex";
     }
 
-    async function deleteTorrent(id) {
+    async function deleteTorrent(id, el) {
+      if (el) {
+        el.innerText = "...";
+        el.style.pointerEvents = "none";
+      }
+
       try {
-        const res = await fetch('/api/torrents/delete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ torrent_id: id })
+        const res = await fetch("/api/torrents/delete", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({torrent_id: id})
         });
         const data = await res.json();
-        if (data.error) throw new Error(data.error);
+        if (data.error) {
+          throw new Error(data.error);
+        }
         location.reload();
       } catch (err) {
+        if (el) {
+          el.innerText = "[Y]";
+          el.style.pointerEvents = "auto";
+        }
         alert("Delete failed: " + err.message);
       }
     }
 
     function formatBytes(bytes) {
-      if (bytes === 0) return '0 B';
+      if (bytes === 0) {
+        return "0 B";
+      }
+
       const k = 1024;
-      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const sizes = ["B", "KB", "MB", "GB", "TB"];
       const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
     }
 
-    function sortTable(n) {
-      const table = document.getElementById("torrent-table");
-      let rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
-      switching = true;
-      dir = "asc";
-      
-      const headers = table.getElementsByTagName("th");
-      for (let h = 0; h < headers.length; h++) {
-        if (h === n) {
-          if (headers[h].classList.contains("sort-asc")) {
-            headers[h].classList.replace("sort-asc", "sort-desc");
-            dir = "desc";
-          } else if (headers[h].classList.contains("sort-desc")) {
-            headers[h].classList.replace("sort-desc", "sort-asc");
-            dir = "asc";
-          } else {
-            headers[h].classList.add("sort-asc");
-            dir = "asc";
-          }
-        } else {
-          headers[h].classList.remove("sort-asc", "sort-desc");
-        }
-      }
-
-      while (switching) {
-        switching = false;
-        rows = table.rows;
-        for (i = 1; i < (rows.length - 1); i++) {
-          shouldSwitch = false;
-          x = rows[i].getElementsByTagName("TD")[n];
-          y = rows[i + 1].getElementsByTagName("TD")[n];
-          
-          let valX = x.getAttribute("data-value") || x.innerText.toLowerCase();
-          let valY = y.getAttribute("data-value") || y.innerText.toLowerCase();
-          
-          const numX = parseFloat(valX);
-          const numY = parseFloat(valY);
-          if (!isNaN(numX) && !isNaN(numY)) {
-            valX = numX;
-            valY = numY;
-          }
-
-          if (dir === "asc") {
-            if (valX > valY) {
-              shouldSwitch = true;
-              break;
-            }
-          } else if (dir === "desc") {
-            if (valX < valY) {
-              shouldSwitch = true;
-              break;
-            }
-          }
-        }
-        if (shouldSwitch) {
-          rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
-          switching = true;
-          switchcount++;
-        } else {
-          if (switchcount === 0 && dir === "asc") {
-            dir = "desc";
-            switching = true;
-          }
-        }
-      }
-    }
+    initBuzzPage({
+      rebuildStatusTarget: "#add-status",
+      tableId: "torrent-table"
+    });
   </script>
 </body>
+
 </html>
