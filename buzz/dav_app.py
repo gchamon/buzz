@@ -22,6 +22,8 @@ from .models import (
     AddTorrentRequest,
     DavConfig,
     DeleteTorrentRequest,
+    RestoreTrashRequest,
+    DeleteTrashRequest,
     ErrorResponse,
     SelectFilesRequest,
 )
@@ -67,6 +69,10 @@ class DavApp:
         @self.app.get("/torrents", response_class=HTMLResponse)
         def index():
             return self._torrents_page()
+
+        @self.app.get("/trashcan", response_class=HTMLResponse)
+        def trashcan():
+            return self._trashcan_page()
 
         @self.app.get("/healthz")
         def healthz():
@@ -120,6 +126,28 @@ class DavApp:
         def delete_torrent(payload: DeleteTorrentRequest):
             try:
                 result = self.state.delete_torrent(payload.torrent_id)
+                return result
+            except Exception as exc:
+                return JSONResponse(status_code=500, content={"error": str(exc)})
+
+        @self.app.post(
+            "/api/torrents/restore",
+            responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+        )
+        def restore_trash(payload: RestoreTrashRequest):
+            try:
+                result = self.state.restore_trash(payload.hash)
+                return result
+            except Exception as exc:
+                return JSONResponse(status_code=500, content={"error": str(exc)})
+
+        @self.app.post(
+            "/api/torrents/delete_permanently",
+            responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+        )
+        def delete_trash_permanently(payload: DeleteTrashRequest):
+            try:
+                result = self.state.delete_trash_permanently(payload.hash)
                 return result
             except Exception as exc:
                 return JSONResponse(status_code=500, content={"error": str(exc)})
@@ -271,21 +299,21 @@ class DavApp:
             torrent_id = torrent["id"]
             rows.append(
                 "<tr>"
-                f"<td class='name'>{html_escape(torrent['name'])}</td>"
+                f"<td class='name trunc-cell'><div class='trunc-content'>{html_escape(torrent['name'])}</div></td>"
                 f'<td><span class="status status-{html_escape(torrent["status"])}">[{html_escape(torrent["status"])}]</span></td>'
                 f"<td data-value='{torrent['progress']}'>{html_escape(torrent['progress'])}%</td>"
                 f"<td data-value='{torrent['bytes']}'>{html_escape(format_bytes(torrent['bytes']))}</td>"
-                f"<td>{html_escape(torrent['selected_files'])}</td>"
-                f"<td>{html_escape(torrent['links'])}</td>"
+                f"<td>{html_escape(str(torrent['selected_files']))}</td>"
+                f"<td>{html_escape(str(torrent['links']))}</td>"
                 f"<td class='comment'>{html_escape(torrent['ended'] or '-')}</td>"
                 f"<td class='yellow'><code>{html_escape(torrent_id[:8])}</code></td>"
                 "<td>"
                 f'<div class="delete-container">'
                 f'<div class="confirm-opts" id="confirm-{torrent_id}">'
-                f'<div class="opt opt-y" onclick="deleteTorrent(\'{torrent_id}\')">[Y]</div>'
-                f'<div class="opt opt-n" onclick="toggleDelete(\'{torrent_id}\', false)">[N]</div>'
+                f'<div class="opt opt-y" onclick="deleteTorrent(\'{torrent_id}\')" title="Confirm Move to Trashcan">[Y]</div>'
+                f'<div class="opt opt-n" onclick="toggleDelete(\'{torrent_id}\', false)" title="Cancel">[N]</div>'
                 "</div>"
-                f'<div class="btn-x" id="btn-x-{torrent_id}" onclick="toggleDelete(\'{torrent_id}\', true)">[X]</div>'
+                f'<div class="btn-x" id="btn-x-{torrent_id}" onclick="toggleDelete(\'{torrent_id}\', true)" title="Move to Trashcan">[X]</div>'
                 "</div>"
                 "</td>"
                 "</tr>"
@@ -305,6 +333,59 @@ class DavApp:
             )
 
         template = self.templates.get_template("torrents.html")
+        return template.render(
+            torrents_count=len(torrents),
+            last_sync_at=html_escape(status.get("last_sync_at") or "never"),
+            sync_state=html_escape(sync_state),
+            snapshot_ready=html_escape(
+                "true" if status.get("snapshot_loaded") else "false"
+            ),
+            error_html=error_html,
+            rows="".join(rows),
+        )
+
+    def _trashcan_page(self) -> str:
+        status = self.state.status()
+        torrents = self.state.trash_torrents()
+        rows = []
+        for torrent in torrents:
+            thash = torrent["hash"]
+            rows.append(
+                "<tr>"
+                f"<td class='name trunc-cell'><div class='trunc-content'>{html_escape(torrent['name'])}</div></td>"
+                f"<td data-value='{torrent['bytes']}'>{html_escape(format_bytes(torrent['bytes']))}</td>"
+                f"<td>{html_escape(str(torrent['file_count']))}</td>"
+                f"<td class='comment'>{html_escape(torrent['deleted_at'] or '-')}</td>"
+                "<td>"
+                f'<div class="delete-container">'
+                f'<div class="confirm-opts" id="confirm-restore-{thash}">'
+                f'<div class="opt opt-y" onclick="restoreTrash(\'{thash}\')" title="Confirm Restore">[Y]</div>'
+                f'<div class="opt opt-n" onclick="toggleRestore(\'{thash}\', false)" title="Cancel">[N]</div>'
+                "</div>"
+                f'<div class="btn-r" id="btn-r-{thash}" onclick="toggleRestore(\'{thash}\', true)" title="Restore to Cache">[R]</div>'
+                f'<div class="confirm-opts" id="confirm-del-{thash}">'
+                f'<div class="opt opt-y" onclick="deleteTrash(\'{thash}\')" title="Confirm Permanent Delete">[Y]</div>'
+                f'<div class="opt opt-n" onclick="toggleDel(\'{thash}\', false)" title="Cancel">[N]</div>'
+                "</div>"
+                f'<div class="btn-x" id="btn-del-{thash}" onclick="toggleDel(\'{thash}\', true)" title="Delete Permanently">[D]</div>'
+                "</div>"
+                "</td>"
+                "</tr>"
+            )
+        if not rows:
+            rows.append(
+                '<tr><td colspan="5" class="empty">Trashcan is empty.</td></tr>'
+            )
+
+        sync_state = "syncing" if status.get("sync_in_progress") else "idle"
+        error_html = ""
+        if status.get("last_error"):
+            error_html = (
+                '<div class="error"><span class="label-red">[ERROR]</span> '
+                f"{html_escape(status['last_error'])}</div>"
+            )
+
+        template = self.templates.get_template("trashcan.html")
         return template.render(
             torrents_count=len(torrents),
             last_sync_at=html_escape(status.get("last_sync_at") or "never"),

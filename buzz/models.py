@@ -160,3 +160,27 @@ class DeleteTorrentRequest(BaseModel):
         if not value:
             raise ValueError("Missing torrent_id")
         return value
+
+
+class RestoreTrashRequest(BaseModel):
+    hash: str
+
+    @field_validator("hash")
+    @classmethod
+    def validate_hash(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Missing hash")
+        return value
+
+
+class DeleteTrashRequest(BaseModel):
+    hash: str
+
+    @field_validator("hash")
+    @classmethod
+    def validate_hash(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Missing hash")
+        return value

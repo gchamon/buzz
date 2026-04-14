@@ -274,8 +274,10 @@ class BuzzState:
         self.lock = threading.RLock()
         self.state_dir = config.state_dir
         self.cache_path = os.path.join(self.state_dir, "torrent_cache.json")
+        self.trashcan_path = os.path.join(self.state_dir, "trashcan.json")
         self.snapshot_path = os.path.join(self.state_dir, "library_snapshot.json")
         self.cache = self._load_json(self.cache_path, default={})
+        self.trashcan = self._load_json(self.trashcan_path, default={})
         self.snapshot_loaded = os.path.exists(self.snapshot_path)
         self.snapshot = self._load_json(
             self.snapshot_path, default={"dirs": [""], "files": {}}
@@ -642,6 +644,13 @@ class BuzzState:
         }
 
     def delete_torrent(self, torrent_id: str) -> dict[str, Any]:
+        with self.lock:
+            cached = self.cache.get(torrent_id)
+            if cached:
+                info = cached.get("info")
+                if isinstance(info, dict) and info.get("hash"):
+                    self._add_to_trashcan(info)
+
         res = self.client.torrents.delete(torrent_id)
         if res.status_code not in (200, 204):
             raise ValueError(f"Failed to delete torrent: {res.text}")
@@ -650,6 +659,75 @@ class BuzzState:
             if torrent_id in self.cache:
                 del self.cache[torrent_id]
                 self._write_json(self.cache_path, self.cache)
+        return {"status": "success"}
+
+    def _add_to_trashcan(self, info: dict[str, Any]) -> None:
+        thash = info.get("hash")
+        if not thash:
+            return
+        self.trashcan[thash] = {
+            "hash": thash,
+            "name": info.get("filename") or info.get("original_filename") or "Unknown",
+            "bytes": info.get("bytes", 0),
+            "files": [
+                {
+                    "id": f.get("id"),
+                    "path": f.get("path"),
+                    "bytes": f.get("bytes"),
+                }
+                for f in info.get("files", [])
+                if f.get("selected")
+            ],
+            "deleted_at": utc_now_iso(),
+        }
+        self._write_json(self.trashcan_path, self.trashcan)
+
+    def trash_torrents(self) -> list[dict[str, Any]]:
+        with self.lock:
+            results = []
+            for thash, entry in self.trashcan.items():
+                results.append(
+                    {
+                        "hash": thash,
+                        "name": entry.get("name", "Unknown"),
+                        "bytes": entry.get("bytes", 0),
+                        "file_count": len(entry.get("files", [])),
+                        "deleted_at": entry.get("deleted_at"),
+                    }
+                )
+            return sorted(results, key=lambda x: x["deleted_at"] or "", reverse=True)
+
+    def restore_trash(self, thash: str) -> dict[str, Any]:
+        with self.lock:
+            entry = self.trashcan.get(thash)
+            if not entry:
+                raise ValueError("Torrent not found in trashcan")
+
+        magnet = f"magnet:?xt=urn:btih:{thash}"
+        res = self.client.torrents.add_magnet(magnet).json()
+        torrent_id = res.get("id")
+        if not torrent_id:
+            raise ValueError(f"Failed to restore torrent: {res}")
+
+        file_ids = [str(f["id"]) for f in entry.get("files", []) if f.get("id")]
+        if file_ids:
+            try:
+                self.select_files(torrent_id, file_ids)
+            except Exception as exc:
+                print(f"Failed to auto-select files during restore: {exc}", flush=True)
+
+        with self.lock:
+            if thash in self.trashcan:
+                del self.trashcan[thash]
+                self._write_json(self.trashcan_path, self.trashcan)
+
+        return {"status": "success", "id": torrent_id}
+
+    def delete_trash_permanently(self, thash: str) -> dict[str, Any]:
+        with self.lock:
+            if thash in self.trashcan:
+                del self.trashcan[thash]
+                self._write_json(self.trashcan_path, self.trashcan)
         return {"status": "success"}
 
     def select_files(self, torrent_id: str, file_ids: list[str]) -> dict[str, Any]:
