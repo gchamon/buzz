@@ -146,14 +146,8 @@ function sortTable(n) {
     return;
   }
 
-  let rows;
-  let switching = true;
-  let i;
-  let shouldSwitch;
-  let dir = "asc";
-  let switchcount = 0;
-
   const headers = table.getElementsByTagName("th");
+  let dir = "asc";
   for (let h = 0; h < headers.length; h++) {
     if (h === n) {
       if (headers[h].classList.contains("sort-asc")) {
@@ -171,43 +165,45 @@ function sortTable(n) {
     }
   }
 
-  while (switching) {
-    switching = false;
-    rows = table.rows;
-
-    for (i = 1; i < rows.length - 1; i++) {
-      shouldSwitch = false;
-      const x = rows[i].getElementsByTagName("td")[n];
-      const y = rows[i + 1].getElementsByTagName("td")[n];
-
-      let valX = x.getAttribute("data-value") || x.innerText.toLowerCase();
-      let valY = y.getAttribute("data-value") || y.innerText.toLowerCase();
-
-      const numX = parseFloat(valX);
-      const numY = parseFloat(valY);
-      if (!Number.isNaN(numX) && !Number.isNaN(numY)) {
-        valX = numX;
-        valY = numY;
-      }
-
-      if (dir === "asc") {
-        if (valX > valY) {
-          shouldSwitch = true;
-          break;
-        }
-      } else if (valX < valY) {
-        shouldSwitch = true;
-        break;
-      }
-    }
-
-    if (shouldSwitch) {
-      rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
-      switching = true;
-      switchcount++;
-    } else if (switchcount === 0 && dir === "asc") {
-      dir = "desc";
-      switching = true;
-    }
+  const tbody = table.tBodies[0];
+  if (!tbody) {
+    return;
   }
+
+  const rows = Array.from(tbody.rows);
+  const rowData = rows.map((row, index) => {
+    const cell = row.cells[n];
+    const rawValue = cell
+      ? cell.getAttribute("data-value") || cell.textContent || ""
+      : "";
+    const trimmed = rawValue.trim();
+    const numValue = trimmed === "" ? Number.NaN : Number(trimmed);
+    return {
+      row,
+      index,
+      value: Number.isNaN(numValue) ? trimmed.toLowerCase() : numValue,
+      isNumber: !Number.isNaN(numValue),
+    };
+  });
+
+  rowData.sort((a, b) => {
+    let result;
+    if (a.isNumber && b.isNumber) {
+      result = a.value - b.value;
+    } else {
+      result = String(a.value).localeCompare(String(b.value));
+    }
+
+    if (result === 0) {
+      result = a.index - b.index;
+    }
+
+    return dir === "asc" ? result : -result;
+  });
+
+  const fragment = document.createDocumentFragment();
+  rowData.forEach(entry => {
+    fragment.appendChild(entry.row);
+  });
+  tbody.appendChild(fragment);
 }

@@ -56,10 +56,10 @@
         <tbody>
           {% for torrent in trash_torrents %}
           <tr>
-            <td class="name trunc-cell"><div class="trunc-content">{{ torrent.name }}</div></td>
+            <td class="name trunc-cell" data-value="{{ torrent.name }}"><div class="trunc-content">{{ torrent.name }}</div></td>
             <td data-value="{{ torrent.bytes }}">{{ torrent.size }}</td>
             <td>{{ torrent.file_count }}</td>
-            <td class="comment">{{ torrent.deleted_at }}</td>
+            <td class="comment" data-value="{{ torrent.deleted_at }}">{{ torrent.deleted_at }}</td>
             <td>
               <div class="delete-container">
                 <div class="confirm-opts" id="confirm-restore-{{ torrent.hash }}">

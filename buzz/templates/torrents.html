@@ -235,16 +235,16 @@
         <tbody>
           {% for torrent in torrents %}
           <tr>
-            <td class="name trunc-cell">
+            <td class="name trunc-cell" data-value="{{ torrent.name }}">
               <div class="trunc-content">{{ torrent.name }}</div>
             </td>
-            <td><span class="status status-{{ torrent.status }}">[{{ torrent.status }}]</span></td>
+            <td data-value="{{ torrent.status }}"><span class="status status-{{ torrent.status }}">[{{ torrent.status }}]</span></td>
             <td data-value="{{ torrent.progress }}">{{ torrent.progress }}%</td>
             <td data-value="{{ torrent.bytes }}">{{ torrent.size }}</td>
             <td>{{ torrent.selected_files }}</td>
             <td>{{ torrent.links }}</td>
-            <td class="comment">{{ torrent.ended }}</td>
-            <td class="yellow"><code>{{ torrent.short_id }}</code></td>
+            <td class="comment" data-value="{{ torrent.ended }}">{{ torrent.ended }}</td>
+            <td class="yellow" data-value="{{ torrent.short_id }}"><code>{{ torrent.short_id }}</code></td>
             <td>
               <div class="delete-container">
                 <div class="confirm-opts" id="confirm-{{ torrent.id }}">
