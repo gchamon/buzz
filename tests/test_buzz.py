@@ -6,10 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from buzz.app import (
+from buzz.dav import (
     BuzzState,
-    Config,
-    Handler,
+    DavConfig as Config,
+    DavHandler as Handler,
     LibraryBuilder,
     canonical_snapshot,
     dav_rel_path,
@@ -786,7 +786,7 @@ class DavHandlerTests(unittest.TestCase):
             "etag": "etag-2",
         }
 
-        with patch("buzz.app.request.urlopen", side_effect=response_queue):
+        with patch("buzz.dav.request.urlopen", side_effect=response_queue):
             response, first_chunk = self.handler._open_remote_media(
                 self.state.lookup(
                     "movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv"
@@ -831,7 +831,7 @@ class DavHandlerTests(unittest.TestCase):
         }
 
         with patch(
-            "buzz.app.request.urlopen",
+            "buzz.dav.request.urlopen",
             side_effect=[
                 FakeResponse(b"<!DOCTYPE html>bad", "text/html"),
                 FakeResponse(b"<!DOCTYPE html>worse", "text/html"),
@@ -875,7 +875,7 @@ class DavHandlerTests(unittest.TestCase):
         }
 
         with patch(
-            "buzz.app.request.urlopen",
+            "buzz.dav.request.urlopen",
             return_value=FakeResponse(
                 b"\x1a\x45\xdf\xa3media-bytes", "application/force-download"
             ),
@@ -914,7 +914,7 @@ class DavHandlerTests(unittest.TestCase):
         }
 
         with patch(
-            "buzz.app.request.urlopen",
+            "buzz.dav.request.urlopen",
             side_effect=[
                 FakeResponse(b"<!DOCTYPE html>bad", "application/force-download"),
                 FakeResponse(b"<!DOCTYPE html>worse", "application/force-download"),

@@ -11,6 +11,10 @@ RUN apk add --no-cache \
   curl \
   libxml2-utils
 
-# COPY buzz /app/buzz
+COPY buzz /app/buzz
+COPY pyproject.toml /app/
 
-CMD ["uv", "run", "python3", "-m", "buzz.app"]
+RUN uv pip install --system .
+
+ENTRYPOINT ["python3", "-m", "buzz"]
+CMD ["dav"]

@@ -81,7 +81,7 @@ def canonical_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-class Config(BaseModel):
+class DavConfig(BaseModel):
     token: str
     poll_interval_secs: int = 10
     bind: str = "0.0.0.0"
@@ -97,7 +97,7 @@ class Config(BaseModel):
     verbose: bool = False
 
     @classmethod
-    def load(cls, path: str = DEFAULT_CONFIG_PATH) -> "Config":
+    def load(cls, path: str = DEFAULT_CONFIG_PATH) -> "DavConfig":
         with open(path, "r", encoding="utf-8") as handle:
             raw = yaml.safe_load(handle) or {}
 
@@ -131,7 +131,7 @@ class Config(BaseModel):
 
 
 class LibraryBuilder:
-    def __init__(self, config: Config):
+    def __init__(self, config: DavConfig):
         self.config = config
         self.anime_regexes = tuple(
             re.compile(pattern) for pattern in config.anime_patterns
@@ -336,7 +336,7 @@ class LibraryBuilder:
 
 
 class BuzzState:
-    def __init__(self, config: Config, client: RD):
+    def __init__(self, config: DavConfig, client: RD):
         self.config = config
         self.client = client
         self.builder = LibraryBuilder(config)
@@ -641,7 +641,7 @@ def read_range_header(value: str | None, size: int) -> tuple[int, int] | None:
     return start, min(end, size - 1)
 
 
-class Handler(BaseHTTPRequestHandler):
+class DavHandler(BaseHTTPRequestHandler):
     state: BuzzState | None = None
 
     def do_OPTIONS(self) -> None:
@@ -1173,24 +1173,19 @@ class InitialSync(threading.Thread):
             self.state.mark_startup_sync_complete()
 
 
-def main() -> None:
-    config = Config.load()
+def run_dav_server(config: DavConfig) -> None:
     os.environ["RD_APITOKEN"] = config.token
     client = RD()
     state = BuzzState(config, client)
-    Handler.state = state
-    server = ThreadingHTTPServer((config.bind, config.port), Handler)
+    DavHandler.state = state
+    server = ThreadingHTTPServer((config.bind, config.port), DavHandler)
     initial_sync = InitialSync(state)
     poller = Poller(state)
     initial_sync.start()
     poller.start()
-    print(f"buzz listening on {config.bind}:{config.port}", flush=True)
+    print(f"buzz dav listening on {config.bind}:{config.port}", flush=True)
     try:
         server.serve_forever()
     finally:
         poller.stop()
         server.server_close()
-
-
-if __name__ == "__main__":
-    main()

@@ -7,25 +7,30 @@ This replaces Zurg in this repo. The goal is a smaller service we control, with 
 ## Layout
 
 - `buzz` serves read-only WebDAV on `http://localhost:9999/dav`
-- `rclone` mounts that WebDAV tree at `/mnt/buzz`
+- `rclone` mounts that WebDAV tree at `/mnt/buzz/raw`
 - Media content is exposed under:
-  - `/mnt/buzz/movies`
-  - `/mnt/buzz/shows`
-  - `/mnt/buzz/anime`
-  - `/mnt/buzz/__all__`
-  - `/mnt/buzz/__unplayable__`
-- Jellyfin presentation output still lives under `/mnt/jellyfin-library`
+  - `/mnt/buzz/raw`: Original Real-Debrid files (via `rclone`)
+  - `/mnt/buzz/curated`: Symbolic link library (via `buzz-curator`)
+- Media server libraries should point to subfolders of `/mnt/buzz/curated` (e.g., `movies`, `shows`, `animes`).
+
+## Host Preparation
+
+Before starting the stack, ensure the required host directories exist and have the correct permissions (User/Group ID `1000` is the default for most containers):
+
+```sh
+# 1. Create mountpoints and state directories
+sudo mkdir -p /mnt/buzz/raw /mnt/buzz/curated
+mkdir -p data state/curator cache/jellyfin config/plex config/jellyfin
+
+# 2. Set ownership to the container user (1000:1000)
+sudo chown -R 1000:1000 /mnt/buzz data state/curator cache/jellyfin config/plex config/jellyfin
+```
 
 ## Quick Start
 
 1. Copy [buzz.dist.yml](./buzz.dist.yml) to `buzz.yml` and set your Real-Debrid token.
 2. Copy `.env.dist` to `.env` and adjust any mount or media-server settings.
-3. Create the mountpoint:
-
-```sh
-sudo mkdir -p /mnt/buzz
-```
-
+3. Perform the **Host Preparation** steps above.
 4. Start the stack:
 
 ```sh
@@ -75,7 +80,7 @@ That script dispatches to Plex or Jellyfin based on `MEDIA_SERVER`.
 - Plex refreshes changed library roots via [`scripts/plex_update.sh`](./scripts/plex_update.sh).
 - Jellyfin uses [`scripts/jellyfin_update.sh`](./scripts/jellyfin_update.sh) to trigger the existing `presentation-builder` sidecar.
 - In Jellyfin mode, set `JELLYFIN_URL=http://jellyfin:8096` so the Buzz container can reach Jellyfin over the Compose network.
-- Point Jellyfin libraries at `/mnt/jellyfin-library/movies`, `/mnt/jellyfin-library/shows`, and `/mnt/jellyfin-library/animes`.
+- Point Jellyfin libraries at `/mnt/buzz/curated/movies`, `/mnt/buzz/curated/shows`, and `/mnt/buzz/curated/animes`.
 - `logging.verbose: true` re-enables Buzz request/access logs and client-disconnect diagnostics when you need to debug stream behavior.
 - `HEALTHCHECK_VERBOSE=true` re-enables the sidecar “mountpoint seems to be working” message; the default is quiet success logs.
 
