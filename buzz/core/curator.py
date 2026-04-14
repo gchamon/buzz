@@ -26,6 +26,8 @@ from .utils import (
     pretty_title,
     sanitize_path_component,
 )
+
+
 class RebuildError(RuntimeError):
     def __init__(self, message: str, payload: dict):
         super().__init__(message)
@@ -214,6 +216,7 @@ def build_library(config: PresentationConfig):
         "show_files": 0,
     }
 
+    tmp_root: Path | None = None
     try:
         tmp_root = Path(
             tempfile.mkdtemp(prefix=".curator-tmp-", dir=config.target_root)
@@ -239,7 +242,7 @@ def build_library(config: PresentationConfig):
         )
         replace_root(tmp_root, config.target_root)
     except Exception:
-        if "tmp_root" in locals() and tmp_root.exists():
+        if tmp_root is not None and tmp_root.exists():
             shutil.rmtree(tmp_root, ignore_errors=True)
         raise
 

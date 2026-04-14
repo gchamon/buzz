@@ -1,5 +1,5 @@
 import re
-from pathlib import PurePosixPath
+from pathlib import PurePath, PurePosixPath
 from typing import Any
 
 from .constants import (
@@ -12,7 +12,7 @@ from .constants import (
 from .utils import canonical_spaces, pretty_title, sanitize_path_component
 
 
-def is_video_file(path: str | PurePosixPath) -> bool:
+def is_video_file(path: str | PurePath) -> bool:
     if isinstance(path, str):
         suffix = PurePosixPath(path).suffix.lower()
     else:
@@ -20,7 +20,7 @@ def is_video_file(path: str | PurePosixPath) -> bool:
     return suffix in VIDEO_EXTENSIONS
 
 
-def is_sidecar_file(path: str | PurePosixPath) -> bool:
+def is_sidecar_file(path: str | PurePath) -> bool:
     if isinstance(path, str):
         suffix = PurePosixPath(path).suffix.lower()
     else:

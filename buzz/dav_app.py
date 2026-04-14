@@ -317,9 +317,13 @@ class DavApp:
         )
 
     async def _handle_validation_error(
-        self, request: Request, exc: RequestValidationError
+        self, request: Request, exc: Exception
     ) -> JSONResponse:
-        first_error = exc.errors()[0] if exc.errors() else {"msg": "Invalid request"}
+        first_error = {"msg": "Invalid request"}
+        if isinstance(exc, RequestValidationError):
+            first_error = (
+                exc.errors()[0] if exc.errors() else {"msg": "Invalid request"}
+            )
         return JSONResponse(
             status_code=400,
             content={"error": str(first_error.get("msg", "Invalid request"))},
