@@ -84,12 +84,16 @@ main {
   color: var(--cyan);
 }
 
+.meta-item:first-of-type {
+  width: 120px;
+}
+
 .meta-item:last-of-type {
-  margin-left: auto
+  margin-left: auto;
 }
 
 .meta-item:nth-of-type(3) {
-  width: 150px
+  width: 150px;
 }
 
 button {
