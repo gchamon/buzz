@@ -130,15 +130,23 @@ button.secondary {
   font-weight: bold;
 }
 
-.table-wrap {
+.table-container {
   overflow-x: auto;
+  max-width: 100%;
+}
+
+.table-container table {
+  border-collapse: collapse;
+}
+
+.table-container td:first-of-type {
+  min-width: 200px;
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.8rem;
-  table-layout: fixed;
 }
 
 th {
@@ -195,15 +203,42 @@ tr:hover {
 
 .trunc-cell {
   position: relative;
-  max-width: 1px;
+  max-width: 0;
+  overflow: hidden;
 }
 
-.trunc-content {
+/* normal state: real ellipsis */
+.trunc-idle {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* hover state: hidden by default */
+.trunc-scroll-wrap {
+  display: none;
+  width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.trunc-scroll {
   display: inline-block;
   white-space: nowrap;
 }
 
-.trunc-cell:hover .trunc-content {
+/* swap on hover */
+.trunc-cell:hover .trunc-idle {
+  display: none;
+}
+
+.trunc-cell:hover .trunc-scroll-wrap {
+  display: block;
+}
+
+.trunc-cell:hover .trunc-scroll {
   animation: scroll-text 4s linear infinite;
 }
 
@@ -242,42 +277,31 @@ code {
   padding: 40px;
 }
 
+.trashcan-opts,
 .delete-container {
   display: flex;
   width: 100%;
   height: 100%;
   min-height: 35px;
-  align-items: stretch;
+  min-width: 70px;
+}
+
+.trashcan-opts,
+.confirm-opts {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-evenly;
+  width: 100%;
+  height: 100%;
+  gap: 0;
 }
 
 .confirm-opts {
   display: none;
-  flex-direction: row;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 100%;
   background: rgba(255, 184, 108, 0.2);
-  gap: 15px;
 }
 
-.opt {
-  cursor: pointer;
-  text-align: center;
-  font-weight: bold;
-  color: var(--orange);
-}
-
-.opt-y:hover {
-  color: var(--green);
-  text-shadow: 0 0 5px rgba(80, 250, 123, 0.5);
-}
-
-.opt-n:hover {
-  color: var(--red);
-  text-shadow: 0 0 5px rgba(255, 85, 85, 0.5);
-}
-
+.opt,
 .btn-r,
 .btn-del,
 .btn-x {
@@ -301,6 +325,16 @@ code {
 .btn-x:hover {
   color: var(--red);
   background: rgba(255, 85, 85, 0.1);
+}
+
+.opt-y:hover {
+  color: var(--green);
+  text-shadow: 0 0 5px rgba(80, 250, 123, 0.5);
+}
+
+.opt-n:hover {
+  color: var(--red);
+  text-shadow: 0 0 5px rgba(255, 85, 85, 0.5);
 }
 
 ::-webkit-scrollbar {

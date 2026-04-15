@@ -1,19 +1,50 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>buzz: trashcan</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐝</text></svg>">
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐝</text></svg>">
   <link rel="stylesheet" href="/static/buzz.css">
   <style>
-    th:nth-child(1), td:nth-child(1) { width: auto; }
-    th:nth-child(2), td:nth-child(2) { width: 100px; }
-    th:nth-child(3), td:nth-child(3) { width: 80px; }
-    th:nth-child(4), td:nth-child(4) { width: 220px; }
-    th:nth-child(5), td:nth-child(5) { width: 110px; text-align: right; }
+    th:nth-child(1),
+    td:nth-child(1) {
+      width: auto;
+    }
+
+    th:nth-child(2),
+    td:nth-child(2) {
+      width: 100px;
+    }
+
+    th:nth-child(3),
+    td:nth-child(3) {
+      width: 80px;
+    }
+
+    th:nth-child(4),
+    td:nth-child(4) {
+      width: 220px;
+    }
+
+    th:nth-child(5),
+    td:nth-child(5) {
+      width: 110px;
+      text-align: right;
+    }
+
+    @media (max-width: 500px) {
+
+      th:nth-child(4),
+      td:nth-child(4) {
+        display: none;
+      }
+    }
   </style>
 </head>
+
 <body>
   <main>
     <div class="prompt">
@@ -42,7 +73,7 @@
     <div class="error"><span class="label-red">[ERROR]</span> {{ last_error }}</div>
     {% endif %}
 
-    <div class="table-wrap">
+    <div class="table-container">
       <table id="torrent-table">
         <thead>
           <tr>
@@ -56,27 +87,43 @@
         <tbody>
           {% for torrent in trash_torrents %}
           <tr>
-            <td class="name trunc-cell" data-value="{{ torrent.name }}"><div class="trunc-content">{{ torrent.name }}</div></td>
+            <td class="name trunc-cell" data-value="{{ torrent.name }}">
+              <div class="trunc-idle">{{ torrent.name }}</div>
+              <div class="trunc-scroll-wrap">
+                <span class="trunc-scroll">{{ torrent.name }}</span>
+              </div>
+            </td>
             <td data-value="{{ torrent.bytes }}">{{ torrent.size }}</td>
             <td>{{ torrent.file_count }}</td>
             <td class="comment" data-value="{{ torrent.deleted_at }}">{{ torrent.deleted_at }}</td>
             <td>
               <div class="delete-container">
                 <div class="confirm-opts" id="confirm-restore-{{ torrent.hash }}">
-                  <div class="opt opt-y" onclick="restoreTrash('{{ torrent.hash }}', this)" title="Confirm Restore">[Y]</div>
+                  <div class="opt opt-y" onclick="restoreTrash('{{ torrent.hash }}', this)" title="Confirm Restore">[Y]
+                  </div>
                   <div class="opt opt-n" onclick="toggleRestore('{{ torrent.hash }}', false)" title="Cancel">[N]</div>
                 </div>
-                <div class="btn-r" id="btn-r-{{ torrent.hash }}" onclick="toggleRestore('{{ torrent.hash }}', true)" title="Restore to Cache">[R]</div>
+
                 <div class="confirm-opts" id="confirm-del-{{ torrent.hash }}">
-                  <div class="opt opt-y" onclick="deleteTrash('{{ torrent.hash }}', this)" title="Confirm Permanent Delete">[Y]</div>
+                  <div class="opt opt-y" onclick="deleteTrash('{{ torrent.hash }}', this)"
+                    title="Confirm Permanent Delete">[Y]</div>
                   <div class="opt opt-n" onclick="toggleDel('{{ torrent.hash }}', false)" title="Cancel">[N]</div>
                 </div>
-                <div class="btn-x" id="btn-del-{{ torrent.hash }}" onclick="toggleDel('{{ torrent.hash }}', true)" title="Delete Permanently">[D]</div>
+
+                <div class="trashcan-opts" id="trashcan-opts-{{ torrent.hash }}">
+                  <div class="opt btn-r" onclick="toggleRestore('{{ torrent.hash }}', true)" title="Restore to Cache">
+                    [R]
+                  </div>
+                  <div class="opt btn-x" onclick="toggleDel('{{ torrent.hash }}', true)" title="Delete Permanently">[D]
+                  </div>
+                </div>
               </div>
             </td>
           </tr>
           {% else %}
-          <tr><td colspan="5" class="empty">Trashcan is empty.</td></tr>
+          <tr>
+            <td colspan="5" class="empty">Trashcan is empty.</td>
+          </tr>
           {% endfor %}
         </tbody>
       </table>
@@ -86,15 +133,15 @@
   <script src="/static/buzz.js"></script>
   <script>
     function toggleRestore(id, show) {
-      document.getElementById("confirm-restore-" + id).style.display = show ? "flex" : "none";
-      document.getElementById("btn-r-" + id).style.display = show ? "none" : "flex";
-      document.getElementById("btn-del-" + id).style.display = show ? "none" : "flex";
+      document.getElementById('confirm-restore-' + id).style.display = show ? 'flex' : 'none';
+      document.getElementById('confirm-del-' + id).style.display = 'none';
+      document.getElementById('trashcan-opts-' + id).style.display = show ? 'none' : 'flex';
     }
 
     function toggleDel(id, show) {
-      document.getElementById("confirm-del-" + id).style.display = show ? "flex" : "none";
-      document.getElementById("btn-r-" + id).style.display = show ? "none" : "flex";
-      document.getElementById("btn-del-" + id).style.display = show ? "none" : "flex";
+      document.getElementById('confirm-del-' + id).style.display = show ? 'flex' : 'none';
+      document.getElementById('confirm-restore-' + id).style.display = 'none';
+      document.getElementById('trashcan-opts-' + id).style.display = show ? 'none' : 'flex';
     }
 
     async function restoreTrash(hash, el) {
@@ -106,15 +153,15 @@
       try {
         const res = await fetch("/api/torrents/restore", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ hash: hash })
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({hash: hash})
         });
         const data = await res.json();
         if (data.error) {
           throw new Error(data.error);
         }
 
-        await fetch("/sync", { method: "POST" });
+        await fetch("/sync", {method: "POST"});
         location.reload();
       } catch (err) {
         if (el) {
@@ -134,8 +181,8 @@
       try {
         const res = await fetch("/api/torrents/delete_permanently", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ hash: hash })
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({hash: hash})
         });
         const data = await res.json();
         if (data.error) {
@@ -157,4 +204,5 @@
     });
   </script>
 </body>
+
 </html>
