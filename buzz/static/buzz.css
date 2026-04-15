@@ -201,6 +201,12 @@ tr:hover {
   background: var(--selection);
 }
 
+th:last-of-type,
+td:last-of-type {
+  width: 80px;
+  text-align: center;
+}
+
 .trunc-cell {
   position: relative;
   max-width: 0;
