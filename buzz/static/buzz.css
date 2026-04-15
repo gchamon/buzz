@@ -130,15 +130,23 @@ button.secondary {
   font-weight: bold;
 }
 
-.table-wrap {
+.table-container {
   overflow-x: auto;
+  max-width: 100%;
+}
+
+.table-container table {
+  border-collapse: collapse;
+}
+
+.table-container td:first-of-type {
+  min-width: 200px;
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.8rem;
-  table-layout: fixed;
 }
 
 th {

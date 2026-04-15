@@ -12,6 +12,12 @@
     th:nth-child(3), td:nth-child(3) { width: 80px; }
     th:nth-child(4), td:nth-child(4) { width: 220px; }
     th:nth-child(5), td:nth-child(5) { width: 110px; text-align: right; }
+
+    @media (max-width: 500px) {
+      th:nth-child(4), td:nth-child(4) {
+        display: none;
+      }
+    }
   </style>
 </head>
 <body>
@@ -42,7 +48,7 @@
     <div class="error"><span class="label-red">[ERROR]</span> {{ last_error }}</div>
     {% endif %}
 
-    <div class="table-wrap">
+    <div class="table-container">
       <table id="torrent-table">
         <thead>
           <tr>

@@ -118,23 +118,27 @@
 
     th:nth-child(6),
     td:nth-child(6) {
-      width: 60px;
+      width: 150px;
     }
 
     th:nth-child(7),
     td:nth-child(7) {
-      width: 150px;
+      width: 85px;
     }
 
     th:nth-child(8),
     td:nth-child(8) {
-      width: 85px;
+      width: 80px;
+      text-align: center;
     }
 
-    th:nth-child(9),
-    td:nth-child(9) {
-      width: 75px;
-      text-align: right;
+    @media (max-width: 500px) {
+      th:nth-child(2), td:nth-child(2),
+      th:nth-child(3), td:nth-child(3),
+      th:nth-child(6), td:nth-child(6),
+      th:nth-child(7), td:nth-child(7) {
+        display: none;
+      }
     }
 
     .status {
@@ -217,7 +221,7 @@
       </div>
     </section>
 
-    <div class="table-wrap">
+    <div class="table-container">
       <table id="torrent-table">
         <thead>
           <tr>
@@ -226,9 +230,8 @@
             <th onclick="sortTable(2)">Prog</th>
             <th onclick="sortTable(3)">Size</th>
             <th onclick="sortTable(4)">Files</th>
-            <th onclick="sortTable(5)">Links</th>
-            <th onclick="sortTable(6)">Ended</th>
-            <th onclick="sortTable(7)">ID</th>
+            <th onclick="sortTable(5)">Ended</th>
+            <th onclick="sortTable(6)">ID</th>
             <th>Act</th>
           </tr>
         </thead>
@@ -238,11 +241,11 @@
             <td class="name trunc-cell" data-value="{{ torrent.name }}">
               <div class="trunc-content">{{ torrent.name }}</div>
             </td>
-            <td data-value="{{ torrent.status }}"><span class="status status-{{ torrent.status }}">[{{ torrent.status }}]</span></td>
+            <td data-value="{{ torrent.status }}"><span class="status status-{{ torrent.status }}">[{{ torrent.status
+                }}]</span></td>
             <td data-value="{{ torrent.progress }}">{{ torrent.progress }}%</td>
             <td data-value="{{ torrent.bytes }}">{{ torrent.size }}</td>
             <td>{{ torrent.selected_files }}</td>
-            <td>{{ torrent.links }}</td>
             <td class="comment" data-value="{{ torrent.ended }}">{{ torrent.ended }}</td>
             <td class="yellow" data-value="{{ torrent.short_id }}"><code>{{ torrent.short_id }}</code></td>
             <td>
@@ -259,7 +262,7 @@
           </tr>
           {% else %}
           <tr>
-            <td colspan="9" class="empty">No cached torrents yet. Wait for the first sync or trigger <code>POST
+            <td colspan="8" class="empty">No cached torrents yet. Wait for the first sync or trigger <code>POST
                 /sync</code>.</td>
           </tr>
           {% endfor %}
