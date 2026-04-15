@@ -89,7 +89,7 @@
             </td>
             <td data-value="{{ torrent.bytes }}">{{ torrent.size }}</td>
             <td>{{ torrent.file_count }}</td>
-            <td class="comment" data-value="{{ torrent.deleted_at }}">{{ torrent.deleted_at }}</td>
+            <td class="comment timestamp" data-value="{{ torrent.deleted_at }}">{{ torrent.deleted_at }}</td>
             <td>
               <div class="delete-container">
                 <div class="confirm-opts" id="confirm-restore-{{ torrent.hash }}">
@@ -141,7 +141,8 @@
     async function restoreTrash(hash, el) {
       if (el) {
         el.innerText = "...";
-        el.style.pointerEvents = "none";
+        const container = el.closest('.confirm-opts');
+        if (container) container.style.pointerEvents = "none";
       }
 
       try {
@@ -160,7 +161,8 @@
       } catch (err) {
         if (el) {
           el.innerText = "[Y]";
-          el.style.pointerEvents = "auto";
+          const container = el.closest('.confirm-opts');
+          if (container) container.style.pointerEvents = "";
         }
         alert("Restore failed: " + err.message);
       }
@@ -169,7 +171,8 @@
     async function deleteTrash(hash, el) {
       if (el) {
         el.innerText = "...";
-        el.style.pointerEvents = "none";
+        const container = el.closest('.confirm-opts');
+        if (container) container.style.pointerEvents = "none";
       }
 
       try {
@@ -186,7 +189,8 @@
       } catch (err) {
         if (el) {
           el.innerText = "[Y]";
-          el.style.pointerEvents = "auto";
+          const container = el.closest('.confirm-opts');
+          if (container) container.style.pointerEvents = "";
         }
         alert("Delete failed: " + err.message);
       }

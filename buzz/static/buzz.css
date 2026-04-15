@@ -32,7 +32,7 @@ main {
 
 .prompt {
   margin-bottom: 4px;
-  font-size: 1.1rem;
+  font-size: 1.3rem;
 }
 
 .prompt b {
@@ -209,6 +209,10 @@ th:last-of-type,
 td:last-of-type {
   width: 80px;
   text-align: center;
+}
+
+.timestamp {
+  width: 200px;
 }
 
 .trunc-cell {

@@ -116,11 +116,6 @@
       width: 60px;
     }
 
-    th:nth-child(6),
-    td:nth-child(6) {
-      width: 150px;
-    }
-
     th:nth-child(7),
     td:nth-child(7) {
       width: 85px;
@@ -248,7 +243,7 @@
             <td data-value="{{ torrent.progress }}">{{ torrent.progress }}%</td>
             <td data-value="{{ torrent.bytes }}">{{ torrent.size }}</td>
             <td>{{ torrent.selected_files }}</td>
-            <td class="comment" data-value="{{ torrent.ended }}">{{ torrent.ended }}</td>
+            <td class="comment timestamp" data-value="{{ torrent.ended }}">{{ torrent.ended }}</td>
             <td class="yellow" data-value="{{ torrent.short_id }}"><code>{{ torrent.short_id }}</code></td>
             <td>
               <div class="delete-container">
@@ -412,7 +407,8 @@
     async function deleteTorrent(id, el) {
       if (el) {
         el.innerText = "...";
-        el.style.pointerEvents = "none";
+        const container = el.closest('.confirm-opts');
+        if (container) container.style.pointerEvents = "none";
       }
 
       try {
@@ -429,7 +425,8 @@
       } catch (err) {
         if (el) {
           el.innerText = "[Y]";
-          el.style.pointerEvents = "auto";
+          const container = el.closest('.confirm-opts');
+          if (container) container.style.pointerEvents = "";
         }
         alert("Delete failed: " + err.message);
       }
