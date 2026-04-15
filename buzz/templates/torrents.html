@@ -133,10 +133,15 @@
     }
 
     @media (max-width: 500px) {
-      th:nth-child(2), td:nth-child(2),
-      th:nth-child(3), td:nth-child(3),
-      th:nth-child(6), td:nth-child(6),
-      th:nth-child(7), td:nth-child(7) {
+
+      th:nth-child(2),
+      td:nth-child(2),
+      th:nth-child(3),
+      td:nth-child(3),
+      th:nth-child(6),
+      td:nth-child(6),
+      th:nth-child(7),
+      td:nth-child(7) {
         display: none;
       }
     }
@@ -239,7 +244,10 @@
           {% for torrent in torrents %}
           <tr>
             <td class="name trunc-cell" data-value="{{ torrent.name }}">
-              <div class="trunc-content">{{ torrent.name }}</div>
+              <div class="trunc-idle">{{ torrent.name }}</div>
+              <div class="trunc-scroll-wrap">
+                <span class="trunc-scroll">{{ torrent.name }}</span>
+              </div>
             </td>
             <td data-value="{{ torrent.status }}"><span class="status status-{{ torrent.status }}">[{{ torrent.status
                 }}]</span></td>
