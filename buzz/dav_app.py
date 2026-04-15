@@ -327,6 +327,7 @@ class DavApp:
             snapshot_ready="true" if status.get("snapshot_loaded") else "false",
             last_error=status.get("last_error"),
             torrents=page_torrents,
+            trash_count=len(self.state.trashcan),
         )
 
     def _trashcan_page(self) -> str:
@@ -355,6 +356,7 @@ class DavApp:
             snapshot_ready="true" if status.get("snapshot_loaded") else "false",
             last_error=status.get("last_error"),
             trash_torrents=trash_torrents,
+            trash_count=len(trash_torrents),
         )
 
     async def _handle_validation_error(
