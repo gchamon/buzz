@@ -4,7 +4,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -1049,5 +1049,192 @@ class DavAppTests(unittest.TestCase):
                 open_remote_media(self.state, node, None)
 
 
+class DavBufferedStreamingTests(unittest.TestCase):
+    """Thread-safety tests for the buffered streaming path (stream_buffer_size >= 64KB)."""
+
+    # 256KB buffer — large enough to exercise the buffered code path.
+    BUFFER_SIZE = 256 * 1024
+    CHUNK_SIZE = 64 * 1024
+
+    class FakeResponse:
+        """Streaming response backed by a memoryview; supports read() and close()."""
+
+        def __init__(self, body: bytes, content_type: str = "video/x-matroska"):
+            self._stream = memoryview(body)
+            self.headers = {"Content-Type": content_type}
+            self.closed = False
+
+        def read(self, amount=-1):
+            if amount is None or amount < 0:
+                amount = len(self._stream)
+            chunk = self._stream[:amount].tobytes()
+            self._stream = self._stream[amount:]
+            return chunk
+
+        def close(self):
+            self.closed = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.close()
+            return False
+
+    def _make_dav_app(self):
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, tmpdir)
+        state_dir = Path(tmpdir)
+        snapshot = {
+            "dirs": ["", "movies", "movies/Test Film"],
+            "files": {
+                "movies/Test Film/film.mkv": {
+                    "type": "remote",
+                    "size": str(self.BUFFER_SIZE * 2),  # bigger than the buffer
+                    "source_url": "https://example.invalid/source",
+                    "mime_type": "video/x-matroska",
+                    "modified": "2026-01-01T00:00:00Z",
+                    "etag": "etag-buf-1",
+                },
+            },
+        }
+        (state_dir / "library_snapshot.json").write_text(
+            json.dumps(snapshot), encoding="utf-8"
+        )
+        config = Config(
+            token="token",
+            poll_interval_secs=10,
+            bind="127.0.0.1",
+            port=9999,
+            state_dir=str(state_dir),
+            hook_command="",
+            anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+            enable_all_dir=True,
+            enable_unplayable_dir=True,
+            request_timeout_secs=30,
+            user_agent="buzz-tests",
+            version_label="buzz/test",
+            rd_update_delay_secs=0,
+            stream_buffer_size=self.BUFFER_SIZE,
+        )
+        rd_patcher = patch("buzz.dav_app.RD", return_value=DavAppTests.FakeRD())
+        self.addCleanup(rd_patcher.stop)
+        rd_patcher.start()
+        return DavApp(config)
+
+    def _get_serve_dav(self, dav_app):
+        """Return the serve_dav route endpoint directly for generator-level testing."""
+        for route in dav_app.app.routes:
+            if (
+                getattr(route, "path", None) == "/dav/{path:path}"
+                and "GET" in getattr(route, "methods", set())
+            ):
+                return route.endpoint
+        raise AssertionError("serve_dav GET route not found")
+
+    def _mock_request(self, url_path: str):
+        req = MagicMock()
+        req.method = "GET"
+        req.url.path = url_path
+        req.headers.get.return_value = None
+        return req
+
+    # ------------------------------------------------------------------
+    # Happy-path: all bytes flow through the buffered path correctly
+    # ------------------------------------------------------------------
+
+    def test_buffered_streaming_all_bytes_received(self):
+        dav_app = self._make_dav_app()
+        payload = bytes(range(256)) * (self.BUFFER_SIZE * 2 // 256)
+        fake_response = self.FakeResponse(payload)
+
+        with patch(
+            "buzz.dav_app.open_remote_media",
+            return_value=(fake_response, b""),
+        ):
+            client = TestClient(dav_app.app)
+            r = client.get("/dav/movies/Test%20Film/film.mkv")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.content, payload)
+        self.assertTrue(fake_response.closed)
+
+    # ------------------------------------------------------------------
+    # Helpers for generator-level thread tests
+    # ------------------------------------------------------------------
+
+    def _start_patches(self, fake_response):
+        """
+        Start persistent patches for open_remote_media and StreamingResponse.
+        Returns the captured raw sync generator after serve_dav is called.
+        Both patches remain active until tearDown via addCleanup, so the
+        open_remote_media mock is still in place when the generator runs.
+        """
+        captured = {}
+
+        def fake_streaming_response(content, **kwargs):
+            captured["gen"] = content
+            return MagicMock(status_code=200)
+
+        orm_patch = patch("buzz.dav_app.open_remote_media", return_value=(fake_response, b""))
+        sr_patch = patch("buzz.dav_app.StreamingResponse", side_effect=fake_streaming_response)
+        orm_patch.start()
+        sr_patch.start()
+        self.addCleanup(orm_patch.stop)
+        self.addCleanup(sr_patch.stop)
+        return captured
+
+    # ------------------------------------------------------------------
+    # Thread cleanup: background thread joins after normal generator exit
+    # ------------------------------------------------------------------
+
+    def test_background_thread_joins_after_normal_completion(self):
+        dav_app = self._make_dav_app()
+        payload = bytes(range(256)) * (self.BUFFER_SIZE * 2 // 256)
+        fake_response = self.FakeResponse(payload)
+        mock_req = self._mock_request("/dav/movies/Test%20Film/film.mkv")
+
+        captured = self._start_patches(fake_response)
+        serve_dav = self._get_serve_dav(dav_app)
+        serve_dav(path="movies/Test%20Film/film.mkv", request=mock_req)
+        gen = captured["gen"]
+
+        threads_before = threading.active_count()
+        # Exhaust the generator; the finally block runs when StopIteration is raised.
+        received = b"".join(gen)
+        threads_after = threading.active_count()
+
+        self.assertEqual(received, payload)
+        # The background thread must have joined before the generator returned.
+        self.assertLessEqual(threads_after, threads_before)
+        self.assertTrue(fake_response.closed)
+
+    # ------------------------------------------------------------------
+    # Thread cleanup: background thread joins after premature generator close
+    # ------------------------------------------------------------------
+
+    def test_background_thread_joins_after_early_close(self):
+        dav_app = self._make_dav_app()
+        # Large payload so the background thread is still active when we close.
+        payload = bytes(range(256)) * (self.BUFFER_SIZE * 2 // 256)
+        fake_response = self.FakeResponse(payload)
+        mock_req = self._mock_request("/dav/movies/Test%20Film/film.mkv")
+
+        captured = self._start_patches(fake_response)
+        serve_dav = self._get_serve_dav(dav_app)
+        serve_dav(path="movies/Test%20Film/film.mkv", request=mock_req)
+        gen = captured["gen"]
+
+        threads_before = threading.active_count()
+        # Read one chunk then abandon the rest.
+        next(gen)
+        # gen.close() throws GeneratorExit into the generator, firing the finally block
+        # synchronously: stop_event.set() -> t.join(timeout=5) -> response.close()
+        gen.close()
+        threads_after = threading.active_count()
+
+        # Background thread must have joined before gen.close() returned.
+        self.assertLessEqual(threads_after, threads_before)
+        self.assertTrue(fake_response.closed)
 if __name__ == "__main__":
     unittest.main()

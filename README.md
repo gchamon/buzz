@@ -61,6 +61,7 @@ This file handles the DAV server logic and RD polling.
 | `poll_interval_secs` | `10` | How often Buzz polls Real-Debrid for changes. |
 | `server.bind` | `0.0.0.0` | IP address the DAV server binds to. |
 | `server.port` | `9999` | Port for the DAV server. |
+| `server.stream_buffer_size` | `0` | Read-ahead buffer size in bytes for streaming media (e.g., 50MB: `52428800`). Set to `0` to disable. |
 | `state_dir` | `/app/data` | Path to store the SQLite DB and snapshots inside the container. |
 | `hooks.on_library_change` | `sh /app/scripts/media_update.sh` | Shell command executed when a change in the library is detected. |
 | `hooks.curator_url` | `http://buzz-curator:8400/rebuild` | Internal URL to trigger the Curator rebuild. |

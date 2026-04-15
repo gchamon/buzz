@@ -4,6 +4,10 @@ poll_interval_secs: 10
 server:
   bind: 0.0.0.0
   port: 9999
+  # Read-ahead buffer size in bytes for streaming media (e.g., 52428800 for 50MB).
+  # Set to 0 to disable. When enabled, a background thread pre-fetches data from
+  # Real-Debrid into a bounded queue to smooth out network variations.
+  stream_buffer_size: 0
 state_dir: /app/data
 hooks:
   on_library_change: "bash /app/scripts/media_update.sh"

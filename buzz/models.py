@@ -14,6 +14,7 @@ class DavConfig(BaseModel):
     poll_interval_secs: int = 10
     bind: str = "0.0.0.0"
     port: int = 9999
+    stream_buffer_size: int = 0
     state_dir: str = "/app/data"
     hook_command: str = ""
     anime_patterns: tuple[str, ...] = (DEFAULT_ANIME_PATTERN,)
@@ -48,6 +49,7 @@ class DavConfig(BaseModel):
             poll_interval_secs=int(raw.get("poll_interval_secs", 10)),
             bind=str(server.get("bind", "0.0.0.0")),
             port=int(server.get("port", 9999)),
+            stream_buffer_size=int(server.get("stream_buffer_size", 0)),
             state_dir=str(raw.get("state_dir", "/app/data")),
             hook_command=str(hooks.get("on_library_change", "")).strip(),
             curator_url=str(
