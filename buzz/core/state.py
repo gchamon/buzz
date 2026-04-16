@@ -850,13 +850,20 @@ class Poller(threading.Thread):
             try:
                 report = self.state.sync()
                 if report.get("changed"):
+                    added = report.get("added_paths", [])
+                    removed = report.get("removed_paths", [])
+                    updated = report.get("updated_paths", [])
+                    synced = report.get("synced_torrents", 0)
+                    parts = []
+                    if added:
+                        parts.append(f"+{len(added)} added: {', '.join(added)}")
+                    if removed:
+                        parts.append(f"-{len(removed)} removed: {', '.join(removed)}")
+                    if updated:
+                        parts.append(f"~{len(updated)} updated: {', '.join(updated)}")
                     record_event(
-                        "Real-Debrid library changed",
+                        f"Real-Debrid library changed: {'; '.join(parts)} ({synced} torrents)",
                         event="realdebrid_update",
-                        synced_torrents=report.get("synced_torrents"),
-                        added_paths=report.get("added_paths", []),
-                        removed_paths=report.get("removed_paths", []),
-                        updated_paths=report.get("updated_paths", []),
                     )
             except Exception as exc:  # noqa: BLE001
                 self.state.last_error = str(exc)

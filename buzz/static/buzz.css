@@ -150,13 +150,14 @@ main {
 
 .meta-console span {
   color: var(--fg);
+  flex: 1;
 }
 
 button {
   background: var(--purple);
   color: var(--bg);
   border: none;
-  padding: 8px 16px;
+  padding: 8px;
   cursor: pointer;
   font-family: inherit;
   font-weight: bold;
@@ -195,6 +196,11 @@ button.secondary {
   max-width: 100%;
 }
 
+#torrent-table-container {
+  overflow-y: scroll;
+  overflow-x: auto;
+}
+
 .table-container table {
   border-collapse: collapse;
 }
@@ -218,7 +224,10 @@ th {
   letter-spacing: 1px;
   cursor: pointer;
   user-select: none;
-  position: relative;
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -301,15 +310,16 @@ td:last-of-type {
 }
 
 /* swap on hover */
-.trunc-cell:hover .trunc-idle {
+/* swap on hover — only when text is actually clipped */
+.trunc-cell.is-truncated:hover .trunc-idle {
   display: none;
 }
 
-.trunc-cell:hover .trunc-scroll-wrap {
+.trunc-cell.is-truncated:hover .trunc-scroll-wrap {
   display: block;
 }
 
-.trunc-cell:hover .trunc-scroll {
+.trunc-cell.is-truncated:hover .trunc-scroll {
   animation: scroll-text 4s linear infinite;
 }
 
@@ -425,7 +435,7 @@ code {
   background: var(--comment);
 }
 
-@media (max-width: 500px) {
+@media (max-width: 700px) {
   .prompt {
     flex-direction: column;
     align-items: center;
@@ -616,6 +626,22 @@ code {
   align-items: center;
 }
 
+#magnet-input-area {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+#magnet-inputs-container {
+  flex: 1;
+  min-width: 0;
+}
+
+#resolve-btn {
+  border: 1px solid transparent;
+  align-self: flex-start;
+}
+
 .input-group {
   display: flex;
 }
@@ -720,7 +746,7 @@ input[type="text"]:focus {
   width: 85px;
 }
 
-@media (max-width: 500px) {
+@media (max-width: 700px) {
 
   #torrent-table th:nth-child(2),
   #torrent-table td:nth-child(2),
@@ -767,11 +793,31 @@ input[type="text"]:focus {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
   background: var(--selection);
   padding: 10px 15px;
   border: 1px solid var(--comment);
   border-radius: 4px 4px 0 0;
   border-bottom: none;
+}
+
+.logs-title {
+  margin: 0;
+  font: inherit;
+}
+
+.logs-header-btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.auto-refresh-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .log-container {
@@ -782,19 +828,22 @@ input[type="text"]:focus {
   overflow-y: auto;
   background: var(--bg);
   border: 1px solid var(--comment);
-  padding: 15px;
   border-radius: 0 0 4px 4px;
 }
 
 .log-entry {
-  margin-bottom: 6px;
-  white-space: pre-wrap;
-  word-break: break-all;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  padding-bottom: 4px;
-  position: relative;
-  display: flex;
-  align-items: flex-start;
+  padding: 6px 0;
+  cursor: pointer;
+  padding: 8px;
+}
+
+.log-entry:hover {
+  background: var(--selection);
 }
 
 .log-entry:hover .log-copy-btn {
@@ -802,15 +851,19 @@ input[type="text"]:focus {
 }
 
 .log-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   opacity: 0;
   cursor: pointer;
-  margin-left: auto;
-  padding: 0 5px;
+  margin: 0;
+  padding: 2px 4px;
   color: var(--comment);
-  transition: opacity 0.2s, color 0.2s;
   font-size: 0.9rem;
   user-select: none;
   flex-shrink: 0;
+  background: transparent;
+  border: 0;
 }
 
 .log-copy-btn:hover {
@@ -818,22 +871,38 @@ input[type="text"]:focus {
 }
 
 .log-content {
-  flex-grow: 1;
+  min-width: 0;
   display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-.log-entry {
-  height: 30px;
+.log-entry-placeholder {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .log-entry:last-child {
   border-bottom: none;
 }
 
+.log-source {
+  color: var(--comment);
+}
+
 .log-ts {
   color: var(--comment);
-  margin-right: 10px;
   font-size: 0.75rem;
+}
+
+.log-level {
+  flex-shrink: 0;
+}
+
+.log-message {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .log-level-debug {
@@ -874,7 +943,7 @@ input[type="text"]:focus {
   width: 220px;
 }
 
-@media (max-width: 500px) {
+@media (max-width: 700px) {
 
   #trash-table th:nth-child(4),
   #trash-table td:nth-child(4) {

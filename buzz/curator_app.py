@@ -12,6 +12,7 @@ class CuratorApp:
     def __init__(self, config: PresentationConfig):
         from .core.events import registry
         registry.default_source = "curator"
+        registry.reconfigure(config.log_max_entries)
 
         self.config = config
         self.curator = Curator(config)
@@ -44,6 +45,13 @@ class CuratorApp:
             from .core.events import registry
 
             return registry.get_recent(limit)
+
+        @self.app.get("/api/logs/count")
+        def get_logs_count():
+            from .core.events import registry
+
+            with registry.lock:
+                return {"count": len(registry.events)}
 
         @self.app.post("/rebuild")
         async def rebuild(payload: dict = None):

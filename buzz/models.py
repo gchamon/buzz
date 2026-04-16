@@ -28,6 +28,7 @@ class DavConfig(BaseModel):
     vfs_wait_timeout_secs: int = 300
     library_mount: str = ""
     verbose: bool = False
+    log_max_entries: int = 1000
 
     @classmethod
     def load(cls, path: str = DEFAULT_DAV_CONFIG_PATH) -> "DavConfig":
@@ -66,6 +67,7 @@ class DavConfig(BaseModel):
             user_agent=str(raw.get("user_agent", "buzz/0.1")),
             version_label=str(raw.get("version_label", "buzz/0.1")),
             verbose=bool(logging.get("verbose", False)),
+            log_max_entries=int(logging.get("max_entries", 1000)),
         )
 
 
@@ -131,6 +133,9 @@ class PresentationConfig(BaseModel):
         default_factory=lambda: (
             os.environ.get("PRESENTATION_VERBOSE", "").lower() in {"1", "true", "yes"}
         )
+    )
+    log_max_entries: int = Field(
+        default_factory=lambda: int(os.environ.get("PRESENTATION_LOG_MAX_ENTRIES", "1000"))
     )
 
 

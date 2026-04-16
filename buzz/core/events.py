@@ -36,6 +36,10 @@ class EventRegistry:
         with self.lock:
             return list(self.events)[-limit:]
 
+    def reconfigure(self, maxlen: int) -> None:
+        with self.lock:
+            self.events = deque(self.events, maxlen=maxlen)
+
 
 # Global registry for the process
 registry = EventRegistry()

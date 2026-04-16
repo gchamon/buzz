@@ -41,6 +41,7 @@ class DavApp:
     def __init__(self, config: DavConfig):
         from .core.events import registry
         registry.default_source = "dav"
+        registry.reconfigure(config.log_max_entries)
 
         self.config = config
         os.environ["RD_APITOKEN"] = config.token
@@ -91,8 +92,21 @@ class DavApp:
         @self.app.get("/healthz")
         def healthz():
             from .core.events import registry
+            import httpx
 
-            return {"status": "ok", "log_count": len(registry.events), **self.state.status()}
+            dav_count = len(registry.events)
+            curator_count = 0
+            if self.config.curator_url:
+                try:
+                    count_url = self.config.curator_url.replace("/rebuild", "/api/logs/count")
+                    with httpx.Client(timeout=1.0) as client:
+                        resp = client.get(count_url)
+                        if resp.status_code == 200:
+                            curator_count = resp.json().get("count", 0)
+                except Exception:  # noqa: BLE001
+                    pass
+
+            return {"status": "ok", "log_count": dav_count + curator_count, **self.state.status()}
 
         @self.app.get("/readyz")
         def readyz():

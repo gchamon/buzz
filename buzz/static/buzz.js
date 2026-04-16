@@ -13,6 +13,19 @@ function getBuzzElement(id) {
   return id ? document.getElementById(id) : null;
 }
 
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (char) => {
+    const entities = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return entities[char];
+  });
+}
+
 function setReadyLabel(isReady, offline) {
   const readyLabel = getBuzzElement(buzzPageConfig.statusReadyLabelId);
   if (!readyLabel) {
@@ -43,7 +56,7 @@ function getRebuildStatusNode() {
 async function triggerManualRebuild() {
   const status = getRebuildStatusNode();
   if (status) {
-    status.innerText = "Resyncing library...";
+    status.innerText = "resyncing library...";
     status.className = "service-status-orange";
   }
 
@@ -55,12 +68,12 @@ async function triggerManualRebuild() {
     }
 
     if (status) {
-      status.innerText = "Library resynced!";
+      status.innerText = "library resynced!";
       status.className = "service-status-green";
     }
   } catch (err) {
     if (status) {
-      status.innerText = "Resync failed: " + err.message;
+      status.innerText = "resync failed: " + err.message;
       status.className = "service-status-red";
     }
   }
@@ -73,7 +86,7 @@ async function triggerRestart() {
 
   const status = getRebuildStatusNode();
   if (status) {
-    status.innerText = "Restarting service...";
+    status.innerText = "restarting service...";
     status.className = "service-status-orange";
   }
 
@@ -82,16 +95,32 @@ async function triggerRestart() {
     setTimeout(() => location.reload(), 5000);
   } catch (err) {
     if (status) {
-      status.innerText = "Restart failed: " + err.message;
+      status.innerText = "restart failed: " + err.message;
       status.className = "service-status-red";
     }
   }
 }
 
-async function copyToClipboard(text, successMsg = "Copied to clipboard!") {
+async function copyToClipboard(text, successMsg = "copied to clipboard!") {
   const consoleMsg = document.getElementById("meta-console-msg");
+
+  function fallbackCopy(str) {
+    const el = document.createElement("textarea");
+    el.value = str;
+    el.style.cssText = "position:fixed;opacity:0";
+    document.body.appendChild(el);
+    el.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(el);
+    if (!ok) throw new Error("execCommand copy failed");
+  }
+
   try {
-    await navigator.clipboard.writeText(text);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      fallbackCopy(text);
+    }
     if (consoleMsg) {
       consoleMsg.innerText = successMsg;
       consoleMsg.className = "service-status-green";
@@ -103,7 +132,7 @@ async function copyToClipboard(text, successMsg = "Copied to clipboard!") {
   } catch (err) {
     console.error("Failed to copy:", err);
     if (consoleMsg) {
-      consoleMsg.innerText = "Failed to copy.";
+      consoleMsg.innerText = "failed to copy.";
       consoleMsg.className = "service-status-red";
     }
     return false;
@@ -121,7 +150,7 @@ async function copyLogs() {
     .map((entry) => entry.innerText)
     .join("\n");
 
-  await copyToClipboard(logText, "Logs copied to clipboard!");
+  await copyToClipboard(logText, "logs copied to clipboard!");
 }
 
 async function pollLogs() {
@@ -133,7 +162,7 @@ async function pollLogs() {
   try {
     const res = await fetch("/api/logs?limit=100");
     if (!res.ok) {
-      throw new Error("Log fetch failed");
+      throw new Error("log fetch failed");
     }
 
     const logs = await res.json();
@@ -149,16 +178,20 @@ async function pollLogs() {
         const levelClass = `log-level-${level}`;
         const levelLabel = `[${level.toUpperCase()}]`;
         const source = log.source === "curator" ? "buzz-curator" : "buzz-dav";
-        const sourceLabel = `<span style="color: var(--comment); margin-right: 5px;">${source}</span>`;
         const messageText = `${source} ${ts} [${level.toUpperCase()}] ${log.message}`;
+        const escapedMessage = escapeHtml(log.message);
+        const escapedCopyText = escapeHtml(messageText);
         return `
-          <div class="log-entry">
+          <div class="log-entry" data-copy-text="${escapedCopyText}">
             <div class="log-content">
-              ${sourceLabel}<span class="log-ts">${ts}</span><span class="${levelClass}">${levelLabel}</span> ${log.message}
+              <span class="log-source">${source}</span>
+              <span class="log-ts">${ts}</span>
+              <span class="log-level ${levelClass}">${levelLabel}</span>
+              <span class="log-message">${escapedMessage}</span>
             </div>
-            <div class="log-copy-btn" onclick="copyToClipboard('${messageText.replace(/'/g, "\\'")}')" title="Copy line">
+            <button type="button" class="log-copy-btn" title="Copy line" aria-label="Copy log line">
               <i class="fa-regular fa-copy"></i>
-            </div>
+            </button>
           </div>`;
       })
       .join("");
@@ -168,6 +201,20 @@ async function pollLogs() {
     console.error("Failed to poll logs:", err);
   }
 }
+
+document.addEventListener("click", async (event) => {
+  const entry = event.target.closest(".log-entry[data-copy-text]");
+  if (!entry) {
+    return;
+  }
+
+  const text = entry.dataset.copyText;
+  if (!text) {
+    return;
+  }
+
+  await copyToClipboard(text);
+});
 
 async function pollStatus() {
   const statusSync = getBuzzElement(buzzPageConfig.statusSyncId);
@@ -317,4 +364,37 @@ function sortTable(n) {
     fragment.appendChild(entry.row);
   });
   tbody.appendChild(fragment);
+}
+
+
+function markTruncatedCells() {
+  document.querySelectorAll(".trunc-cell").forEach((cell) => {
+    const idle = cell.querySelector(".trunc-idle");
+    if (!idle) return;
+    if (idle.scrollWidth > idle.clientWidth) {
+      cell.classList.add("is-truncated");
+    } else {
+      cell.classList.remove("is-truncated");
+    }
+  });
+}
+
+function initTruncCells() {
+  markTruncatedCells();
+  const table = getBuzzElement(buzzPageConfig.tableId);
+  if (!table || typeof ResizeObserver === "undefined") return;
+  new ResizeObserver(markTruncatedCells).observe(table);
+}
+
+function fitTableToViewport() {
+  const el = document.getElementById("torrent-table-container");
+  if (!el) return;
+  const top = el.getBoundingClientRect().top;
+  const bottomPadding = 20;
+  el.style.height = (window.innerHeight - top - bottomPadding) + "px";
+}
+
+function initTableFit() {
+  fitTableToViewport();
+  window.addEventListener("resize", fitTableToViewport);
 }

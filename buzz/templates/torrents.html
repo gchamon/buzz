@@ -36,6 +36,7 @@
       </div>
       <div class="meta-row meta-console">
         <b class="meta-item-label">console:</b> <span id="meta-console-msg"></span>
+        <button class="secondary btn-sm" onclick="triggerManualRebuild()">RESYNC LIB</button>
       </div>
     </div>
 
@@ -46,9 +47,6 @@
     <section class="add-torrent-section">
       <div class="add-torrent-header">
         <span>ADD NEW MAGNET TO THE CACHE:</span>
-        <button class="secondary btn-sm" onclick="triggerManualRebuild()">
-          RESYNC LIB
-        </button>
       </div>
 
       <div id="magnet-input-area">
@@ -80,7 +78,7 @@
       </div>
     </section>
 
-    <div class="table-container relative">
+    <div class="table-container relative" id="torrent-table-container">
       <div id="processing-overlay" class="hidden absolute-fill flex flex-center overlay">
         <span class="overlay-msg">processing...</span>
       </div>
@@ -398,6 +396,8 @@
     initBuzzPage({
       tableId: "torrent-table"
     });
+    initTruncCells();
+    initTableFit();
   </script>
 </body>
 

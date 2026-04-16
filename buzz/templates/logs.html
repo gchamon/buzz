@@ -39,22 +39,27 @@
       </div>
     </div>
 
-    <div class="logs-page-container">
+    <section class="logs-page-container" aria-labelledby="logs-title">
       <div class="logs-header">
-        <span>SYSTEM LOGS:</span>
+        <h1 class="logs-title" id="logs-title">System Logs</h1>
         <div class="logs-header-btns">
-          <button class="secondary btn-sm btn-restart" onclick="triggerRestart()">RESTART STACK</button>
-          <button class="secondary btn-sm" onclick="copyLogs()">COPY</button>
-          <button class="secondary btn-sm" onclick="pollLogs()">REFRESH</button>
-          <label class="auto-refresh-label">
-            <input type="checkbox" id="auto-refresh-logs" checked class="accent-purple"> Auto
+          <button type="button" class="secondary btn-sm btn-restart" onclick="triggerRestart()">RESTART STACK</button>
+          <button type="button" class="secondary btn-sm" onclick="copyLogs()">COPY</button>
+          <button type="button" class="secondary btn-sm" onclick="pollLogs()">REFRESH</button>
+          <label class="auto-refresh-label" for="auto-refresh-logs">
+            <input type="checkbox" id="auto-refresh-logs" checked class="accent-purple">
+            <span>Auto</span>
           </label>
         </div>
       </div>
-      <div class="log-container" id="log-container">
-        <div class="log-entry comment">Loading logs...</div>
+      <div class="log-container" id="log-container" role="log" aria-live="polite">
+        <div class="log-entry log-entry-placeholder">
+          <div class="log-content">
+            <span class="comment">Loading logs...</span>
+          </div>
+        </div>
       </div>
-    </div>
+    </section>
   </main>
 
   <script src="/static/buzz.js"></script>
