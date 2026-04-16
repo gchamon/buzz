@@ -149,7 +149,9 @@ class CuratorAppTests(unittest.TestCase):
 
             self.assertEqual(report["movies"], 1)
             lines = [line for line in stdout.getvalue().splitlines() if line]
-            mapping_log = json.loads(lines[-1])
+            last_line = lines[-1]
+            json_start = last_line.find("{")
+            mapping_log = json.loads(last_line[json_start:])
             self.assertEqual(mapping_log["event"], "curator_mapping_diff")
             self.assertEqual(mapping_log["mapping_entries"], 1)
             self.assertEqual(mapping_log["removed"], [])
@@ -180,13 +182,17 @@ class CuratorAppTests(unittest.TestCase):
 
             self.assertEqual(report["movies"], 1)
             lines = [line for line in stdout.getvalue().splitlines() if line]
-            mapping_log = json.loads(lines[-1])
+            last_line = lines[-1]
+            json_start = last_line.find("{")
+            mapping_log = json.loads(last_line[json_start:])
             self.assertEqual(mapping_log["event"], "curator_mapping_diff")
             self.assertEqual(mapping_log["added"], [])
             self.assertEqual(mapping_log["removed"], [])
             self.assertEqual(mapping_log["changed"], [])
 
-    def test_rebuild_and_trigger_calls_jellyfin_scan_when_auth_is_configured(self):
+    @patch("buzz.core.curator.validate_jellyfin_auth")
+    def test_rebuild_and_trigger_calls_jellyfin_scan_when_auth_is_configured(self, mock_validate):
+        mock_validate.return_value = True
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config = self._config(
@@ -202,10 +208,57 @@ class CuratorAppTests(unittest.TestCase):
 
             trigger_scan.assert_called_once_with(config)
             self.assertTrue(report["jellyfin_scan_triggered"])
-            self.assertEqual(report["jellyfin_scan_status"], "triggered")
+            self.assertEqual(report["jellyfin_scan_status"], "full_triggered")
             self.assertIsNone(report["jellyfin_scan_error"])
 
-    def test_rebuild_and_trigger_raises_structured_error_for_scan_failure(self):
+    @patch("buzz.core.curator.validate_jellyfin_auth")
+    def test_rebuild_and_trigger_calls_selective_refresh_when_changed_roots_provided(self, mock_validate):
+        mock_validate.return_value = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root, skip_jellyfin_scan=False, jellyfin_api_key="token")
+            self._create_source_tree(config.source_root)
+
+            with patch(
+                "buzz.core.curator.trigger_jellyfin_selective_refresh"
+            ) as trigger_selective:
+                report = rebuild_and_trigger(config, changed_roots=["movies/MyMovie"])
+
+            trigger_selective.assert_called_once_with(config, ["movies/MyMovie"])
+            self.assertTrue(report["jellyfin_scan_triggered"])
+            self.assertEqual(report["jellyfin_scan_status"], "selective_triggered")
+
+    @patch("buzz.core.curator.discover_jellyfin_libraries")
+    @patch("urllib.request.urlopen")
+    def test_trigger_jellyfin_selective_refresh_calls_correct_id(
+        self, mock_urlopen, mock_discover
+    ):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(
+                root,
+                jellyfin_api_key="token",
+                jellyfin_library_map={"movies": "Movies"},
+            )
+            mock_discover.return_value = {"Movies": "movie-id-123"}
+
+            from buzz.core.curator import trigger_jellyfin_selective_refresh
+
+            trigger_jellyfin_selective_refresh(config, ["movies/MyMovie"])
+
+            # Verify that urlopen was called with the refresh URL for movie-id-123
+            calls = [call.args[0] for call in mock_urlopen.call_args_list]
+            refresh_url = f"{config.jellyfin_url}/Items/movie-id-123/Refresh"
+            self.assertTrue(
+                any(
+                    refresh_url in (url.full_url if hasattr(url, "full_url") else str(url))
+                    for url in calls
+                )
+            )
+
+    @patch("buzz.core.curator.validate_jellyfin_auth")
+    def test_rebuild_and_trigger_logs_error_and_returns_report_for_scan_failure(self, mock_validate):
+        mock_validate.return_value = True
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config = self._config(
@@ -220,13 +273,11 @@ class CuratorAppTests(unittest.TestCase):
                 "buzz.core.curator.trigger_jellyfin_scan",
                 side_effect=RuntimeError("scan failed"),
             ):
-                with self.assertRaises(RebuildError) as ctx:
-                    rebuild_and_trigger(config)
+                report = rebuild_and_trigger(config)
 
-            self.assertEqual(str(ctx.exception), "scan failed")
-            self.assertEqual(ctx.exception.payload["jellyfin_scan_status"], "failed")
-            self.assertEqual(ctx.exception.payload["jellyfin_scan_error"], "scan failed")
-            self.assertFalse(ctx.exception.payload["jellyfin_scan_triggered"])
+            self.assertEqual(report["jellyfin_scan_status"], "failed")
+            self.assertEqual(report["jellyfin_scan_error"], "scan failed")
+            self.assertFalse(report["jellyfin_scan_triggered"])
 
     def test_curator_rebuild_logs_unexpected_errors(self):
         with tempfile.TemporaryDirectory() as tmpdir:

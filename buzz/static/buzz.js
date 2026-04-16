@@ -1,10 +1,11 @@
 let buzzPageConfig = {
   tableId: "torrent-table",
-  rebuildStatusTarget: null,
   statusSyncId: "status-sync",
   statusLastSyncId: "status-last-sync",
   statusReadyId: "status-ready",
   statusReadyLabelId: "status-ready-label",
+  navLogsId: "nav-logs",
+  consoleMsgId: "meta-console-msg",
   pollIntervalMs: 3000,
 };
 
@@ -18,51 +19,32 @@ function setReadyLabel(isReady, offline) {
     return;
   }
 
+  readyLabel.classList.remove("service-status-green", "service-status-orange", "service-status-cyan");
+
   if (offline) {
     readyLabel.innerText = "[offline]";
-    readyLabel.style.color = "var(--cyan)";
+    readyLabel.classList.add("service-status-cyan");
     return;
   }
 
   if (isReady) {
     readyLabel.innerText = "[ready]";
-    readyLabel.style.color = "var(--green)";
+    readyLabel.classList.add("service-status-green");
   } else {
     readyLabel.innerText = "[starting]";
-    readyLabel.style.color = "var(--orange)";
+    readyLabel.classList.add("service-status-orange");
   }
-}
-
-function createPromptStatusNode() {
-  const prompt = document.querySelector(".prompt");
-  if (!prompt) {
-    return null;
-  }
-
-  const status = document.createElement("span");
-  prompt.appendChild(status);
-  return status;
 }
 
 function getRebuildStatusNode() {
-  if (buzzPageConfig.rebuildStatusTarget === "prompt") {
-    return createPromptStatusNode();
-  }
-
-  if (typeof buzzPageConfig.rebuildStatusTarget === "string") {
-    return document.querySelector(buzzPageConfig.rebuildStatusTarget);
-  }
-
-  return null;
+  return document.getElementById(buzzPageConfig.consoleMsgId);
 }
 
 async function triggerManualRebuild() {
   const status = getRebuildStatusNode();
   if (status) {
-    status.innerText = buzzPageConfig.rebuildStatusTarget === "prompt"
-      ? " Resyncing library..."
-      : "Resyncing library...";
-    status.style.color = "var(--orange)";
+    status.innerText = "Resyncing library...";
+    status.className = "service-status-orange";
   }
 
   try {
@@ -73,28 +55,124 @@ async function triggerManualRebuild() {
     }
 
     if (status) {
-      status.innerText = buzzPageConfig.rebuildStatusTarget === "prompt"
-        ? " Library resynced!"
-        : "Library resynced!";
-      status.style.color = "var(--green)";
+      status.innerText = "Library resynced!";
+      status.className = "service-status-green";
     }
   } catch (err) {
     if (status) {
-      status.innerText = buzzPageConfig.rebuildStatusTarget === "prompt"
-        ? " Resync failed: " + err.message
-        : "Resync failed: " + err.message;
-      status.style.color = "var(--red)";
+      status.innerText = "Resync failed: " + err.message;
+      status.className = "service-status-red";
     }
   }
+}
 
-  if (status && buzzPageConfig.rebuildStatusTarget === "prompt") {
-    setTimeout(() => status.remove(), 3000);
+async function triggerRestart() {
+  if (!confirm("Are you sure you want to restart the stack?")) {
+    return;
+  }
+
+  const status = getRebuildStatusNode();
+  if (status) {
+    status.innerText = "Restarting service...";
+    status.className = "service-status-orange";
+  }
+
+  try {
+    await fetch("/api/restart", { method: "POST" });
+    setTimeout(() => location.reload(), 5000);
+  } catch (err) {
+    if (status) {
+      status.innerText = "Restart failed: " + err.message;
+      status.className = "service-status-red";
+    }
+  }
+}
+
+async function copyToClipboard(text, successMsg = "Copied to clipboard!") {
+  const consoleMsg = document.getElementById("meta-console-msg");
+  try {
+    await navigator.clipboard.writeText(text);
+    if (consoleMsg) {
+      consoleMsg.innerText = successMsg;
+      consoleMsg.className = "service-status-green";
+      setTimeout(() => {
+        if (consoleMsg.innerText === successMsg) consoleMsg.innerText = "";
+      }, 3000);
+    }
+    return true;
+  } catch (err) {
+    console.error("Failed to copy:", err);
+    if (consoleMsg) {
+      consoleMsg.innerText = "Failed to copy.";
+      consoleMsg.className = "service-status-red";
+    }
+    return false;
+  }
+}
+
+async function copyLogs() {
+  const container = document.getElementById("log-container");
+  if (!container || container.innerText.trim() === "Loading logs...") {
+    return;
+  }
+
+  const entries = container.querySelectorAll(".log-content");
+  const logText = Array.from(entries)
+    .map((entry) => entry.innerText)
+    .join("\n");
+
+  await copyToClipboard(logText, "Logs copied to clipboard!");
+}
+
+async function pollLogs() {
+  const container = document.getElementById("log-container");
+  if (!container) {
+    return;
+  }
+
+  try {
+    const res = await fetch("/api/logs?limit=100");
+    if (!res.ok) {
+      throw new Error("Log fetch failed");
+    }
+
+    const logs = await res.json();
+    if (logs.length === 0) {
+      return;
+    }
+
+    container.innerHTML = logs
+      .map(log => {
+        const tsMatch = log.timestamp.match(/T(\d{2}:\d{2}:\d{2})/);
+        const ts = tsMatch ? tsMatch[1] : log.timestamp;
+        const level = (log.level || "info").toLowerCase();
+        const levelClass = `log-level-${level}`;
+        const levelLabel = `[${level.toUpperCase()}]`;
+        const source = log.source === "curator" ? "buzz-curator" : "buzz-dav";
+        const sourceLabel = `<span style="color: var(--comment); margin-right: 5px;">${source}</span>`;
+        const messageText = `${source} ${ts} [${level.toUpperCase()}] ${log.message}`;
+        return `
+          <div class="log-entry">
+            <div class="log-content">
+              ${sourceLabel}<span class="log-ts">${ts}</span><span class="${levelClass}">${levelLabel}</span> ${log.message}
+            </div>
+            <div class="log-copy-btn" onclick="copyToClipboard('${messageText.replace(/'/g, "\\'")}')" title="Copy line">
+              <i class="fa-regular fa-copy"></i>
+            </div>
+          </div>`;
+      })
+      .join("");
+
+    container.scrollTop = container.scrollHeight;
+  } catch (err) {
+    console.error("Failed to poll logs:", err);
   }
 }
 
 async function pollStatus() {
   const statusSync = getBuzzElement(buzzPageConfig.statusSyncId);
   const statusLastSync = getBuzzElement(buzzPageConfig.statusLastSyncId);
+  const navLogs = getBuzzElement(buzzPageConfig.navLogsId);
 
   try {
     const res = await fetch("/healthz");
@@ -108,6 +186,29 @@ async function pollStatus() {
     }
     if (statusLastSync) {
       statusLastSync.innerText = data.last_sync_at || "never";
+    }
+    if (navLogs) {
+      const logCount = data.log_count || 0;
+      navLogs.innerText = `📜 logs(${logCount})`;
+      
+      const isLogsPage = window.location.pathname === "/logs";
+      
+      if (isLogsPage) {
+        localStorage.setItem("buzz_seen_logs", logCount.toString());
+        localStorage.setItem("buzz_logs_glow", "false");
+        navLogs.classList.remove("nav-logs-new");
+      } else {
+        const seenLogs = parseInt(localStorage.getItem("buzz_seen_logs") || "0");
+        if (logCount > seenLogs) {
+          localStorage.setItem("buzz_logs_glow", "true");
+        }
+        
+        if (localStorage.getItem("buzz_logs_glow") === "true") {
+          navLogs.classList.add("nav-logs-new");
+        } else {
+          navLogs.classList.remove("nav-logs-new");
+        }
+      }
     }
     setReadyLabel(data.snapshot_loaded, false);
   } catch (err) {
@@ -137,6 +238,16 @@ function initBuzzPage(config) {
 
   if (buzzPageConfig.pollIntervalMs > 0) {
     setInterval(pollStatus, buzzPageConfig.pollIntervalMs);
+    
+    // Initial log fetch
+    pollLogs();
+    // Log polling
+    setInterval(() => {
+      const autoRefresh = document.getElementById("auto-refresh-logs");
+      if (autoRefresh && autoRefresh.checked) {
+        pollLogs();
+      }
+    }, buzzPageConfig.pollIntervalMs);
   }
 }
 
