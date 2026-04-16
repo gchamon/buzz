@@ -745,9 +745,18 @@ class BuzzState:
                 if download_url:
                     return download_url
 
-        download_url = self.client.unrestrict.link(source_url).json().get("download")
+        try:
+            res = self.client.unrestrict.link(source_url)
+            data = res.json()
+        except Exception as exc:
+            raise ValueError(f"Failed to unrestrict {source_url}: {exc}") from exc
+
+        download_url = data.get("download")
         if not download_url:
-            raise ValueError(f"Failed to resolve download link for {source_url}")
+            error_msg = data.get("error") or "no download link in response"
+            raise ValueError(
+                f"Failed to resolve download link for {source_url}: {error_msg}"
+            )
 
         with self.lock:
             self.resolved_urls[source_url] = {"download_url": download_url}

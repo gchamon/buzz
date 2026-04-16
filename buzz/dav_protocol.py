@@ -54,10 +54,20 @@ def open_remote_media(
     if not source_url:
         raise ValueError("missing Real-Debrid source URL")
     last_error = "unable to resolve upstream media"
+    state.verbose_log(f"Opening remote media from {source_url!r}")
     for attempt in range(2):
-        download_url = state.resolve_download_url(
-            source_url, force_refresh=attempt == 1
-        )
+        try:
+            download_url = state.resolve_download_url(
+                source_url, force_refresh=attempt == 1
+            )
+        except Exception as exc:
+            last_error = str(exc)
+            state.verbose_log(f"Failed to resolve download URL: {exc}")
+            if attempt == 0:
+                continue
+            raise
+
+        state.verbose_log(f"Resolved to {download_url!r} (attempt {attempt + 1}/2)")
         req = request.Request(download_url, method="GET")
         if range_header:
             start, end = range_header
@@ -66,10 +76,21 @@ def open_remote_media(
             response = request.urlopen(req, timeout=60)
         except error.HTTPError as exc:
             state.invalidate_download_url(source_url)
-            last_error = f"upstream returned HTTP {exc.code}"
+            last_error = f"upstream returned HTTP {exc.code} for {download_url}"
+            state.verbose_log(
+                f"HTTP Error {exc.code} on attempt {attempt + 1}: {exc.reason}"
+            )
             if attempt == 0:
                 continue
             raise ValueError(last_error) from exc
+        except Exception as exc:
+            state.invalidate_download_url(source_url)
+            last_error = f"failed to connect to upstream: {exc}"
+            state.verbose_log(f"Connection error on attempt {attempt + 1}: {exc}")
+            if attempt == 0:
+                continue
+            raise ValueError(last_error) from exc
+
         try:
             first_chunk = validate_remote_media_response(response, range_header)
             return response, first_chunk
@@ -77,6 +98,7 @@ def open_remote_media(
             response.close()
             state.invalidate_download_url(source_url)
             last_error = str(exc)
+            state.verbose_log(f"Validation failed on attempt {attempt + 1}: {exc}")
             if attempt == 0:
                 continue
             raise
