@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 
 import yaml
@@ -25,7 +26,10 @@ class DavConfig(BaseModel):
     version_label: str = "buzz/0.1"
     curator_url: str = "http://buzz-curator:8400/rebuild"
     rd_update_delay_secs: int = 15
+    vfs_wait_timeout_secs: int = 300
+    library_mount: str = ""
     verbose: bool = False
+    log_max_entries: int = 1000
 
     @classmethod
     def load(cls, path: str = DEFAULT_DAV_CONFIG_PATH) -> "DavConfig":
@@ -56,6 +60,8 @@ class DavConfig(BaseModel):
                 hooks.get("curator_url", "http://buzz-curator:8400/rebuild")
             ),
             rd_update_delay_secs=int(hooks.get("rd_update_delay_secs", 15)),
+            vfs_wait_timeout_secs=int(hooks.get("vfs_wait_timeout_secs", 300)),
+            library_mount=os.environ.get("LIBRARY_MOUNT", ""),
             anime_patterns=tuple(anime.get("patterns", [DEFAULT_ANIME_PATTERN])),
             enable_all_dir=bool(compat.get("enable_all_dir", True)),
             enable_unplayable_dir=bool(compat.get("enable_unplayable_dir", True)),
@@ -63,6 +69,7 @@ class DavConfig(BaseModel):
             user_agent=str(raw.get("user_agent", "buzz/0.1")),
             version_label=str(raw.get("version_label", "buzz/0.1")),
             verbose=bool(logging.get("verbose", False)),
+            log_max_entries=int(logging.get("max_entries", 1000)),
         )
 
 
@@ -104,6 +111,14 @@ class PresentationConfig(BaseModel):
     jellyfin_scan_task_id: str = Field(
         default_factory=lambda: os.environ.get("JELLYFIN_SCAN_TASK_ID", "")
     )
+    jellyfin_library_map: dict[str, str] = Field(
+        default_factory=lambda: json.loads(
+            os.environ.get(
+                "JELLYFIN_LIBRARY_MAP",
+                '{"movies": "Movies", "shows": "TV Shows", "anime": "Anime"}',
+            )
+        )
+    )
     skip_jellyfin_scan: bool = Field(
         default_factory=lambda: (
             os.environ.get("PRESENTATION_SKIP_JELLYFIN_SCAN", "").lower()
@@ -120,6 +135,9 @@ class PresentationConfig(BaseModel):
         default_factory=lambda: (
             os.environ.get("PRESENTATION_VERBOSE", "").lower() in {"1", "true", "yes"}
         )
+    )
+    log_max_entries: int = Field(
+        default_factory=lambda: int(os.environ.get("PRESENTATION_LOG_MAX_ENTRIES", "1000"))
     )
 
 

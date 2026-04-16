@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>buzz: system logs</title>
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐝</text></svg>">
+  <link rel="stylesheet" href="/static/buzz.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+
+<body>
+  <main>
+    <div class="prompt">
+      <b>buzz:</b>
+      <div class="menu-options">
+        <a href="/torrents" class="nav-link">🪎 cache</a>
+        <span class="nav-sep">◈</span>
+        <a href="/trashcan" class="nav-link">🗑️ trashcan({{ trash_count }})</a>
+        <span class="nav-sep">◈</span>
+        <a href="/logs" class="nav-link active" id="nav-logs">📜 logs({{ log_count }})</a>
+      </div>
+    </div>
+
+    <div class="meta-bar">
+      <div class="meta-row">
+        <div class="meta-item"><b class="meta-item-label">[torrents]</b> <span>{{ torrents_count }}</span></div>
+        <div class="meta-item"><b class="meta-item-label">[last_sync]</b> <span id="status-last-sync">{{ last_sync_at }}</span></div>
+        <div class="meta-item"><b class="meta-item-label">[state]</b> <span id="status-sync">{{ sync_state }}</span></div>
+        <div class="meta-item">
+          <b id="status-ready-label" class="service-status-green">[ready]</b>
+          <span id="status-ready" class="hidden">{{ snapshot_ready }}</span>
+        </div>
+      </div>
+      <div class="meta-row meta-console">
+        <b class="meta-item-label">console:</b> <span id="meta-console-msg"></span>
+      </div>
+    </div>
+
+    <section class="logs-page-container" aria-labelledby="logs-title">
+      <div class="logs-header">
+        <h1 class="logs-title" id="logs-title">System Logs</h1>
+        <div class="logs-header-btns">
+          <button type="button" class="secondary btn-sm btn-restart" onclick="triggerRestart()">RESTART STACK</button>
+          <button type="button" class="secondary btn-sm" onclick="copyLogs()">COPY</button>
+          <button type="button" class="secondary btn-sm" onclick="pollLogs()">REFRESH</button>
+          <label class="auto-refresh-label" for="auto-refresh-logs">
+            <input type="checkbox" id="auto-refresh-logs" checked class="accent-purple">
+            <span>Auto</span>
+          </label>
+        </div>
+      </div>
+      <div class="log-container" id="log-container" role="log" aria-live="polite">
+        <div class="log-entry log-entry-placeholder">
+          <div class="log-content">
+            <span class="comment">Loading logs...</span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/buzz.js"></script>
+  <script>
+    // Force logs to show immediately on this page
+    pollLogs();
+
+    initBuzzPage({});
+  </script>
+</body>
+
+</html>

@@ -103,23 +103,13 @@ For a deep dive into how Buzz works, components, and data flow, see the [Archite
   Source changes take effect immediately after a service restart (`docker compose restart buzz-dav`) without rebuilding the image.
 - **Isolated Development VM:** You can also deploy an isolated development environment using [Incus](./docs/incus-dev-vm.md).
 - **Production (Default):** Running `docker compose up -d` uses the stable, immutable code baked into the container image. To rebuild the production image after code changes, use `docker compose up -d --build`.
-- Tests live in [tests/test_buzz.py](./tests/test_buzz.py).
-- Config migration helper lives in [scripts/migrate_config.py](./scripts/migrate_config.py).
-
-Convert an old Zurg config into Buzz format with:
-
-```sh
-python3 scripts/migrate_config.py --from zurg --to buzz config.yml -o buzz.yml
-```
-
-Convert a Buzz config back into a best-effort Zurg-style config with:
-
-```sh
-python3 scripts/migrate_config.py --from buzz --to zurg buzz.yml -o config.yml
-```
-
-Run tests locally with:
-
-```sh
-uv run python -m unittest discover -s tests
-```
+- **Tests:** Run tests locally with:
+  ```sh
+  uv run python -m unittest discover -s tests
+  ```
+- **Linting:** We use `htmlhint` to enforce clean HTML templates and forbid inline styles. A `.htmlhintrc` is provided in the root directory.
+  ```sh
+  # Run linting on all templates
+  npx htmlhint "buzz/templates/*.html"
+  ```
+- **Config Migration:** Config migration helper lives in [scripts/migrate_config.py](./scripts/migrate_config.py).

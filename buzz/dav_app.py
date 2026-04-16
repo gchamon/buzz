@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from rdapi import RD
 
 from .dav_protocol import open_remote_media, propfind_body
+from .core.events import record_event
 from .core.utils import (
     format_bytes,
     http_date,
@@ -40,6 +41,10 @@ from .core.state import (
 
 class DavApp:
     def __init__(self, config: DavConfig):
+        from .core.events import registry
+        registry.default_source = "dav"
+        registry.reconfigure(config.log_max_entries)
+
         self.config = config
         os.environ["RD_APITOKEN"] = config.token
         self.client = RD()
@@ -73,6 +78,10 @@ class DavApp:
         self._setup_routes()
 
     def _setup_routes(self):
+        @self.app.get("/logs", response_class=HTMLResponse)
+        def logs_page(request: Request):
+            return self._logs_page()
+
         @self.app.get("/", response_class=HTMLResponse)
         @self.app.get("/torrents", response_class=HTMLResponse)
         def index():
@@ -84,16 +93,37 @@ class DavApp:
 
         @self.app.get("/healthz")
         def healthz():
-            return {"status": "ok", **self.state.status()}
+            from .core.events import registry
+            import httpx
+
+            dav_count = len(registry.events)
+            curator_count = 0
+            if self.config.curator_url:
+                try:
+                    count_url = self.config.curator_url.replace("/rebuild", "/api/logs/count")
+                    with httpx.Client(timeout=1.0) as client:
+                        resp = client.get(count_url)
+                        if resp.status_code == 200:
+                            curator_count = resp.json().get("count", 0)
+                except Exception:  # noqa: BLE001
+                    pass
+
+            return {"status": "ok", "log_count": dav_count + curator_count, **self.state.status()}
 
         @self.app.get("/readyz")
         def readyz():
+            from .core.events import registry
+
             is_ready = self.state.is_ready()
             status_code = HTTPStatus.OK if is_ready else HTTPStatus.SERVICE_UNAVAILABLE
             payload_status = "ready" if is_ready else "starting"
             return JSONResponse(
                 status_code=status_code,
-                content={"status": payload_status, **self.state.status()},
+                content={
+                    "status": payload_status,
+                    "log_count": len(registry.events),
+                    **self.state.status(),
+                },
             )
 
         @self.app.post("/sync")
@@ -163,10 +193,47 @@ class DavApp:
         @self.app.post("/api/curator/rebuild")
         def curator_rebuild():
             try:
+                record_event("Manual library resync triggered")
                 self.state.manual_rebuild()
+                record_event("Manual library resync completed")
                 return {"status": "success"}
             except Exception as exc:
+                record_event(f"Manual library resync failed: {exc}", level="error")
                 return JSONResponse(status_code=500, content={"error": str(exc)})
+
+        @self.app.get("/api/logs")
+        def get_logs(limit: int = 100):
+            from .core.events import registry
+            import httpx
+
+            logs = registry.get_recent(limit)
+            for log in logs:
+                log.setdefault("source", "dav")
+
+            # Try to fetch from curator
+            if self.config.curator_url:
+                try:
+                    curator_logs_url = self.config.curator_url.replace("/rebuild", "/api/logs")
+                    with httpx.Client(timeout=2.0) as client:
+                        resp = client.get(f"{curator_logs_url}?limit={limit}")
+                        if resp.status_code == 200:
+                            curator_logs = resp.json()
+                            for log in curator_logs:
+                                log.setdefault("source", "curator")
+                            logs.extend(curator_logs)
+                except Exception:  # noqa: BLE001
+                    pass
+
+            logs.sort(key=lambda x: x.get("timestamp", ""))
+            return logs[-limit:]
+
+        @self.app.post("/api/restart")
+        def restart_service():
+            import signal
+
+            record_event("Restart requested via API", level="warning")
+            os.kill(os.getpid(), signal.SIGTERM)
+            return {"status": "restarting"}
 
         @self.app.options("/dav/{path:path}")
         def options_dav(path: str):
@@ -352,16 +419,17 @@ class DavApp:
             except error.HTTPError as exc:
                 return Response(status_code=exc.code, content=str(exc))
             except ValueError as exc:
-                print(
-                    json.dumps(
-                        {"event": "rd_stream_failed", "path": rel, "error": str(exc)},
-                        sort_keys=True,
-                    ),
-                    flush=True,
+                record_event(
+                    f"Real-Debrid stream failed: {exc}",
+                    event="rd_stream_failed",
+                    path=rel,
+                    level="error",
                 )
                 return Response(status_code=502, content=str(exc))
 
     def _torrents_page(self) -> str:
+        from .core.events import registry
+
         status = self.state.status()
         torrents = self.state.torrents()
         page_torrents = []
@@ -392,9 +460,12 @@ class DavApp:
             last_error=status.get("last_error"),
             torrents=page_torrents,
             trash_count=len(self.state.trashcan),
+            log_count=len(registry.events),
         )
 
     def _trashcan_page(self) -> str:
+        from .core.events import registry
+
         status = self.state.status()
         torrents = self.state.trash_torrents()
         trash_torrents = []
@@ -414,13 +485,31 @@ class DavApp:
 
         template = self.templates.get_template("trashcan.html")
         return template.render(
-            torrents_count=len(torrents),
+            torrents_count=len(self.state.torrents()),
             last_sync_at=status.get("last_sync_at") or "never",
             sync_state=sync_state,
             snapshot_ready="true" if status.get("snapshot_loaded") else "false",
             last_error=status.get("last_error"),
             trash_torrents=trash_torrents,
             trash_count=len(trash_torrents),
+            log_count=len(registry.events),
+        )
+
+    def _logs_page(self) -> str:
+        from .core.events import registry
+
+        status = self.state.status()
+        sync_state = "syncing" if status.get("sync_in_progress") else "idle"
+
+        template = self.templates.get_template("logs.html")
+        return template.render(
+            torrents_count=len(self.state.torrents()),
+            last_sync_at=status.get("last_sync_at") or "never",
+            sync_state=sync_state,
+            snapshot_ready="true" if status.get("snapshot_loaded") else "false",
+            last_error=status.get("last_error"),
+            trash_count=len(self.state.trashcan),
+            log_count=len(registry.events),
         )
 
     async def _handle_validation_error(

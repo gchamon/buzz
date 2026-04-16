@@ -1,0 +1,11 @@
+{
+  "style-disabled": true,
+  "attr-lowercase": true,
+  "attr-value-double-quotes": true,
+  "doctype-first": true,
+  "tag-pair": true,
+  "tagname-lowercase": true,
+  "id-unique": true,
+  "src-not-empty": true,
+  "attr-no-duplication": true
+}

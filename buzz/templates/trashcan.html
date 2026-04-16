@@ -8,35 +8,7 @@
   <link rel="icon"
     href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐝</text></svg>">
   <link rel="stylesheet" href="/static/buzz.css">
-  <style>
-    th:nth-child(1),
-    td:nth-child(1) {
-      width: auto;
-    }
-
-    th:nth-child(2),
-    td:nth-child(2) {
-      width: 100px;
-    }
-
-    th:nth-child(3),
-    td:nth-child(3) {
-      width: 80px;
-    }
-
-    th:nth-child(4),
-    td:nth-child(4) {
-      width: 220px;
-    }
-
-    @media (max-width: 500px) {
-
-      th:nth-child(4),
-      td:nth-child(4) {
-        display: none;
-      }
-    }
-  </style>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 </head>
 
 <body>
@@ -47,21 +19,23 @@
         <a href="/torrents" class="nav-link">🪎 cache</a>
         <span class="nav-sep">◈</span>
         <a href="/trashcan" class="nav-link active">🗑️ trashcan({{ trash_count }})</a>
+        <span class="nav-sep">◈</span>
+        <a href="/logs" class="nav-link" id="nav-logs">📜 logs({{ log_count }})</a>
       </div>
     </div>
 
     <div class="meta-bar">
-      <div class="meta-item"><b>[torrents]</b> <span>{{ torrents_count }}</span></div>
-      <div class="meta-item"><b>[last_sync]</b> <span id="status-last-sync">{{ last_sync_at }}</span></div>
-      <div class="meta-item"><b>[state]</b> <span id="status-sync">{{ sync_state }}</span></div>
-      <div class="meta-item">
-        <b id="status-ready-label">[ready]</b>
-        <span id="status-ready" style="display: none;">{{ snapshot_ready }}</span>
+      <div class="meta-row">
+        <div class="meta-item"><b class="meta-item-label">[torrents]</b> <span>{{ torrents_count }}</span></div>
+        <div class="meta-item"><b class="meta-item-label">[last_sync]</b> <span id="status-last-sync">{{ last_sync_at }}</span></div>
+        <div class="meta-item"><b class="meta-item-label">[state]</b> <span id="status-sync">{{ sync_state }}</span></div>
+        <div class="meta-item">
+          <b id="status-ready-label" class="service-status-green">[ready]</b>
+          <span id="status-ready" class="hidden">{{ snapshot_ready }}</span>
+        </div>
       </div>
-      <div class="meta-item">
-        <button class="secondary" onclick="triggerManualRebuild()" style="font-size: 0.7rem; padding: 2px 8px;">
-          RESYNC LIB
-        </button>
+      <div class="meta-row meta-console">
+        <b class="meta-item-label">console:</b> <span id="meta-console-msg"></span>
       </div>
     </div>
 
@@ -70,7 +44,7 @@
     {% endif %}
 
     <div class="table-container">
-      <table id="torrent-table">
+      <table id="trash-table">
         <thead>
           <tr>
             <th onclick="sortTable(0)">Name</th>
@@ -199,8 +173,7 @@
     }
 
     initBuzzPage({
-      rebuildStatusTarget: "prompt",
-      tableId: "torrent-table"
+      tableId: "trash-table"
     });
   </script>
 </body>
