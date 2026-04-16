@@ -13,6 +13,7 @@ from typing import Any
 from urllib import error, parse, request
 
 from .constants import DEFAULT_ANIME_PATTERN, SHOW_PATTERNS
+from .events import record_event
 from .media import is_video_file
 from .utils import (
     normalize_posix_path,
@@ -468,7 +469,7 @@ class BuzzState:
                         self.hook_in_progress = False
                         self.hook_last_finished_at = utc_now_iso()
         except Exception as exc:  # noqa: BLE001
-            print(f"Hook task failed unexpectedly: {exc}", flush=True)
+            record_event(f"Hook task failed unexpectedly: {exc}", level="error")
             with self.hook_lock:
                 self.hook_task_active = False
 
@@ -502,39 +503,114 @@ class BuzzState:
     def _trigger_curator_and_hooks(
         self, changed_roots: list[str], *, skip_delay: bool = False
     ) -> None:
-        if not skip_delay and self.config.rd_update_delay_secs > 0:
-            self.verbose_log(
-                f"Waiting {self.config.rd_update_delay_secs}s for Real-Debrid update..."
-            )
-            time.sleep(self.config.rd_update_delay_secs)
+        if not skip_delay:
+            if self.config.library_mount and changed_roots:
+                self._wait_for_vfs_visibility(changed_roots)
+            elif self.config.rd_update_delay_secs > 0:
+                self.verbose_log(
+                    f"Waiting {self.config.rd_update_delay_secs}s for Real-Debrid update..."
+                )
+                time.sleep(self.config.rd_update_delay_secs)
 
         self._trigger_curator(changed_roots)
         self._run_hook(changed_roots)
+
+    def _wait_for_vfs_visibility(self, roots: list[str]) -> None:
+        mount = self.config.library_mount
+        timeout = self.config.vfs_wait_timeout_secs
+        start_time = time.time()
+
+        # Determine current state of each root in our internal snapshot
+        with self.lock:
+            snapshot_roots = set()
+            for path in self.snapshot.get("files", {}):
+                root = self._root_for_snapshot_path(path)
+                if root:
+                    snapshot_roots.add(root)
+
+        to_check = []
+        for root in roots:
+            # We only care about visibility of media roots
+            if not any(root.startswith(p) for p in ["movies/", "shows/", "anime/"]):
+                continue
+            expected = root in snapshot_roots
+            to_check.append((root, expected))
+
+        if not to_check:
+            return
+
+        self.verbose_log(
+            f"Waiting for VFS visibility of {len(to_check)} roots in {mount} (timeout {timeout}s)..."
+        )
+
+        while time.time() - start_time < timeout:
+            all_visible = True
+            missing = []
+            stale = []
+
+            for root, expected in to_check:
+                path = os.path.join(mount, root)
+                exists = os.path.exists(path)
+                if expected and not exists:
+                    all_visible = False
+                    missing.append(root)
+                elif not expected and exists:
+                    all_visible = False
+                    stale.append(root)
+
+            if all_visible:
+                elapsed = int(time.time() - start_time)
+                self.verbose_log(f"VFS visibility confirmed after {elapsed}s")
+                return
+
+            # Periodically log progress if there are many items or we've waited a bit
+            if int(time.time() - start_time) % 30 == 0:
+                self.verbose_log(
+                    f"VFS still syncing... (missing: {len(missing)}, stale: {len(stale)})"
+                )
+
+            time.sleep(2)
+
+        self.verbose_log(
+            f"VFS visibility timeout reached after {timeout}s. Proceeding with sync."
+        )
 
     def _trigger_curator(self, changed_roots: list[str]) -> None:
         if not self.config.curator_url:
             return
         self.verbose_log(f"Triggering curator rebuild at {self.config.curator_url}...")
         try:
-            req = request.Request(self.config.curator_url, method="POST")
+            payload = {"changed_roots": changed_roots}
+            data = json.dumps(payload).encode("utf-8")
+            req = request.Request(
+                self.config.curator_url,
+                data=data,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
             with request.urlopen(req, timeout=30) as response:
                 if response.status not in (200, 204):
                     raise ValueError(f"Curator returned HTTP {response.status}")
                 self.verbose_log("Curator rebuild triggered successfully")
         except Exception as exc:
-            print(f"Failed to trigger curator rebuild: {exc}", flush=True)
+            record_event(f"Failed to trigger curator rebuild: {exc}", level="error")
 
     def _run_hook(self, changed_roots: list[str]) -> None:
         if not self.config.hook_command:
             return
+        # Filter out internal/virtual categories like __unplayable__
+        filtered_roots = [r for r in changed_roots if not r.startswith("__unplayable__")]
+        if not filtered_roots:
+            return
+
         self.verbose_log(f"Running library update hook: {self.config.hook_command}...")
         try:
             cmd = shlex.split(self.config.hook_command)
-            cmd.extend(changed_roots)
+            cmd.extend(filtered_roots)
             subprocess.run(cmd, check=True, timeout=60)
             self.verbose_log("Library update hook completed successfully")
         except Exception as exc:
-            print(f"Library update hook failed: {exc}", flush=True)
+            record_event(f"Library update hook failed: {exc}", level="error")
 
     def mark_startup_sync_complete(self) -> None:
         with self.lock:
@@ -714,7 +790,7 @@ class BuzzState:
             try:
                 self.select_files(torrent_id, file_ids)
             except Exception as exc:
-                print(f"Failed to auto-select files during restore: {exc}", flush=True)
+                record_event(f"Failed to auto-select files during restore: {exc}", level="error")
 
         with self.lock:
             if thash in self.trashcan:
@@ -760,7 +836,7 @@ class BuzzState:
 
     def verbose_log(self, message: str) -> None:
         if self.config.verbose:
-            print(f"[{utc_now_iso()}] {message}", flush=True)
+            record_event(message, level="debug")
 
 
 class Poller(threading.Thread):
@@ -774,23 +850,24 @@ class Poller(threading.Thread):
             try:
                 report = self.state.sync()
                 if report.get("changed"):
-                    print(
-                        json.dumps(
-                            {
-                                "event": "realdebrid_update",
-                                "timestamp": report.get("timestamp"),
-                                "synced_torrents": report.get("synced_torrents"),
-                                "added_paths": report.get("added_paths", []),
-                                "removed_paths": report.get("removed_paths", []),
-                                "updated_paths": report.get("updated_paths", []),
-                            },
-                            sort_keys=True,
-                        ),
-                        flush=True,
+                    added = report.get("added_paths", [])
+                    removed = report.get("removed_paths", [])
+                    updated = report.get("updated_paths", [])
+                    synced = report.get("synced_torrents", 0)
+                    parts = []
+                    if added:
+                        parts.append(f"+{len(added)} added: {', '.join(added)}")
+                    if removed:
+                        parts.append(f"-{len(removed)} removed: {', '.join(removed)}")
+                    if updated:
+                        parts.append(f"~{len(updated)} updated: {', '.join(updated)}")
+                    record_event(
+                        f"Real-Debrid library changed: {'; '.join(parts)} ({synced} torrents)",
+                        event="realdebrid_update",
                     )
             except Exception as exc:  # noqa: BLE001
                 self.state.last_error = str(exc)
-                print(f"background sync failed: {exc}", flush=True)
+                record_event(f"background sync failed: {exc}", level="error")
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -804,10 +881,10 @@ class InitialSync(threading.Thread):
     def run(self) -> None:
         try:
             report = self.state.sync(trigger_hook=False)
-            print(json.dumps({"startup_sync": report}, sort_keys=True), flush=True)
+            record_event("Startup sync complete", event="startup_sync", report=report)
         except Exception as exc:  # noqa: BLE001
             self.state.last_error = str(exc)
-            print(f"startup sync failed: {exc}", flush=True)
+            record_event(f"startup sync failed: {exc}", level="error")
         finally:
             self.state.mark_startup_sync_complete()
 

@@ -11,11 +11,15 @@ RUN apk add --no-cache \
   curl \
   libxml2-utils
 
+# Install dependencies first to improve Docker layer caching
+COPY pyproject.toml README.md /app/
+RUN mkdir -p /app/buzz/core && touch /app/buzz/__init__.py /app/buzz/core/__init__.py
+RUN uv pip install --system .
+
+# Copy application code and scripts
 COPY buzz /app/buzz
 COPY scripts /app/scripts
-COPY pyproject.toml /app/
 
-RUN uv pip install --system .
 RUN chmod +x /app/scripts/*.sh
 
 ENTRYPOINT ["python3", "-m", "buzz"]

@@ -15,6 +15,7 @@ from .constants import (
     VIDEO_EXTENSIONS,
     YEAR_RE,
 )
+from .events import record_event
 from .media import (
     is_sidecar_file,
     is_video_file,
@@ -174,22 +175,16 @@ def mapping_diff(previous: list[dict], current: list[dict]) -> dict:
 
 
 def log_mapping_event(diff: dict, report: dict, mapping_entries: int):
-    print(
-        json.dumps(
-            {
-                "event": "curator_mapping_diff",
-                "mapping_entries": mapping_entries,
-                "movies": report["movies"],
-                "show_files": report["show_files"],
-                "anime_files": report["anime_files"],
-                "added": diff["added"],
-                "removed": diff["removed"],
-                "changed": diff["changed"],
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        flush=True,
+    record_event(
+        "Curator mapping updated",
+        event="curator_mapping_diff",
+        mapping_entries=mapping_entries,
+        movies=report["movies"],
+        show_files=report["show_files"],
+        anime_files=report["anime_files"],
+        added=diff["added"],
+        removed=diff["removed"],
+        changed=diff["changed"],
     )
 
 
@@ -253,8 +248,8 @@ def build_library(config: PresentationConfig):
     (config.state_root / "report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"
     )
-    if config.verbose:
-        log_mapping_event(mapping_diff(previous_mapping, mapping), report, len(mapping))
+    
+    log_mapping_event(mapping_diff(previous_mapping, mapping), report, len(mapping))
     return report
 
 
@@ -448,12 +443,49 @@ def discover_scan_task_id(config: PresentationConfig) -> str:
         f"{config.jellyfin_url}/ScheduledTasks?IsHidden=false&IsEnabled=true",
         headers={"Authorization": f"MediaBrowser Token={config.jellyfin_api_key}"},
     )
-    with request.urlopen(req, timeout=30) as response:
-        tasks = json.load(response)
+    try:
+        with request.urlopen(req, timeout=30) as response:
+            tasks = json.load(response)
+    except error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise RuntimeError("Jellyfin API Token is invalid or unauthorized") from exc
+        raise
     for task in tasks:
         if task.get("Name") == "Scan Media Library":
             return task.get("Id", "")
     raise RuntimeError("Unable to find the Jellyfin Scan Media Library task ID.")
+
+
+def validate_jellyfin_auth(config: PresentationConfig):
+    """Verifies that the Jellyfin API key is valid."""
+    req = request.Request(
+        f"{config.jellyfin_url}/System/Info",
+        headers={"Authorization": f"MediaBrowser Token={config.jellyfin_api_key}"},
+    )
+    try:
+        with request.urlopen(req, timeout=10):
+            return True
+    except error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return False
+        raise
+    except Exception:
+        return False
+
+
+def discover_jellyfin_libraries(config: PresentationConfig) -> dict[str, str]:
+    """Returns a map of library Name -> ItemId."""
+    req = request.Request(
+        f"{config.jellyfin_url}/Library/VirtualFolders",
+        headers={"Authorization": f"MediaBrowser Token={config.jellyfin_api_key}"},
+    )
+    with request.urlopen(req, timeout=30) as response:
+        libraries = json.load(response)
+    return {
+        lib.get("Name"): lib.get("ItemId")
+        for lib in libraries
+        if lib.get("Name") and lib.get("ItemId")
+    }
 
 
 def trigger_jellyfin_scan(config: PresentationConfig):
@@ -467,7 +499,74 @@ def trigger_jellyfin_scan(config: PresentationConfig):
         return
 
 
-def rebuild_and_trigger(config: PresentationConfig):
+def trigger_jellyfin_selective_refresh(
+    config: PresentationConfig, changed_roots: list[str]
+):
+    if not changed_roots:
+        return
+
+    categories = {root.split("/")[0] for root in changed_roots if "/" in root}
+    # Filter out internal/virtual categories like __unplayable__ that shouldn't trigger scans
+    categories = {cat for cat in categories if cat != "__unplayable__"}
+    
+    if not categories:
+        return
+
+    library_names = {
+        config.jellyfin_library_map.get(cat)
+        for cat in categories
+        if cat in config.jellyfin_library_map
+    }
+    library_names = {name for name in library_names if name}
+
+    # If all categories are known but none map to a library (e.g. __unplayable__),
+    # just skip instead of falling back to a full scan.
+    if not library_names and all(cat in config.jellyfin_library_map for cat in categories):
+        record_event(
+            f"No Jellyfin libraries mapped for categories: {categories}. Skipping refresh.",
+            level="info",
+        )
+        return
+
+    if not library_names:
+        record_event(
+            f"Unknown categories {categories} (not in JELLYFIN_LIBRARY_MAP). Falling back to full scan.",
+            level="warning",
+        )
+        trigger_jellyfin_scan(config)
+        return
+
+    libraries = discover_jellyfin_libraries(config)
+    for name in library_names:
+        library_id = libraries.get(name)
+        if not library_id:
+            record_event(
+                f"Jellyfin library '{name}' not found. Falling back to full scan.",
+                level="warning",
+            )
+            trigger_jellyfin_scan(config)
+            return
+
+        record_event(
+            f"Triggering selective refresh for Jellyfin library '{name}' ({library_id})...",
+            level="info",
+        )
+        query = "Recursive=true&ImageRefreshMode=Default&MetadataRefreshMode=Default&ReplaceAllImages=false&ReplaceAllMetadata=false"
+        req = request.Request(
+            f"{config.jellyfin_url}/Items/{library_id}/Refresh?{query}",
+            method="POST",
+            headers={"Authorization": f"MediaBrowser Token={config.jellyfin_api_key}"},
+        )
+        try:
+            with request.urlopen(req, timeout=30):
+                pass
+        except Exception as exc:
+            record_event(
+                f"Failed to refresh Jellyfin library '{name}': {exc}", level="error"
+            )
+
+
+def rebuild_and_trigger(config: PresentationConfig, changed_roots: list[str] = None):
     report = build_library(config)
     if config.skip_jellyfin_scan:
         report["jellyfin_scan_triggered"] = False
@@ -479,16 +578,34 @@ def rebuild_and_trigger(config: PresentationConfig):
         report["jellyfin_scan_status"] = "skipped_missing_auth"
         report["jellyfin_scan_error"] = None
         return report
+
+    # Validate auth first to avoid cascading failures
+    if not validate_jellyfin_auth(config):
+        msg = "Jellyfin API Token is invalid or unauthorized"
+        record_event(msg, level="error")
+        report["jellyfin_scan_triggered"] = False
+        report["jellyfin_scan_status"] = "failed_auth"
+        report["jellyfin_scan_error"] = msg
+        return report
+
     try:
-        trigger_jellyfin_scan(config)
+        if changed_roots:
+            trigger_jellyfin_selective_refresh(config, changed_roots)
+            report["jellyfin_scan_status"] = "selective_triggered"
+        else:
+            trigger_jellyfin_scan(config)
+            report["jellyfin_scan_status"] = "full_triggered"
     except Exception as exc:
         report["jellyfin_scan_triggered"] = False
         report["jellyfin_scan_status"] = "failed"
         report["jellyfin_scan_error"] = str(exc)
-        raise RebuildError(str(exc), report) from exc
-    report["jellyfin_scan_triggered"] = True
-    report["jellyfin_scan_status"] = "triggered"
-    report["jellyfin_scan_error"] = None
+        # We don't raise RebuildError here anymore to ensure the curator process
+        # doesn't think the whole rebuild failed just because the scan trigger failed.
+        # The symlinks (build_library) were already successfully swapped.
+        record_event(f"Jellyfin scan trigger failed: {exc}", level="error")
+    else:
+        report["jellyfin_scan_triggered"] = True
+        report["jellyfin_scan_error"] = None
     return report
 
 
@@ -497,9 +614,9 @@ class Curator:
         self.config = config
         self.lock = threading.Lock()
 
-    def handle_rebuild(self):
+    def handle_rebuild(self, changed_roots: list[str] = None):
         with self.lock:
-            return rebuild_and_trigger(self.config)
+            return rebuild_and_trigger(self.config, changed_roots)
 
     def cleanup(self):
         with self.lock:
