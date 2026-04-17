@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import threading
 import time
@@ -14,6 +15,7 @@ from buzz.models import DavConfig as Config
 from buzz.core.state import (
     BuzzState,
     LibraryBuilder,
+    Poller,
     canonical_snapshot,
     dav_rel_path,
     normalize_posix_path,
@@ -448,6 +450,87 @@ class BuzzStateTests(unittest.TestCase):
             self.assertFalse(second["changed"])
             self.assertEqual(second["changed_paths"], [])
 
+    def test_sync_excludes_internal_roots_from_changed_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
+            )
+            client = self.FakeRD(
+                torrents_list=[
+                    {
+                        "id": "BROKEN1",
+                        "filename": "Broken Torrent",
+                        "bytes": 42,
+                        "progress": 0,
+                        "status": "error",
+                        "ended": "2026-01-01T00:00:00Z",
+                        "links": [],
+                    }
+                ],
+                torrent_infos={
+                    "BROKEN1": {
+                        "id": "BROKEN1",
+                        "status": "error",
+                        "filename": "Broken Torrent",
+                        "links": [],
+                        "files": [
+                            {
+                                "id": 1,
+                                "path": "/Broken.Movie.mkv",
+                                "bytes": 42,
+                                "selected": 1,
+                            }
+                        ],
+                    }
+                },
+            )
+            state = BuzzState(config, client=client)
+
+            report = state.sync(trigger_hook=False)
+
+            self.assertTrue(report["changed"])
+            self.assertEqual(report["changed_paths"], [])
+            self.assertEqual(report["added_paths"], [])
+
+    def test_poller_formats_change_log_across_multiple_lines(self):
+        state = MagicMock()
+        poller = Poller(state)
+
+        message = poller._format_change_message(
+            [
+                "movies/The.Lord.of.the.Rings.The.Fellowship.of.the.Ring.2001.EXTENDED.2160p.UHD.BluRay.x265-BOREDOR",
+                "movies/The.Lord.of.the.Rings.The.Return.Of.The.King.2003.EXTENDED.2160p.UHD.BluRay.x265-BOREDOR",
+            ],
+            [],
+            [],
+            96,
+        )
+
+        self.assertEqual(
+            message,
+            "\n".join(
+                [
+                    "Real-Debrid library changed (96 torrents):",
+                    "  +2 added",
+                    "    movies/The.Lord.of.the.Rings.The.Fellowship.of.the.Ring.2001.EXTENDED.2160p.UHD.BluRay.x265-BOREDOR",
+                    "    movies/The.Lord.of.the.Rings.The.Return.Of.The.King.2003.EXTENDED.2160p.UHD.BluRay.x265-BOREDOR",
+                ]
+            ),
+        )
+
     def test_identical_syncs_do_not_enqueue_duplicate_hooks(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
@@ -476,6 +559,75 @@ class BuzzStateTests(unittest.TestCase):
             self.assertTrue(first["changed"])
             self.assertFalse(second["changed"])
             self.assertEqual(enqueued, [["movies/Movie 2026"]])
+
+    def test_sync_enqueues_curator_rebuild_without_hook_command(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                curator_url="http://curator.invalid/rebuild",
+            )
+            state = BuzzState(config, client=self._create_fake_rd())
+            enqueued = []
+            state._enqueue_hook = lambda changed_roots: enqueued.append(
+                list(changed_roots)
+            )
+
+            report = state.sync()
+
+            self.assertTrue(report["changed"])
+            self.assertEqual(enqueued, [["movies/Movie 2026"]])
+
+    @patch("buzz.core.state.record_event")
+    @patch("buzz.core.state.subprocess.run")
+    def test_run_hook_logs_stdout_and_stderr_on_failure(
+        self, mock_run, mock_record_event
+    ):
+        config = Config(
+            token="token",
+            poll_interval_secs=10,
+            bind="127.0.0.1",
+            port=9999,
+            state_dir="/tmp/buzz-tests",
+            hook_command="sh /app/scripts/media_update.sh",
+            anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+            enable_all_dir=True,
+            enable_unplayable_dir=True,
+            request_timeout_secs=30,
+            user_agent="buzz-tests",
+            version_label="buzz/test",
+            curator_url="",
+        )
+        state = BuzzState(config, client=None)
+        mock_run.side_effect = subprocess.CalledProcessError(
+            2,
+            ["sh", "/app/scripts/media_update.sh", "movies/Interstellar"],
+            output="hook stdout",
+            stderr="hook stderr",
+        )
+
+        state._run_hook(["movies/Interstellar"])
+
+        mock_record_event.assert_called_once_with(
+            "\n".join(
+                [
+                    "Library update hook failed with exit code 2: ['sh', '/app/scripts/media_update.sh', 'movies/Interstellar']",
+                    "stdout:\nhook stdout",
+                    "stderr:\nhook stderr",
+                ]
+            ),
+            level="error",
+        )
 
     def test_existing_snapshot_digest_stays_stable_across_restart(self):
         with tempfile.TemporaryDirectory() as tmpdir:
