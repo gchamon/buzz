@@ -988,7 +988,9 @@ class DavAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("buzz: archive", body)
         self.assertIn("fa-box-archive", body)
-        self.assertIn("archive(1)", body)
+        self.assertIn('id="nav-archive-count"', body)
+        self.assertIn("archive(<span id=\"nav-archive-count\">1</span>)", body)
+        self.assertIn('id="nav-log-count"', body)
         self.assertIn("Old &amp; Gone", body)
         self.assertIn('href="/static/buzz.css"', body)
         self.assertIn('src="/static/buzz.js"', body)
@@ -1015,6 +1017,7 @@ class DavAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("initBuzzPage", response.text)
+        self.assertIn("const zookeeper", response.text)
 
     def test_healthz_and_readyz_use_asgi_routes(self):
         self.state.snapshot_loaded = False
@@ -1023,6 +1026,7 @@ class DavAppTests(unittest.TestCase):
 
         self.assertEqual(health.status_code, 200)
         self.assertEqual(health.json()["status"], "ok")
+        self.assertEqual(health.json()["archive_count"], 0)
         self.assertEqual(ready.status_code, 503)
         self.assertEqual(ready.json()["status"], "starting")
 

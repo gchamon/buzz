@@ -4,9 +4,107 @@ let buzzPageConfig = {
   statusLastSyncId: "status-last-sync",
   statusReadyId: "status-ready",
   statusReadyLabelId: "status-ready-label",
+  navArchiveCountId: "nav-archive-count",
   navLogsId: "nav-logs",
+  navLogCountId: "nav-log-count",
   consoleMsgId: "meta-console-msg",
   pollIntervalMs: 3000,
+};
+
+const zookeeper = {
+  storageKey: "buzz_ui_state",
+
+  read() {
+    try {
+      const raw = localStorage.getItem(this.storageKey);
+      if (!raw) {
+        return null;
+      }
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") {
+        return null;
+      }
+      return {
+        logCount: Number.isFinite(Number(parsed.logCount))
+          ? Number(parsed.logCount)
+          : null,
+        archiveCount: Number.isFinite(Number(parsed.archiveCount))
+          ? Number(parsed.archiveCount)
+          : null,
+        lastSyncAt:
+          typeof parsed.lastSyncAt === "string" && parsed.lastSyncAt
+            ? parsed.lastSyncAt
+            : null,
+        syncInProgress:
+          typeof parsed.syncInProgress === "boolean"
+            ? parsed.syncInProgress
+            : null,
+      };
+    } catch (err) {
+      console.warn("Failed to read persisted UI state:", err);
+      return null;
+    }
+  },
+
+  write(state) {
+    try {
+      localStorage.setItem(this.storageKey, JSON.stringify(state));
+    } catch (err) {
+      console.warn("Failed to persist UI state:", err);
+    }
+  },
+
+  merge(freshState) {
+    const previous = this.read() || {};
+    const next = {
+      logCount:
+        Number.isFinite(Number(freshState.logCount))
+          ? Number(freshState.logCount)
+          : previous.logCount ?? null,
+      archiveCount:
+        Number.isFinite(Number(freshState.archiveCount))
+          ? Number(freshState.archiveCount)
+          : previous.archiveCount ?? null,
+      lastSyncAt:
+        typeof freshState.lastSyncAt === "string"
+          ? freshState.lastSyncAt
+          : previous.lastSyncAt ?? null,
+      syncInProgress:
+        typeof freshState.syncInProgress === "boolean"
+          ? freshState.syncInProgress
+          : previous.syncInProgress ?? null,
+    };
+    this.write(next);
+    return next;
+  },
+
+  apply(state) {
+    if (!state) {
+      return;
+    }
+
+    const statusSync = getBuzzElement(buzzPageConfig.statusSyncId);
+    const statusLastSync = getBuzzElement(buzzPageConfig.statusLastSyncId);
+    const navArchiveCount = getBuzzElement(buzzPageConfig.navArchiveCountId);
+    const navLogCount = getBuzzElement(buzzPageConfig.navLogCountId);
+
+    if (statusSync && typeof state.syncInProgress === "boolean") {
+      statusSync.innerText = state.syncInProgress ? "syncing" : "idle";
+    }
+    if (statusLastSync && typeof state.lastSyncAt === "string" && state.lastSyncAt) {
+      statusLastSync.innerText = state.lastSyncAt;
+    }
+    if (navArchiveCount && Number.isFinite(Number(state.archiveCount))) {
+      navArchiveCount.innerText = String(Number(state.archiveCount));
+    }
+    if (navLogCount && Number.isFinite(Number(state.logCount))) {
+      navLogCount.innerText = String(Number(state.logCount));
+    }
+  },
+
+  hydrate() {
+    this.apply(this.read());
+  },
 };
 
 function getBuzzElement(id) {
@@ -217,8 +315,6 @@ document.addEventListener("click", async (event) => {
 });
 
 async function pollStatus() {
-  const statusSync = getBuzzElement(buzzPageConfig.statusSyncId);
-  const statusLastSync = getBuzzElement(buzzPageConfig.statusLastSyncId);
   const navLogs = getBuzzElement(buzzPageConfig.navLogsId);
 
   try {
@@ -228,15 +324,15 @@ async function pollStatus() {
     }
 
     const data = await res.json();
-    if (statusSync) {
-      statusSync.innerText = data.sync_in_progress ? "syncing" : "idle";
-    }
-    if (statusLastSync) {
-      statusLastSync.innerText = data.last_sync_at || "never";
-    }
+    const uiState = zookeeper.merge({
+      logCount: data.log_count || 0,
+      archiveCount: data.archive_count || 0,
+      lastSyncAt: data.last_sync_at || "never",
+      syncInProgress: Boolean(data.sync_in_progress),
+    });
+    zookeeper.apply(uiState);
     if (navLogs) {
-      const logCount = data.log_count || 0;
-      navLogs.innerText = `📜 logs(${logCount})`;
+      const logCount = uiState.logCount || 0;
       
       const isLogsPage = window.location.pathname === "/logs";
       
@@ -259,9 +355,6 @@ async function pollStatus() {
     }
     setReadyLabel(data.snapshot_loaded, false);
   } catch (err) {
-    if (statusSync) {
-      statusSync.innerText = "unknown";
-    }
     setReadyLabel(false, true);
   }
 }
@@ -281,9 +374,11 @@ function initBuzzPage(config) {
     ...config,
   };
 
+  zookeeper.hydrate();
   initializeReadyLabel();
 
   if (buzzPageConfig.pollIntervalMs > 0) {
+    pollStatus();
     setInterval(pollStatus, buzzPageConfig.pollIntervalMs);
     
     // Initial log fetch

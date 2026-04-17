@@ -108,7 +108,12 @@ class DavApp:
                 except Exception:  # noqa: BLE001
                     pass
 
-            return {"status": "ok", "log_count": dav_count + curator_count, **self.state.status()}
+            return {
+                "status": "ok",
+                "log_count": dav_count + curator_count,
+                "archive_count": len(self.state.trashcan),
+                **self.state.status(),
+            }
 
         @self.app.get("/readyz")
         def readyz():
