@@ -389,6 +389,15 @@ class BuzzState:
             digest = stable_json(canonical_snapshot(snapshot))
 
             with self.lock:
+                removed_torrent_ids = set(self.cache) - set(new_cache)
+                for torrent_id in removed_torrent_ids:
+                    cached = self.cache.get(torrent_id)
+                    if not isinstance(cached, dict):
+                        continue
+                    info = cached.get("info")
+                    if isinstance(info, dict) and info.get("hash"):
+                        self._add_to_trashcan(info)
+
                 changed = digest != self.snapshot_digest
                 classified_changes = (
                     self._classified_changed_roots(self.snapshot, snapshot)

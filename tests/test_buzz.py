@@ -588,6 +588,53 @@ class BuzzStateTests(unittest.TestCase):
             self.assertTrue(report["changed"])
             self.assertEqual(enqueued, [["movies/Movie 2026"]])
 
+    def test_sync_moves_upstream_removed_torrent_to_trashcan(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
+            )
+            state = BuzzState(config, client=self.FakeRD([], {}))
+            state.cache = {
+                "TORRENT1": {
+                    "signature": {"status": "downloaded"},
+                    "info": {
+                        "id": "TORRENT1",
+                        "hash": "ABC123HASH",
+                        "filename": "Movie.2026.1080p.mkv",
+                        "original_filename": "Movie 2026",
+                        "bytes": 123,
+                        "files": [
+                            {
+                                "id": 1,
+                                "path": "/Movie.2026.1080p.mkv",
+                                "bytes": 123,
+                                "selected": 1,
+                            }
+                        ],
+                    },
+                }
+            }
+
+            report = state.sync(trigger_hook=False)
+
+            self.assertTrue(report["changed"])
+            self.assertEqual(state.cache, {})
+            self.assertIn("ABC123HASH", state.trashcan)
+            self.assertEqual(state.trashcan["ABC123HASH"]["name"], "Movie.2026.1080p.mkv")
+
     @patch("buzz.core.state.record_event")
     @patch("buzz.core.state.subprocess.run")
     def test_run_hook_logs_stdout_and_stderr_on_failure(
