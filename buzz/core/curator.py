@@ -16,6 +16,7 @@ from .constants import (
     YEAR_RE,
 )
 from .events import record_event
+from .state import is_internal_category
 from .media import (
     is_sidecar_file,
     is_video_file,
@@ -506,8 +507,8 @@ def trigger_jellyfin_selective_refresh(
         return
 
     categories = {root.split("/")[0] for root in changed_roots if "/" in root}
-    # Filter out internal/virtual categories like __unplayable__ that shouldn't trigger scans
-    categories = {cat for cat in categories if cat != "__unplayable__"}
+    # Filter out internal/virtual categories like __unplayable__ that shouldn't trigger scans.
+    categories = {cat for cat in categories if not is_internal_category(cat)}
     
     if not categories:
         return

@@ -62,6 +62,10 @@ def canonical_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def is_internal_category(name: str) -> bool:
+    return name.startswith("__")
+
+
 class LibraryBuilder:
     def __init__(self, config: DavConfig):
         self.config = config
@@ -319,9 +323,9 @@ class BuzzState:
         parts = tuple(part for part in normalized.split("/") if part)
         if len(parts) < 2:
             return None
-        if parts[0] == "__all__":
+        if is_internal_category(parts[0]):
             return None
-        if parts[0] not in {"movies", "shows", "anime", "__unplayable__"}:
+        if parts[0] not in {"movies", "shows", "anime"}:
             return None
         return "/".join(parts[:2])
 
@@ -417,7 +421,9 @@ class BuzzState:
                     self.snapshot_digest = digest
                     self._write_json(self.snapshot_path, self.snapshot)
                     self.snapshot_loaded = True
-                    if trigger_hook and self.config.hook_command:
+                    if trigger_hook and (
+                        self.config.hook_command or self.config.curator_url
+                    ):
                         hook_paths = changed_paths
 
                 self.last_sync_at = report["timestamp"]
@@ -598,8 +604,10 @@ class BuzzState:
     def _run_hook(self, changed_roots: list[str]) -> None:
         if not self.config.hook_command:
             return
-        # Filter out internal/virtual categories like __unplayable__
-        filtered_roots = [r for r in changed_roots if not r.startswith("__unplayable__")]
+        # Filter out internal/virtual categories like __unplayable__ and __all__.
+        filtered_roots = [
+            r for r in changed_roots if not is_internal_category(r.split("/", 1)[0])
+        ]
         if not filtered_roots:
             return
 
@@ -607,8 +615,34 @@ class BuzzState:
         try:
             cmd = shlex.split(self.config.hook_command)
             cmd.extend(filtered_roots)
-            subprocess.run(cmd, check=True, timeout=60)
+            subprocess.run(
+                cmd,
+                check=True,
+                timeout=60,
+                capture_output=True,
+                text=True,
+            )
             self.verbose_log("Library update hook completed successfully")
+        except subprocess.TimeoutExpired as exc:
+            details = [f"Library update hook timed out after {exc.timeout}s: {exc.cmd}"]
+            stdout = (exc.stdout or "").strip()
+            stderr = (exc.stderr or "").strip()
+            if stdout:
+                details.append(f"stdout:\n{stdout}")
+            if stderr:
+                details.append(f"stderr:\n{stderr}")
+            record_event("\n".join(details), level="error")
+        except subprocess.CalledProcessError as exc:
+            details = [
+                f"Library update hook failed with exit code {exc.returncode}: {exc.cmd}"
+            ]
+            stdout = (exc.stdout or "").strip()
+            stderr = (exc.stderr or "").strip()
+            if stdout:
+                details.append(f"stdout:\n{stdout}")
+            if stderr:
+                details.append(f"stderr:\n{stderr}")
+            record_event("\n".join(details), level="error")
         except Exception as exc:
             record_event(f"Library update hook failed: {exc}", level="error")
 
@@ -821,9 +855,18 @@ class BuzzState:
                 if download_url:
                     return download_url
 
-        download_url = self.client.unrestrict.link(source_url).json().get("download")
+        try:
+            res = self.client.unrestrict.link(source_url)
+            data = res.json()
+        except Exception as exc:
+            raise ValueError(f"Failed to unrestrict {source_url}: {exc}") from exc
+
+        download_url = data.get("download")
         if not download_url:
-            raise ValueError(f"Failed to resolve download link for {source_url}")
+            error_msg = data.get("error") or "no download link in response"
+            raise ValueError(
+                f"Failed to resolve download link for {source_url}: {error_msg}"
+            )
 
         with self.lock:
             self.resolved_urls[source_url] = {"download_url": download_url}
@@ -845,6 +888,25 @@ class Poller(threading.Thread):
         self.state = state
         self._stop_event = threading.Event()
 
+    def _format_change_message(
+        self,
+        added: list[str],
+        removed: list[str],
+        updated: list[str],
+        synced: int,
+    ) -> str:
+        lines = [f"Real-Debrid library changed ({synced} torrents):"]
+        if added:
+            lines.append(f"  +{len(added)} added")
+            lines.extend(f"    {path}" for path in added)
+        if removed:
+            lines.append(f"  -{len(removed)} removed")
+            lines.extend(f"    {path}" for path in removed)
+        if updated:
+            lines.append(f"  ~{len(updated)} updated")
+            lines.extend(f"    {path}" for path in updated)
+        return "\n".join(lines)
+
     def run(self) -> None:
         while not self._stop_event.wait(self.state.config.poll_interval_secs):
             try:
@@ -854,15 +916,10 @@ class Poller(threading.Thread):
                     removed = report.get("removed_paths", [])
                     updated = report.get("updated_paths", [])
                     synced = report.get("synced_torrents", 0)
-                    parts = []
-                    if added:
-                        parts.append(f"+{len(added)} added: {', '.join(added)}")
-                    if removed:
-                        parts.append(f"-{len(removed)} removed: {', '.join(removed)}")
-                    if updated:
-                        parts.append(f"~{len(updated)} updated: {', '.join(updated)}")
+                    if not any((added, removed, updated)):
+                        continue
                     record_event(
-                        f"Real-Debrid library changed: {'; '.join(parts)} ({synced} torrents)",
+                        self._format_change_message(added, removed, updated, synced),
                         event="realdebrid_update",
                     )
             except Exception as exc:  # noqa: BLE001

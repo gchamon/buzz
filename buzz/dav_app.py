@@ -1,6 +1,8 @@
 import hashlib
 import json
 import os
+import queue
+import threading
 from contextlib import asynccontextmanager
 from http import HTTPStatus
 from typing import Any
@@ -338,15 +340,77 @@ class DavApp:
                     response, first_chunk = open_remote_media(
                         self.state, node, range_header
                     )
+
+                    chunk_size = 64 * 1024
+                    buffer_size = self.config.stream_buffer_size
+
+                    if buffer_size < chunk_size:
+                        try:
+                            if first_chunk:
+                                yield first_chunk
+                            while True:
+                                chunk = response.read(chunk_size)
+                                if not chunk:
+                                    break
+                                yield chunk
+                        finally:
+                            response.close()
+                        return
+
+                    # Buffered path: background thread reads ahead into a bounded queue.
+                    q = queue.Queue(maxsize=max(1, buffer_size // chunk_size))
+                    stop_event = threading.Event()
+
+                    def buffer_reader():
+                        try:
+                            while not stop_event.is_set():
+                                chunk = response.read(chunk_size)
+                                if not chunk:
+                                    break
+                                while not stop_event.is_set():
+                                    try:
+                                        q.put(chunk, timeout=1)
+                                        break
+                                    except queue.Full:
+                                        continue
+                        except Exception as exc:
+                            print(
+                                json.dumps(
+                                    {"event": "buffer_reader_error", "error": str(exc)},
+                                    sort_keys=True,
+                                ),
+                                flush=True,
+                            )
+                        finally:
+                            # Signal end-of-stream; use timeout to avoid hanging
+                            # if the queue is full and the consumer is gone.
+                            while not stop_event.is_set():
+                                try:
+                                    q.put(None, timeout=1)
+                                    break
+                                except queue.Full:
+                                    continue
+
+                    t = threading.Thread(target=buffer_reader, daemon=True)
+                    t.start()
+
                     try:
                         if first_chunk:
                             yield first_chunk
+
                         while True:
-                            chunk = response.read(64 * 1024)
-                            if not chunk:
+                            try:
+                                item = q.get(timeout=1)
+                            except queue.Empty:
+                                if not t.is_alive():
+                                    break
+                                continue
+                            if item is None:
                                 break
-                            yield chunk
+                            yield item
                     finally:
+                        stop_event.set()
+                        t.join(timeout=5)
                         response.close()
 
                 return StreamingResponse(
