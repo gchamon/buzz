@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>buzz: trashcan</title>
+  <title>buzz: archive</title>
   <link rel="icon"
     href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐝</text></svg>">
   <link rel="stylesheet" href="/static/buzz.css">
@@ -18,7 +18,7 @@
       <div class="menu-options">
         <a href="/torrents" class="nav-link">🪎 cache</a>
         <span class="nav-sep">◈</span>
-        <a href="/trashcan" class="nav-link active">🗑️ trashcan({{ trash_count }})</a>
+        <a href="/trashcan" class="nav-link active"><i class="fa-solid fa-box-archive nav-icon" aria-hidden="true"></i>archive({{ trash_count }})</a>
         <span class="nav-sep">◈</span>
         <a href="/logs" class="nav-link" id="nav-logs">📜 logs({{ log_count }})</a>
       </div>
@@ -92,7 +92,7 @@
           </tr>
           {% else %}
           <tr>
-            <td colspan="5" class="empty">Trashcan is empty.</td>
+            <td colspan="5" class="empty">Archive is empty.</td>
           </tr>
           {% endfor %}
         </tbody>

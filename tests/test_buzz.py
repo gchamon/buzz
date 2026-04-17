@@ -986,7 +986,9 @@ class DavAppTests(unittest.TestCase):
         body = response.text
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("buzz: trashcan", body)
+        self.assertIn("buzz: archive", body)
+        self.assertIn("fa-box-archive", body)
+        self.assertIn("archive(1)", body)
         self.assertIn("Old &amp; Gone", body)
         self.assertIn('href="/static/buzz.css"', body)
         self.assertIn('src="/static/buzz.js"', body)
@@ -1006,7 +1008,7 @@ class DavAppTests(unittest.TestCase):
         body = response.text
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Trashcan is empty.", body)
+        self.assertIn("Archive is empty.", body)
 
     def test_static_assets_are_served(self):
         response = self.client.get("/static/buzz.js")

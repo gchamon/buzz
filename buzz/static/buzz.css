@@ -60,6 +60,10 @@ main {
   transition: all 0.2s ease;
 }
 
+.nav-icon {
+  margin-right: 0.35rem;
+}
+
 .nav-link:hover {
   color: var(--cyan);
   text-shadow: 0 0 5px rgba(139, 233, 253, 0.5);
