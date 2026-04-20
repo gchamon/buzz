@@ -73,6 +73,25 @@ class DavConfig(BaseModel):
         )
 
 
+class SubtitleFilters(BaseModel):
+    # "exclude" drops HI tracks; "include" allows them; "prefer" ranks them first
+    hearing_impaired: str = "exclude"
+    exclude_ai: bool = True
+    exclude_machine: bool = True
+
+
+class SubtitleConfig(BaseModel):
+    enabled: bool = False
+    api_key: str = ""
+    username: str = ""
+    password: str = ""
+    languages: list[str] = ["en"]
+    strategy: str = "most-downloaded"  # best-match | most-downloaded | best-rated | trusted | latest
+    filters: SubtitleFilters = Field(default_factory=SubtitleFilters)
+    search_delay_secs: float = 0.5
+    download_delay_secs: float = 1.0
+
+
 class PresentationConfig(BaseModel):
     bind: str = Field(
         default_factory=lambda: os.environ.get("PRESENTATION_BIND", "0.0.0.0")
@@ -138,6 +157,23 @@ class PresentationConfig(BaseModel):
     )
     log_max_entries: int = Field(
         default_factory=lambda: int(os.environ.get("PRESENTATION_LOG_MAX_ENTRIES", "1000"))
+    )
+    subtitles: SubtitleConfig = Field(
+        default_factory=lambda: SubtitleConfig(
+            enabled=os.environ.get("SUBTITLE_ENABLED", "").lower() in {"1", "true", "yes"},
+            api_key=os.environ.get("OPENSUBTITLES_API_KEY", ""),
+            username=os.environ.get("OPENSUBTITLES_USERNAME", ""),
+            password=os.environ.get("OPENSUBTITLES_PASSWORD", ""),
+            languages=[
+                lang.strip()
+                for lang in os.environ.get("SUBTITLE_LANGUAGES", "en").split(",")
+                if lang.strip()
+            ],
+            strategy=os.environ.get("SUBTITLE_STRATEGY", "most-downloaded"),
+        )
+    )
+    subtitle_root: Path = Field(
+        default_factory=lambda: Path(os.environ.get("SUBTITLE_ROOT", "/mnt/buzz/subs"))
     )
 
 

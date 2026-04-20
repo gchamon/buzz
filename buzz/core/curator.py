@@ -3,6 +3,7 @@ import os
 import shutil
 import tempfile
 import threading
+from typing import Optional
 from pathlib import Path
 from urllib import error, request
 import yaml
@@ -16,6 +17,7 @@ from .constants import (
     YEAR_RE,
 )
 from .events import record_event
+from .subtitles import apply_subtitle_overlay, background_fetch_subtitles
 from .state import is_internal_category
 from .media import (
     is_sidecar_file,
@@ -236,6 +238,10 @@ def build_library(config: PresentationConfig):
         build_anime(
             anime_source, tmp_root / "animes", mapping, report, config.source_root
         )
+        
+        if config.subtitles.enabled:
+            apply_subtitle_overlay(tmp_root, config.subtitle_root)
+            
         replace_root(tmp_root, config.target_root)
     except Exception:
         if tmp_root is not None and tmp_root.exists():
@@ -567,7 +573,7 @@ def trigger_jellyfin_selective_refresh(
             )
 
 
-def rebuild_and_trigger(config: PresentationConfig, changed_roots: list[str] = None):
+def rebuild_and_trigger(config: PresentationConfig, changed_roots: Optional[list[str]] = None):
     report = build_library(config)
     if config.skip_jellyfin_scan:
         report["jellyfin_scan_triggered"] = False
@@ -607,6 +613,10 @@ def rebuild_and_trigger(config: PresentationConfig, changed_roots: list[str] = N
     else:
         report["jellyfin_scan_triggered"] = True
         report["jellyfin_scan_error"] = None
+    
+    if config.subtitles.enabled:
+        background_fetch_subtitles(config)
+        
     return report
 
 
@@ -615,7 +625,7 @@ class Curator:
         self.config = config
         self.lock = threading.Lock()
 
-    def handle_rebuild(self, changed_roots: list[str] = None):
+    def handle_rebuild(self, changed_roots: Optional[list[str]] = None):
         with self.lock:
             return rebuild_and_trigger(self.config, changed_roots)
 

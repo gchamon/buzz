@@ -135,7 +135,8 @@ class CuratorAppTests(unittest.TestCase):
             self.assertFalse(report["jellyfin_scan_triggered"])
             self.assertEqual(report["jellyfin_scan_status"], "skipped_missing_auth")
             self.assertIsNone(report["jellyfin_scan_error"])
-            self.assertEqual(stdout.getvalue(), "")
+            # The curator now always logs mapping events
+            self.assertIn("Curator mapping updated", stdout.getvalue())
 
     def test_rebuild_logs_mapping_when_verbose_is_enabled(self):
         with tempfile.TemporaryDirectory() as tmpdir:

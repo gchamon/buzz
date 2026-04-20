@@ -79,6 +79,7 @@ services:
       - ./config/plex:/config
       - /mnt/buzz/curated:/mnt/buzz/curated:ro
       - /mnt/buzz/raw:/mnt/buzz/raw:ro
+      - /mnt/buzz/subs:/mnt/buzz/subs:ro
     restart: unless-stopped
 
   jellyfin:
@@ -98,6 +99,7 @@ services:
       - ./cache/jellyfin:/cache
       - /mnt/buzz/curated:/mnt/buzz/curated:ro
       - /mnt/buzz/raw:/mnt/buzz/raw:ro
+      - /mnt/buzz/subs:/mnt/buzz/subs:ro
     devices:
       - "/dev/dri:/dev/dri"
     restart: unless-stopped
@@ -133,4 +135,5 @@ services:
       - ./buzz.yml:/app/buzz.yml:rp
       - /mnt/buzz/curated:/mnt/buzz/curated
       - /mnt/buzz/raw:/mnt/buzz/raw:ro
+      - /mnt/buzz/subs:/mnt/buzz/subs
     restart: unless-stopped

@@ -206,6 +206,25 @@ class DavApp:
                 record_event(f"Manual library resync failed: {exc}", level="error")
                 return JSONResponse(status_code=500, content={"error": str(exc)})
 
+        @self.app.post("/api/subtitles/fetch-torrent")
+        def fetch_subs_for_torrent(payload: dict):
+            import httpx
+
+            torrent_name = payload.get("torrent_name", "").strip()
+            if not torrent_name:
+                return JSONResponse(status_code=400, content={"error": "torrent_name is required"})
+
+            if not self.config.curator_url:
+                return JSONResponse(status_code=400, content={"error": "No curator configured"})
+
+            subs_url = self.config.curator_url.replace("/rebuild", "/api/subtitles/fetch")
+            try:
+                with httpx.Client(timeout=5.0) as client:
+                    resp = client.post(subs_url, json={"torrent_name": torrent_name})
+                    return JSONResponse(status_code=resp.status_code, content=resp.json())
+            except Exception as exc:
+                return JSONResponse(status_code=502, content={"error": f"Curator unreachable: {exc}"})
+
         @self.app.get("/api/logs")
         def get_logs(limit: int = 100):
             from .core.events import registry

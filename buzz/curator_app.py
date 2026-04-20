@@ -1,10 +1,12 @@
 import traceback
+from typing import Optional
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from .core.curator import Curator, PresentationConfig, RebuildError, build_library
+from .core.subtitles import state as subtitle_state, background_fetch_subtitles
 from .core.events import record_event
 
 
@@ -54,7 +56,7 @@ class CuratorApp:
                 return {"count": len(registry.events)}
 
         @self.app.post("/rebuild")
-        async def rebuild(payload: dict = None):
+        async def rebuild(payload: Optional[dict] = None):
             changed_roots = (payload or {}).get("changed_roots", [])
             try:
                 report = self.curator.handle_rebuild(changed_roots)
@@ -82,6 +84,27 @@ class CuratorApp:
                     level="error",
                 )
                 return JSONResponse(status_code=500, content=payload)
+
+        @self.app.get("/api/subtitles/status")
+        def get_subtitles_status():
+            if not self.config.subtitles.enabled:
+                return {"enabled": False}
+            return {
+                "enabled": True,
+                **subtitle_state.status()
+            }
+
+        @self.app.post("/api/subtitles/fetch")
+        def trigger_subtitles_fetch(payload: Optional[dict] = None):
+            if not self.config.subtitles.enabled:
+                return JSONResponse(status_code=400, content={"error": "Subtitles are disabled"})
+            
+            if subtitle_state.status()["is_running"]:
+                return JSONResponse(status_code=409, content={"error": "Subtitle fetch is already running"})
+            
+            torrent_name = (payload or {}).get("torrent_name")
+            background_fetch_subtitles(self.config, torrent_name=torrent_name)
+            return {"status": "triggered"}
 
 
 def run_curator_server(config: PresentationConfig):

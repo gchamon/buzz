@@ -389,6 +389,7 @@ code {
 .opt,
 .btn-r,
 .btn-del,
+.btn-s,
 .btn-x {
   display: flex;
   align-items: center;
@@ -404,6 +405,11 @@ code {
 .btn-r:hover {
   color: var(--green);
   background: rgba(80, 250, 123, 0.1);
+}
+
+.btn-s:hover {
+  color: var(--cyan);
+  background: rgba(139, 233, 253, 0.1);
 }
 
 .btn-del:hover,
