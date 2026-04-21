@@ -32,6 +32,7 @@ logging:
 
 subtitles:
   enabled: false
+  fetch_on_resync: false
   opensubtitles:
     api_key: ""
     username: ""

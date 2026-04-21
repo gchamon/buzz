@@ -63,6 +63,7 @@ class OpenSubtitlesClient:
                 "User-Agent": "buzz/0.1",
             },
             timeout=30.0,
+            follow_redirects=True,
         )
 
     def login(self):
@@ -271,11 +272,22 @@ def fetch_subtitles_for_library(config: PresentationConfig, mapping: Optional[li
 
     if torrent_name:
         mapping = [e for e in mapping if _source_matches_torrent(e["source"], torrent_name)]
+        record_event(f"Subtitle fetch triggered for torrent: {torrent_name}")
+    else:
+        record_event("Subtitle fetch triggered for full library")
 
     if not mapping:
+        if torrent_name:
+            record_event(f"No library mapping found for torrent: {torrent_name}. Try RESYNC LIB first.", level="error")
+        else:
+            record_event("No video files found in library mapping. Try RESYNC LIB first.", level="error")
         return
 
     state.start()
+    fetched_count = 0
+    skipped_count = 0
+    error_count = 0
+    already_exists_count = 0
     try:
         with OpenSubtitlesClient(config.subtitles) as client:
             for entry in mapping:
@@ -291,10 +303,18 @@ def fetch_subtitles_for_library(config: PresentationConfig, mapping: Optional[li
                     overlay_path = config.subtitle_root / target_path.parent / f"{target_path.stem}.{lang}.srt"
                     
                     if overlay_path.exists():
+                        already_exists_count += 1
                         continue
                         
                     state.set_current(f"{target_path.stem} ({lang})")
-                    record_event(f"Fetching {lang} subtitle for: {params['query']}", level="info")
+                    
+                    # Detailed stdout logging of search parameters
+                    search_desc = f"query='{params['query']}'"
+                    if params.get("year"):
+                        search_desc += f", year={params['year']}"
+                    if params.get("season"):
+                        search_desc += f", S{params['season']:02d}E{params.get('episode', 0):02d}"
+                    print(f"[SUBS] Searching OpenSubtitles: {search_desc}, lang={lang}, strategy={config.subtitles.strategy}", flush=True)
                     
                     try:
                         results = client.search(
@@ -305,22 +325,32 @@ def fetch_subtitles_for_library(config: PresentationConfig, mapping: Optional[li
                             episode=params.get("episode")
                         )
                         
+                        print(f"[SUBS] Search returned {len(results)} results for: {search_desc}", flush=True)
+                        
                         best = rank_subtitles(results, config.subtitles.strategy, config.subtitles.filters, source_filename)
                         
                         # Fallback chain
                         if not best and config.subtitles.strategy != "most-downloaded":
-                            record_event(f"No results for {config.subtitles.strategy}, falling back to most-downloaded", level="info")
+                            print(f"[SUBS] No match with strategy '{config.subtitles.strategy}', falling back to most-downloaded", flush=True)
                             best = rank_subtitles(results, "most-downloaded", config.subtitles.filters, source_filename)
                             
                         if not best and config.subtitles.strategy != "best-match":
-                            record_event(f"No results for strategy, falling back to best-match", level="info")
+                            print(f"[SUBS] No match with fallback, trying best-match", flush=True)
                             best = rank_subtitles(results, "best-match", config.subtitles.filters, source_filename)
 
                         if best:
                             attr = best.get("attributes", {})
                             file_id = attr.get("files", [{}])[0].get("file_id")
+                            release = attr.get("release", "unknown")
                             if file_id:
-                                record_event(f"Downloading subtitle: {attr.get('release')} (downloads: {attr.get('download_count')}, rating: {attr.get('ratings')})", level="info")
+                                print(
+                                    f"[SUBS] Selected: '{release}' "
+                                    f"(lang={lang}, downloads={attr.get('download_count', 0)}, "
+                                    f"rating={attr.get('ratings', 0)}, "
+                                    f"hearing_impaired={attr.get('hearing_impaired', False)})",
+                                    flush=True
+                                )
+                                record_event(f"Downloading subtitle '{release}' ({lang}) for: {params['query']}")
                                 download_link = client.download(file_id)
                                 content = client.fetch_content(download_link)
                                 
@@ -334,20 +364,45 @@ def fetch_subtitles_for_library(config: PresentationConfig, mapping: Optional[li
                                     curated_sub.unlink()
                                 os.symlink(overlay_path, curated_sub)
                                 
+                                fetched_count += 1
                                 time.sleep(config.subtitles.download_delay_secs)
                             else:
-                                record_event(f"No file ID found in best subtitle result for {params['query']}", level="warning")
+                                print(f"[SUBS] WARNING: No file_id in result for '{release}'", flush=True)
+                                record_event(f"No file ID in subtitle result for: {params['query']} ({lang})", level="warning")
+                                skipped_count += 1
                         else:
-                            record_event(f"No suitable subtitle found for: {params['query']} ({lang})", level="info")
+                            print(f"[SUBS] No suitable subtitle found for: {search_desc} ({lang})", flush=True)
+                            skipped_count += 1
                             
                         time.sleep(config.subtitles.search_delay_secs)
                         
                     except Exception as e:
-                        record_event(f"Error fetching subtitle for {params['query']}: {e}", level="error")
+                        print(f"[SUBS] ERROR: {params['query']} ({lang}): {e}", flush=True)
+                        record_event(f"Subtitle error for {params['query']} ({lang}): {e}", level="error")
                         state.error_count += 1
+                        error_count += 1
                         
         state.stop()
+        
+        summary_parts = []
+        if fetched_count > 0:
+            summary_parts.append(f"{fetched_count} downloaded")
+        if skipped_count > 0:
+            summary_parts.append(f"{skipped_count} no match")
+        if error_count > 0:
+            summary_parts.append(f"{error_count} errors")
+        if already_exists_count > 0:
+            summary_parts.append(f"{already_exists_count} already exist")
+            
+        if not summary_parts:
+            summary = "Subtitle fetch complete: nothing to do"
+        else:
+            summary = f"Subtitle fetch complete: {', '.join(summary_parts)}"
+            
+        print(f"[SUBS] {summary}", flush=True)
+        record_event(summary)
     except Exception as e:
+        print(f"[SUBS] FATAL: Subtitle fetcher failed: {e}", flush=True)
         record_event(f"Subtitle fetcher failed: {e}", level="error")
         state.stop(error=True)
 

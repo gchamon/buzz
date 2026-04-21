@@ -1,5 +1,9 @@
 # Agent Guide
 
+Always load README.md. It'll have general info about the project such as what
+it does, how it works, how to execute it and how to run tests, as well as other
+development conventions.
+
 ## Rules of engagement
 
 This section provides instructions for how to behave when engaging with the

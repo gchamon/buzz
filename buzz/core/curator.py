@@ -614,7 +614,7 @@ def rebuild_and_trigger(config: PresentationConfig, changed_roots: Optional[list
         report["jellyfin_scan_triggered"] = True
         report["jellyfin_scan_error"] = None
     
-    if config.subtitles.enabled:
+    if config.subtitles.enabled and config.subtitles.fetch_on_resync:
         background_fetch_subtitles(config)
         
     return report

@@ -225,9 +225,14 @@ async function updateSubtitleStatus() {
 
   try {
     const res = await fetch("/api/subtitles/status");
-    if (!res.ok) return;
+    if (!res.ok) {
+      if (res.status === 404 || res.status === 400) {
+        row.classList.add("hidden");
+      }
+      return;
+    }
     const data = await res.json();
-    if (!data.enabled) {
+    if (data.enabled === false) {
       row.classList.add("hidden");
       return;
     }

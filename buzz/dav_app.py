@@ -485,6 +485,7 @@ class DavApp:
             torrents=page_torrents,
             trash_count=len(self.state.trashcan),
             log_count=len(registry.events),
+            subtitle_enabled=self.config.subtitles.enabled,
         )
 
     def _trashcan_page(self) -> str:
