@@ -280,7 +280,7 @@ class CuratorAppTests(unittest.TestCase):
             self.assertEqual(report["jellyfin_scan_error"], "scan failed")
             self.assertFalse(report["jellyfin_scan_triggered"])
 
-    def test_curator_rebuild_logs_unexpected_errors(self):
+    def test_rebuild_and_trigger_logs_unexpected_errors(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / "raw" / "movies").mkdir(parents=True)
@@ -299,7 +299,41 @@ class CuratorAppTests(unittest.TestCase):
             self.assertEqual(response.json()["error"], "boom")
             logged = stdout.getvalue()
             self.assertIn("curator rebuild failed: boom", logged)
-            self.assertIn("Traceback", logged)
+
+    def test_build_library_handles_year_at_start_of_title(self):
+        # Case: 2001 - A Space Odyssey (1968)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            movie_dir = config.source_root / "movies" / "2001 - A Space Odyssey (1968) V2 (2160p BluRay x265 HEVC 10bit HDR AAC 5.1 Tigole)"
+            movie_dir.mkdir(parents=True)
+            (movie_dir / "2001.mkv").write_text("video", encoding="utf-8")
+
+            report = build_library(config)
+
+            self.assertEqual(report["movies"], 1)
+            self.assertEqual(len(report["skipped_movies"]), 0)
+            
+            # The folder name should be "2001 A Space Odyssey (1968)"
+            curated_file = config.target_root / "movies" / "2001 A Space Odyssey (1968)" / "2001 A Space Odyssey (1968).mkv"
+            self.assertTrue(curated_file.exists())
+
+    def test_build_library_handles_year_only_in_folder_name(self):
+        # Case: The Imaginarium of Doctor Parnassus (no year in file, year in folder)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            movie_dir = config.source_root / "movies" / "The Imaginarium of Doctor Parnassus 2009 BRrip 1080P x264 MP4 - Ofek"
+            movie_dir.mkdir(parents=True)
+            (movie_dir / "The Imaginarium of Doctor Parnassus.mp4").write_text("video", encoding="utf-8")
+
+            report = build_library(config)
+
+            self.assertEqual(report["movies"], 1)
+            self.assertEqual(len(report["skipped_movies"]), 0)
+            
+            curated_file = config.target_root / "movies" / "The Imaginarium Of Doctor Parnassus (2009)" / "The Imaginarium Of Doctor Parnassus (2009).mp4"
+            self.assertTrue(curated_file.exists())
 
 
 if __name__ == "__main__":

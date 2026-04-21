@@ -276,7 +276,12 @@ def build_movies(
         if not is_video_file(path):
             continue
         rel_path = source_relpath(all_source_root, path)
-        parsed = parse_movie(path.stem)
+        
+        # Determine torrent folder name if file is in a subdirectory
+        source_rel = path.relative_to(source_root)
+        folder = source_rel.parts[0] if len(source_rel.parts) > 1 else ""
+        
+        parsed = parse_movie(path.stem, folder=folder)
         override = overrides.get(rel_path, {})
         if parsed is None and not override:
             report["skipped_movies"].append(
