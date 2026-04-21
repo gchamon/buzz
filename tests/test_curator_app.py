@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -82,6 +82,80 @@ class CuratorAppTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertTrue((root / "state" / "report.json").exists())
+
+    def test_curator_subtitle_fetch_uses_consistent_torrent_name(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            state_root = root / "state"
+            state_root.mkdir(parents=True)
+            
+            # Torrent name logic: original_filename or filename
+            # raw tree uses _torrent_name() which prefers original_filename
+            # state.py torrents() now also uses _torrent_name()
+            
+            torrent_id = "abc123"
+            original_filename = "The Imaginarium of Doctor Parnassus 2009 BRrip"
+            filename = "The Imaginarium of Doctor Parnassus.mp4"
+            
+            # 1. Mock state and client to return our torrent
+            from buzz.core.state import BuzzState
+            from buzz.models import DavConfig
+            
+            mock_client = MagicMock()
+            # Mock torrents.get_info
+            mock_client.torrents.get_info.return_value.json.return_value = {
+                "id": torrent_id,
+                "filename": filename,
+                "original_filename": original_filename,
+                "status": "downloaded",
+                "progress": 100,
+                "bytes": 1000,
+                "files": [{"selected": 1}],
+                "links": ["link1"],
+                "ended": "2024-04-21"
+            }
+            
+            dav_config = DavConfig(state_dir=str(state_root), token="test-token")
+            state = BuzzState(dav_config, mock_client)
+            
+            # Manually seed cache since update() doesn't exist (it's part of sync())
+            state.cache[torrent_id] = {
+                "info": {
+                    "id": torrent_id,
+                    "filename": filename,
+                    "original_filename": original_filename,
+                    "status": "downloaded",
+                    "progress": 100,
+                    "bytes": 1000,
+                    "files": [{"selected": 1}],
+                    "links": ["link1"],
+                    "ended": "2024-04-21"
+                }
+            }
+                
+            # Verify state.torrents() returns the consistent name
+            torrents = state.torrents()
+            self.assertEqual(len(torrents), 1)
+            self.assertEqual(torrents[0]["name"], original_filename)
+                
+            # 2. Verify curator app trigger uses this name
+            from buzz.models import SubtitleConfig
+            config = self._config(root, subtitles=SubtitleConfig(enabled=True, api_key="test"))
+            app = CuratorApp(config)
+            client = TestClient(app.app)
+            
+            # Mock background_fetch_subtitles to capture what name it gets
+            with patch("buzz.curator_app.background_fetch_subtitles") as mock_fetch:
+                response = client.post("/api/subtitles/fetch", json={"torrent_name": torrents[0]["name"]})
+                self.assertEqual(response.status_code, 200)
+                mock_fetch.assert_called_once()
+                self.assertEqual(mock_fetch.call_args[1]["torrent_name"], original_filename)
+
+            # 3. Verify mapping match
+            from buzz.core.subtitles import _source_matches_torrent
+            # mapping source path looks like: category/TorrentName/file
+            source_path = f"movies/{original_filename}/{filename}"
+            self.assertTrue(_source_matches_torrent(source_path, original_filename))
 
     def test_curator_rebuild_error_payload_is_preserved(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -718,11 +718,7 @@ class BuzzState:
                 results.append(
                     {
                         "id": str(info.get("id") or torrent_id),
-                        "name": (
-                            info.get("filename")
-                            or info.get("original_filename")
-                            or torrent_id
-                        ),
+                        "name": self.builder._torrent_name(info),
                         "status": info.get("status", "unknown"),
                         "progress": info.get("progress", 0),
                         "bytes": info.get("bytes", 0),

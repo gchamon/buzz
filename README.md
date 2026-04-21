@@ -19,7 +19,7 @@ Before starting the stack, ensure the required host directories exist and have t
 
 ```sh
 # 1. Create mountpoints and state directories
-sudo mkdir -p /mnt/buzz/raw /mnt/buzz/curated /mnt/buzz/subs
+sudo mkdir -p /mnt/buzz/raw /mnt/buzz/curated /mnt/buzz/subs/{movies,shows,anime}
 mkdir -p data state/curator cache/jellyfin config/plex config/jellyfin
 
 # 2. Set ownership to the container user (1000:1000)

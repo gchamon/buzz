@@ -41,26 +41,99 @@ class SubtitleTests(unittest.TestCase):
 
     def test_rank_subtitles_most_downloaded(self):
         results = [
-            {"attributes": {"download_count": 100, "new_download_count": 50, "release": "A"}},
-            {"attributes": {"download_count": 200, "new_download_count": 10, "release": "B"}},
+            {"attributes": {
+                "download_count": 100, 
+                "new_download_count": 50, 
+                "release": "Source.Release.A",
+                "feature_details": {"title": "Source Movie"}
+            }},
+            {"attributes": {
+                "download_count": 200, 
+                "new_download_count": 10, 
+                "release": "Source.Release.B",
+                "feature_details": {"title": "Source Movie"}
+            }},
         ]
         f = SubtitleFilters()
-        best = rank_subtitles(results, "most-downloaded", f, "source")
+        best = rank_subtitles(results, "most-downloaded", f, "Source.Release.mkv", query="Source Movie")
         self.assertIsNotNone(best)
         if best:
-            self.assertEqual(best["attributes"]["release"], "B")
+            self.assertEqual(best["attributes"]["release"], "Source.Release.B")
 
     def test_rank_subtitles_best_rated(self):
         results = [
-            {"attributes": {"ratings": 4.5, "votes": 10, "release": "A"}},
-            {"attributes": {"ratings": 5.0, "votes": 1, "release": "B"}},
-            {"attributes": {"ratings": 5.0, "votes": 0, "release": "C"}},
+            {"attributes": {"ratings": 4.5, "votes": 10, "release": "A", "feature_details": {"title": "Source Movie"}}},
+            {"attributes": {"ratings": 5.0, "votes": 1, "release": "B", "feature_details": {"title": "Source Movie"}}},
+            {"attributes": {"ratings": 5.0, "votes": 0, "release": "C", "feature_details": {"title": "Source Movie"}}},
         ]
         f = SubtitleFilters()
-        best = rank_subtitles(results, "best-rated", f, "source")
+        best = rank_subtitles(results, "best-rated", f, "source", query="Source Movie")
         self.assertIsNotNone(best)
         if best:
             self.assertEqual(best["attributes"]["release"], "B") # C is ignored because votes=0
+
+    def test_result_matches_query(self):
+        from buzz.core.subtitles import _result_matches_query
+        
+        # Exact match
+        res = {"attributes": {"feature_details": {"title": "The Matrix", "year": 1999}}}
+        self.assertTrue(_result_matches_query(res, "The Matrix", 1999))
+        
+        # Case insensitive / tokens
+        self.assertTrue(_result_matches_query(res, "the.matrix", 1999))
+        
+        # Year mismatch (more than 1 year)
+        self.assertFalse(_result_matches_query(res, "The Matrix", 2005))
+        
+        # Year match (+/- 1)
+        self.assertTrue(_result_matches_query(res, "The Matrix", 1998))
+        self.assertTrue(_result_matches_query(res, "The Matrix", 2000))
+        
+        # Wrong title
+        res_wrong = {"attributes": {"feature_details": {"title": "Inception", "year": 2010}}}
+        self.assertFalse(_result_matches_query(res_wrong, "The Matrix", 1999))
+
+    def test_rank_subtitles_low_relevance_skip(self):
+        # Result for wrong movie that somehow passed _result_matches_query (e.g. title missing)
+        # but release name is completely different
+        results = [
+            {"attributes": {
+                "download_count": 1000, 
+                "release": "Completely.Different.Movie.Release-GRP",
+                "feature_details": {"title": "Different Movie"}
+            }}
+        ]
+        f = SubtitleFilters()
+        # Should return None because similarity is very low and title_sim is low
+        best = rank_subtitles(results, "most-downloaded", f, "My.Movie.2024.1080p.mkv", query="My Movie")
+        self.assertIsNone(best)
+
+    @patch("buzz.core.subtitles.OpenSubtitlesClient")
+    def test_search_sends_type_parameter(self, mock_client_cls):
+        mock_client = mock_client_cls.return_value.__enter__.return_value
+        mock_client.search.return_value = []
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = PresentationConfig(
+                source_root=root / "raw",
+                target_root=root / "curated",
+                state_root=root / "state",
+                subtitles=SubtitleConfig(enabled=True, api_key="key"),
+                subtitle_root=root / "subs"
+            )
+            
+            # Test Movie
+            mapping_movie = [{"type": "movie", "source": "movies/M.mkv", "target": "movies/M/M.mkv"}]
+            fetch_subtitles_for_library(config, mapping_movie)
+            args, kwargs = mock_client.search.call_args
+            self.assertEqual(kwargs["type"], "movie")
+            
+            # Test Show
+            mapping_show = [{"type": "show", "source": "shows/S/E1.mkv", "target": "shows/S/S01/S01E01.mkv"}]
+            fetch_subtitles_for_library(config, mapping_show)
+            args, kwargs = mock_client.search.call_args
+            self.assertEqual(kwargs["type"], "episode")
 
     def test_get_search_params(self):
         # Movie
@@ -89,8 +162,9 @@ class SubtitleTests(unittest.TestCase):
             self.assertTrue(target.is_symlink())
             self.assertEqual(os.readlink(target), str(sub_file))
 
+    @patch("buzz.core.subtitles.trigger_jellyfin_selective_refresh")
     @patch("buzz.core.subtitles.OpenSubtitlesClient")
-    def test_fetch_subtitles_e2e_logic(self, mock_client_cls):
+    def test_fetch_subtitles_e2e_logic(self, mock_client_cls, mock_refresh):
         mock_client = mock_client_cls.return_value.__enter__.return_value
         mock_client.search.return_value = [
             {"attributes": {"release": "Movie.2024.srt", "download_count": 100, "files": [{"file_id": 123}]}}
@@ -121,6 +195,36 @@ class SubtitleTests(unittest.TestCase):
             # Check curated symlink
             curated_sub = root / "curated/movies/Movie (2024)/Movie (2024).en.srt"
             self.assertTrue(curated_sub.is_symlink())
+
+    @patch("buzz.core.subtitles.trigger_jellyfin_selective_refresh")
+    @patch("buzz.core.subtitles.OpenSubtitlesClient")
+    def test_fetch_subtitles_triggers_jellyfin_scan(self, mock_client_cls, mock_refresh):
+        mock_client = mock_client_cls.return_value.__enter__.return_value
+        mock_client.search.return_value = [
+            {"attributes": {"release": "Movie.2024.srt", "download_count": 100, "files": [{"file_id": 123}]}}
+        ]
+        mock_client.download.return_value = "http://download"
+        mock_client.fetch_content.return_value = b"subtitle content"
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = PresentationConfig(
+                source_root=root / "raw",
+                target_root=root / "curated",
+                state_root=root / "state",
+                subtitles=SubtitleConfig(enabled=True, api_key="key"),
+                subtitle_root=root / "subs",
+                jellyfin_api_key="jf_key"
+            )
+            
+            mapping = [
+                {"type": "movie", "source": "movies/Movie.2024.mkv", "target": "movies/Movie (2024)/Movie (2024).mkv"}
+            ]
+            
+            fetch_subtitles_for_library(config, mapping)
+            
+            # Should be called with config and the list of target paths that got new subtitles
+            mock_refresh.assert_called_once_with(config, ["movies/Movie (2024)/Movie (2024).mkv"])
 
     def test_source_matches_torrent(self):
         self.assertTrue(_source_matches_torrent("movies/MyMovie/MyMovie.mkv", "MyMovie"))

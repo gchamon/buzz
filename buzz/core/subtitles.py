@@ -9,6 +9,7 @@ from typing import Any, Optional
 import httpx
 from .events import record_event
 from .media import VIDEO_EXTENSIONS
+from .media_server import trigger_jellyfin_selective_refresh
 from .utils import sanitize_path_component
 from ..models import PresentationConfig, SubtitleConfig
 
@@ -86,7 +87,7 @@ class OpenSubtitlesClient:
         self.client.headers["Authorization"] = f"Bearer {self.token}"
         return self.token
 
-    def search(self, query: str, year: Optional[int] = None, languages: str = "en", season: Optional[int] = None, episode: Optional[int] = None):
+    def search(self, query: str, year: Optional[int] = None, languages: str = "en", season: Optional[int] = None, episode: Optional[int] = None, type: Optional[str] = None):
         params = {
             "query": query,
             "languages": languages,
@@ -97,6 +98,8 @@ class OpenSubtitlesClient:
             params["season_number"] = str(season)
         if episode:
             params["episode_number"] = str(episode)
+        if type:
+            params["type"] = type
 
         resp = self.client.get(f"{self.BASE_URL}/subtitles", params=params)
         
@@ -166,7 +169,34 @@ def _apply_filters(results: list[dict], filters: Any) -> list[dict]:
         filtered.append(item)
     return filtered
 
-def rank_subtitles(results: list[dict], strategy: str, filters: Any, source_filename: str) -> Optional[dict]:
+def _result_matches_query(result: dict, query: str, year: Optional[int] = None) -> bool:
+    """Check if a search result actually belongs to the queried movie/show."""
+    attr = result.get("attributes", {})
+    feature = attr.get("feature_details", {})
+
+    # If feature_details has a title, check similarity with query
+    feature_title = feature.get("title") or feature.get("movie_name") or ""
+    if feature_title:
+        # Normalize and compare
+        query_tokens = set(re.split(r"[\s._\-]+", query.lower()))
+        title_tokens = set(re.split(r"[\s._\-]+", feature_title.lower()))
+        
+        if query_tokens and title_tokens:
+            overlap = len(query_tokens & title_tokens) / len(query_tokens)
+            if overlap < 0.5:
+                return False
+
+    # If we searched with a year, validate the result's year matches (±1 for edge cases)
+    if year and feature.get("year"):
+        if abs(feature["year"] - year) > 1:
+            return False
+
+    return True
+
+def rank_subtitles(results: list[dict], strategy: str, filters: Any, source_filename: str, query: str = "", year: Optional[int] = None) -> Optional[dict]:
+    # Filter results that don't match the queried movie/show first
+    results = [r for r in results if _result_matches_query(r, query, year)]
+    
     filtered = _apply_filters(results, filters)
     if not filtered:
         return None
@@ -217,7 +247,16 @@ def rank_subtitles(results: list[dict], strategy: str, filters: Any, source_file
             reverse=True
         )
 
-    return ranked[0] if ranked else None
+    best = ranked[0] if ranked else None
+    
+    # Minimum similarity threshold for sanity check
+    if best and strategy == "most-downloaded":
+        similarity = release_similarity(source_filename, best.get("attributes", {}).get("release", ""))
+        if similarity < 0.15:
+            print(f"[SUBS] WARNING: Best result '{best['attributes'].get('release')}' has very low relevance (sim={similarity:.2f}), skipping", flush=True)
+            return None
+                
+    return best
 
 def get_search_params(entry: dict) -> dict:
     target = entry.get("target", "")
@@ -288,6 +327,7 @@ def fetch_subtitles_for_library(config: PresentationConfig, mapping: Optional[li
     skipped_count = 0
     error_count = 0
     already_exists_count = 0
+    fetched_targets = []
     try:
         with OpenSubtitlesClient(config.subtitles) as client:
             for entry in mapping:
@@ -317,26 +357,28 @@ def fetch_subtitles_for_library(config: PresentationConfig, mapping: Optional[li
                     print(f"[SUBS] Searching OpenSubtitles: {search_desc}, lang={lang}, strategy={config.subtitles.strategy}", flush=True)
                     
                     try:
+                        feature_type = "movie" if entry["type"] == "movie" else "episode"
                         results = client.search(
                             query=params["query"],
                             year=params.get("year"),
                             languages=lang,
                             season=params.get("season"),
-                            episode=params.get("episode")
+                            episode=params.get("episode"),
+                            type=feature_type
                         )
                         
                         print(f"[SUBS] Search returned {len(results)} results for: {search_desc}", flush=True)
                         
-                        best = rank_subtitles(results, config.subtitles.strategy, config.subtitles.filters, source_filename)
+                        best = rank_subtitles(results, config.subtitles.strategy, config.subtitles.filters, source_filename, query=params["query"], year=params.get("year"))
                         
                         # Fallback chain
                         if not best and config.subtitles.strategy != "most-downloaded":
                             print(f"[SUBS] No match with strategy '{config.subtitles.strategy}', falling back to most-downloaded", flush=True)
-                            best = rank_subtitles(results, "most-downloaded", config.subtitles.filters, source_filename)
+                            best = rank_subtitles(results, "most-downloaded", config.subtitles.filters, source_filename, query=params["query"], year=params.get("year"))
                             
                         if not best and config.subtitles.strategy != "best-match":
                             print(f"[SUBS] No match with fallback, trying best-match", flush=True)
-                            best = rank_subtitles(results, "best-match", config.subtitles.filters, source_filename)
+                            best = rank_subtitles(results, "best-match", config.subtitles.filters, source_filename, query=params["query"], year=params.get("year"))
 
                         if best:
                             attr = best.get("attributes", {})
@@ -365,6 +407,7 @@ def fetch_subtitles_for_library(config: PresentationConfig, mapping: Optional[li
                                 os.symlink(overlay_path, curated_sub)
                                 
                                 fetched_count += 1
+                                fetched_targets.append(entry["target"])
                                 time.sleep(config.subtitles.download_delay_secs)
                             else:
                                 print(f"[SUBS] WARNING: No file_id in result for '{release}'", flush=True)
@@ -401,6 +444,9 @@ def fetch_subtitles_for_library(config: PresentationConfig, mapping: Optional[li
             
         print(f"[SUBS] {summary}", flush=True)
         record_event(summary)
+
+        if fetched_targets and not config.skip_jellyfin_scan and config.jellyfin_api_key:
+            trigger_jellyfin_selective_refresh(config, fetched_targets)
     except Exception as e:
         print(f"[SUBS] FATAL: Subtitle fetcher failed: {e}", flush=True)
         record_event(f"Subtitle fetcher failed: {e}", level="error")
