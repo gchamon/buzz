@@ -40,10 +40,13 @@ flowchart TD
     BuzzCurator --> |Creates Symlinks| HostCurated["/mnt/buzz/curated"]
     Plex["Plex"] --> |Reads| HostCurated
     Jellyfin["Jellyfin"] --> |Reads| HostCurated
+    HostSubs["/mnt/buzz/subs"] --> |Overlayed into| HostCurated
+    OpenSubs["OpenSubtitles API"] <--> |Fetch| BuzzCurator
     
     subgraph "Host OS Filesystem"
     HostRaw
     HostCurated
+    HostSubs
     end
 ```
 
@@ -87,7 +90,9 @@ sequenceDiagram
     HookScript->>Curator: POST /rebuild
     Curator->>RcloneMount: Read raw torrent folders
     Curator->>Curator: Parse titles, seasons, episodes
+    Curator->>Curator: Apply Subtitle Overlay (/mnt/buzz/subs)
     Curator->>Jellyfin: Create symlinks in /mnt/buzz/curated
+    Curator->>OpenSubs: Fetch missing subtitles (Background)
     Curator->>Jellyfin: POST /ScheduledTasks/Running/{task_id}
     Jellyfin-->>Curator: 204 No Content
     Curator-->>HookScript: 200 OK
@@ -116,3 +121,17 @@ sequenceDiagram
 1.  User clicks "Sync" in the Web UI.
 2.  `buzz-dav` immediately polls the RD API, bypassing the interval.
 3.  If changes are found, it proceeds with snapshot generation and hook execution immediately.
+
+## Subtitle Integration
+
+Buzz integrates directly with OpenSubtitles.com REST API v2 to automatically fetch subtitles for your media.
+
+### Persistent Overlay
+
+To ensure that subtitles survive the curator's "wipe-and-replace" rebuild cycle, they are stored in a persistent directory: `/mnt/buzz/subs`.
+
+1.  **Overlay Phase**: During every rebuild, the curator walks the `/mnt/buzz/subs` directory and creates symlinks in the temporary build tree that point back to these persistent `.srt` files.
+2.  **Background Fetching**: After a rebuild completes, if `subtitles.enabled` is true, a background thread is spawned. It identifies any video files in the curated library that are missing a corresponding subtitle in the overlay and attempts to download them from OpenSubtitles.
+3.  **Ranking Strategies**: The fetcher supports various strategies (e.g., `most-downloaded`, `best-match`) to ensure you get the highest quality subtitle for your specific release.
+
+The fetcher respects rate limits and follows a fallback chain if your preferred strategy yields no results.

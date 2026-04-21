@@ -1,0 +1,474 @@
+import os
+import re
+import json
+import time
+import threading
+from pathlib import Path
+from typing import Any, Optional
+
+import httpx
+from .events import record_event
+from .media import VIDEO_EXTENSIONS
+from .media_server import trigger_jellyfin_selective_refresh
+from .utils import sanitize_path_component
+from ..models import PresentationConfig, SubtitleConfig
+
+class SubtitleState:
+    def __init__(self):
+        self.is_running = False
+        self.last_run_at = None
+        self.error_count = 0
+        self.current_file = None
+        self.lock = threading.Lock()
+
+    def start(self):
+        with self.lock:
+            self.is_running = True
+            self.error_count = 0
+
+    def stop(self, error: bool = False):
+        with self.lock:
+            self.is_running = False
+            self.last_run_at = time.time()
+            if error:
+                self.error_count += 1
+            self.current_file = None
+
+    def set_current(self, filename: str):
+        with self.lock:
+            self.current_file = filename
+
+    def status(self) -> dict:
+        with self.lock:
+            return {
+                "is_running": self.is_running,
+                "last_run_at": self.last_run_at,
+                "error_count": self.error_count,
+                "current_file": self.current_file,
+            }
+
+state = SubtitleState()
+
+class OpenSubtitlesClient:
+    BASE_URL = "https://api.opensubtitles.com/api/v1"
+
+    def __init__(self, config: SubtitleConfig):
+        self.config = config
+        self.api_key = config.api_key
+        self.username = config.username
+        self.password = config.password
+        self.token = None
+        self.client = httpx.Client(
+            headers={
+                "Api-Key": self.api_key,
+                "User-Agent": "buzz/0.1",
+            },
+            timeout=30.0,
+            follow_redirects=True,
+        )
+
+    def login(self):
+        if self.token:
+            return self.token
+
+        if not self.username or not self.password:
+            raise ValueError("OpenSubtitles username/password required for downloads")
+
+        record_event("Logging in to OpenSubtitles...", level="info")
+        resp = self.client.post(
+            f"{self.BASE_URL}/login",
+            json={
+                "username": self.username,
+                "password": self.password,
+            }
+        )
+        resp.raise_for_status()
+        self.token = resp.json().get("token")
+        self.client.headers["Authorization"] = f"Bearer {self.token}"
+        return self.token
+
+    def search(self, query: str, year: Optional[int] = None, languages: str = "en", season: Optional[int] = None, episode: Optional[int] = None, type: Optional[str] = None):
+        params = {
+            "query": query,
+            "languages": languages,
+        }
+        if year:
+            params["year"] = str(year)
+        if season:
+            params["season_number"] = str(season)
+        if episode:
+            params["episode_number"] = str(episode)
+        if type:
+            params["type"] = type
+
+        resp = self.client.get(f"{self.BASE_URL}/subtitles", params=params)
+        
+        # Rate limit check
+        remaining = resp.headers.get("X-RateLimit-Remaining")
+        if remaining == "0":
+            record_event("OpenSubtitles search rate limit reached", level="warning")
+        
+        resp.raise_for_status()
+        return resp.json().get("data", [])
+
+    def download(self, file_id: int):
+        self.login()
+        resp = self.client.post(
+            f"{self.BASE_URL}/download",
+            json={"file_id": file_id}
+        )
+        
+        remaining = resp.headers.get("X-RateLimit-Remaining")
+        if remaining == "0":
+            record_event("OpenSubtitles download rate limit reached", level="warning")
+            
+        resp.raise_for_status()
+        return resp.json().get("link")
+
+    def fetch_content(self, url: str) -> bytes:
+        resp = httpx.get(url)
+        resp.raise_for_status()
+        return resp.content
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.client.close()
+
+def release_similarity(source_name: str, release_name: str) -> float:
+    def tokenize(s: str):
+        return set(re.split(r"[\s._\-]+", s.lower()))
+    
+    s_tokens = tokenize(source_name)
+    r_tokens = tokenize(release_name)
+    
+    if not s_tokens or not r_tokens:
+        return 0.0
+    
+    intersection = s_tokens.intersection(r_tokens)
+    union = s_tokens.union(r_tokens)
+    return len(intersection) / len(union)
+
+def _apply_filters(results: list[dict], filters: Any) -> list[dict]:
+    filtered = []
+    for item in results:
+        attr = item.get("attributes", {})
+        
+        if filters.hearing_impaired == "exclude" and attr.get("hearing_impaired"):
+            continue
+        
+        # OpenSubtitles v2 doesn't have a direct ai_translated/machine_translated boolean in attributes sometimes, 
+        # but it can be in features or tags. We'll check common fields.
+        if filters.exclude_ai and attr.get("ai_translated"):
+            continue
+            
+        if filters.exclude_machine and attr.get("machine_translated"):
+            continue
+            
+        filtered.append(item)
+    return filtered
+
+def _result_matches_query(result: dict, query: str, year: Optional[int] = None) -> bool:
+    """Check if a search result actually belongs to the queried movie/show."""
+    attr = result.get("attributes", {})
+    feature = attr.get("feature_details", {})
+
+    # If feature_details has a title, check similarity with query
+    feature_title = feature.get("title") or feature.get("movie_name") or ""
+    if feature_title:
+        # Normalize and compare
+        query_tokens = set(re.split(r"[\s._\-]+", query.lower()))
+        title_tokens = set(re.split(r"[\s._\-]+", feature_title.lower()))
+        
+        if query_tokens and title_tokens:
+            overlap = len(query_tokens & title_tokens) / len(query_tokens)
+            if overlap < 0.5:
+                return False
+
+    # If we searched with a year, validate the result's year matches (±1 for edge cases)
+    if year and feature.get("year"):
+        if abs(feature["year"] - year) > 1:
+            return False
+
+    return True
+
+def rank_subtitles(results: list[dict], strategy: str, filters: Any, source_filename: str, query: str = "", year: Optional[int] = None) -> Optional[dict]:
+    # Filter results that don't match the queried movie/show first
+    results = [r for r in results if _result_matches_query(r, query, year)]
+    
+    filtered = _apply_filters(results, filters)
+    if not filtered:
+        return None
+
+    # Ranking logic
+    if strategy == "best-match":
+        ranked = sorted(
+            filtered,
+            key=lambda x: release_similarity(source_filename, x.get("attributes", {}).get("release", "")),
+            reverse=True
+        )
+    elif strategy == "most-downloaded":
+        ranked = sorted(
+            filtered,
+            key=lambda x: (x.get("attributes", {}).get("download_count", 0) + x.get("attributes", {}).get("new_download_count", 0)),
+            reverse=True
+        )
+    elif strategy == "best-rated":
+        # Filter items with at least one vote
+        rated = [x for x in filtered if x.get("attributes", {}).get("votes", 0) > 0]
+        if not rated:
+            return None
+        ranked = sorted(
+            rated,
+            key=lambda x: (x.get("attributes", {}).get("ratings", 0.0), x.get("attributes", {}).get("download_count", 0)),
+            reverse=True
+        )
+    elif strategy == "trusted":
+        ranked = sorted(
+            filtered,
+            key=lambda x: (x.get("attributes", {}).get("from_trusted", False), x.get("attributes", {}).get("download_count", 0)),
+            reverse=True
+        )
+    elif strategy == "latest":
+        ranked = sorted(
+            filtered,
+            key=lambda x: x.get("attributes", {}).get("upload_date", ""),
+            reverse=True
+        )
+    else:
+        ranked = filtered
+
+    # Handle "prefer" HI filter
+    if filters.hearing_impaired == "prefer":
+        ranked = sorted(
+            ranked,
+            key=lambda x: x.get("attributes", {}).get("hearing_impaired", False),
+            reverse=True
+        )
+
+    best = ranked[0] if ranked else None
+    
+    # Minimum similarity threshold for sanity check
+    if best and strategy == "most-downloaded":
+        similarity = release_similarity(source_filename, best.get("attributes", {}).get("release", ""))
+        if similarity < 0.15:
+            print(f"[SUBS] WARNING: Best result '{best['attributes'].get('release')}' has very low relevance (sim={similarity:.2f}), skipping", flush=True)
+            return None
+                
+    return best
+
+def get_search_params(entry: dict) -> dict:
+    target = entry.get("target", "")
+    target_path = Path(target)
+    
+    if entry["type"] == "movie":
+        # movies/Movie Name (2024)/Movie Name (2024).mkv
+        folder_name = target_path.parent.name
+        match = re.search(r"^(.*)\s\((\d{4})\)", folder_name)
+        if match:
+            return {"query": match.group(1), "year": int(match.group(2))}
+        return {"query": folder_name}
+    
+    elif entry["type"] == "show":
+        # shows/Series Name/Season 01/Series Name S01E01.mkv
+        series_name = target_path.parts[1]
+        stem = target_path.stem
+        match = re.search(r"(?i)S(\d+)E(\d+)", stem)
+        if match:
+            return {
+                "query": series_name,
+                "season": int(match.group(1)),
+                "episode": int(match.group(2))
+            }
+        return {"query": series_name}
+    
+    return {"query": target_path.stem}
+
+def _source_matches_torrent(source: str, torrent_name: str) -> bool:
+    """Check if a mapping source path belongs to a given torrent.
+
+    Source paths look like 'movies/TorrentName/file.mkv' or
+    'shows/TorrentName/Season 01/file.mkv'. The torrent name is the
+    first directory component after the category.
+    """
+    parts = Path(source).parts
+    # parts[0] is category (movies/shows/anime), parts[1] is torrent dir
+    return len(parts) >= 2 and parts[1] == torrent_name
+
+
+def fetch_subtitles_for_library(config: PresentationConfig, mapping: Optional[list[dict]] = None, torrent_name: Optional[str] = None):
+    if not config.subtitles.enabled:
+        return
+
+    if mapping is None:
+        mapping_path = config.state_root / "mapping.json"
+        if not mapping_path.exists():
+            return
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        if not isinstance(mapping, list):
+            return
+
+    if torrent_name:
+        mapping = [e for e in mapping if _source_matches_torrent(e["source"], torrent_name)]
+        record_event(f"Subtitle fetch triggered for torrent: {torrent_name}")
+    else:
+        record_event("Subtitle fetch triggered for full library")
+
+    if not mapping:
+        if torrent_name:
+            record_event(f"No library mapping found for torrent: {torrent_name}. Try RESYNC LIB first.", level="error")
+        else:
+            record_event("No video files found in library mapping. Try RESYNC LIB first.", level="error")
+        return
+
+    state.start()
+    fetched_count = 0
+    skipped_count = 0
+    error_count = 0
+    already_exists_count = 0
+    fetched_targets = []
+    try:
+        with OpenSubtitlesClient(config.subtitles) as client:
+            for entry in mapping:
+                target_path = Path(entry["target"])
+                # Only process video files
+                if target_path.suffix.lower() not in VIDEO_EXTENSIONS:
+                    continue
+
+                source_filename = Path(entry["source"]).name
+                params = get_search_params(entry)
+                
+                for lang in config.subtitles.languages:
+                    overlay_path = config.subtitle_root / target_path.parent / f"{target_path.stem}.{lang}.srt"
+                    
+                    if overlay_path.exists():
+                        already_exists_count += 1
+                        continue
+                        
+                    state.set_current(f"{target_path.stem} ({lang})")
+                    
+                    # Detailed stdout logging of search parameters
+                    search_desc = f"query='{params['query']}'"
+                    if params.get("year"):
+                        search_desc += f", year={params['year']}"
+                    if params.get("season"):
+                        search_desc += f", S{params['season']:02d}E{params.get('episode', 0):02d}"
+                    print(f"[SUBS] Searching OpenSubtitles: {search_desc}, lang={lang}, strategy={config.subtitles.strategy}", flush=True)
+                    
+                    try:
+                        feature_type = "movie" if entry["type"] == "movie" else "episode"
+                        results = client.search(
+                            query=params["query"],
+                            year=params.get("year"),
+                            languages=lang,
+                            season=params.get("season"),
+                            episode=params.get("episode"),
+                            type=feature_type
+                        )
+                        
+                        print(f"[SUBS] Search returned {len(results)} results for: {search_desc}", flush=True)
+                        
+                        best = rank_subtitles(results, config.subtitles.strategy, config.subtitles.filters, source_filename, query=params["query"], year=params.get("year"))
+                        
+                        # Fallback chain
+                        if not best and config.subtitles.strategy != "most-downloaded":
+                            print(f"[SUBS] No match with strategy '{config.subtitles.strategy}', falling back to most-downloaded", flush=True)
+                            best = rank_subtitles(results, "most-downloaded", config.subtitles.filters, source_filename, query=params["query"], year=params.get("year"))
+                            
+                        if not best and config.subtitles.strategy != "best-match":
+                            print(f"[SUBS] No match with fallback, trying best-match", flush=True)
+                            best = rank_subtitles(results, "best-match", config.subtitles.filters, source_filename, query=params["query"], year=params.get("year"))
+
+                        if best:
+                            attr = best.get("attributes", {})
+                            file_id = attr.get("files", [{}])[0].get("file_id")
+                            release = attr.get("release", "unknown")
+                            if file_id:
+                                print(
+                                    f"[SUBS] Selected: '{release}' "
+                                    f"(lang={lang}, downloads={attr.get('download_count', 0)}, "
+                                    f"rating={attr.get('ratings', 0)}, "
+                                    f"hearing_impaired={attr.get('hearing_impaired', False)})",
+                                    flush=True
+                                )
+                                record_event(f"Downloading subtitle '{release}' ({lang}) for: {params['query']}")
+                                download_link = client.download(file_id)
+                                content = client.fetch_content(download_link)
+                                
+                                overlay_path.parent.mkdir(parents=True, exist_ok=True)
+                                overlay_path.write_bytes(content)
+                                
+                                # Create symlink in curated dir immediately
+                                curated_sub = config.target_root / target_path.parent / f"{target_path.stem}.{lang}.srt"
+                                curated_sub.parent.mkdir(parents=True, exist_ok=True)
+                                if curated_sub.exists() or curated_sub.is_symlink():
+                                    curated_sub.unlink()
+                                os.symlink(overlay_path, curated_sub)
+                                
+                                fetched_count += 1
+                                fetched_targets.append(entry["target"])
+                                time.sleep(config.subtitles.download_delay_secs)
+                            else:
+                                print(f"[SUBS] WARNING: No file_id in result for '{release}'", flush=True)
+                                record_event(f"No file ID in subtitle result for: {params['query']} ({lang})", level="warning")
+                                skipped_count += 1
+                        else:
+                            print(f"[SUBS] No suitable subtitle found for: {search_desc} ({lang})", flush=True)
+                            skipped_count += 1
+                            
+                        time.sleep(config.subtitles.search_delay_secs)
+                        
+                    except Exception as e:
+                        print(f"[SUBS] ERROR: {params['query']} ({lang}): {e}", flush=True)
+                        record_event(f"Subtitle error for {params['query']} ({lang}): {e}", level="error")
+                        state.error_count += 1
+                        error_count += 1
+                        
+        state.stop()
+        
+        summary_parts = []
+        if fetched_count > 0:
+            summary_parts.append(f"{fetched_count} downloaded")
+        if skipped_count > 0:
+            summary_parts.append(f"{skipped_count} no match")
+        if error_count > 0:
+            summary_parts.append(f"{error_count} errors")
+        if already_exists_count > 0:
+            summary_parts.append(f"{already_exists_count} already exist")
+            
+        if not summary_parts:
+            summary = "Subtitle fetch complete: nothing to do"
+        else:
+            summary = f"Subtitle fetch complete: {', '.join(summary_parts)}"
+            
+        print(f"[SUBS] {summary}", flush=True)
+        record_event(summary)
+
+        if fetched_targets and not config.skip_jellyfin_scan and config.jellyfin_api_key:
+            trigger_jellyfin_selective_refresh(config, fetched_targets)
+    except Exception as e:
+        print(f"[SUBS] FATAL: Subtitle fetcher failed: {e}", flush=True)
+        record_event(f"Subtitle fetcher failed: {e}", level="error")
+        state.stop(error=True)
+
+def apply_subtitle_overlay(tmp_root: Path, subtitle_root: Path):
+    if not subtitle_root.exists():
+        return
+        
+    for sub_path in subtitle_root.rglob("*.srt"):
+        rel_path = sub_path.relative_to(subtitle_root)
+        target_path = tmp_root / rel_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        if target_path.exists() or target_path.is_symlink():
+            target_path.unlink()
+        os.symlink(sub_path, target_path)
+
+def background_fetch_subtitles(config: PresentationConfig, torrent_name: Optional[str] = None):
+    thread = threading.Thread(
+        target=fetch_subtitles_for_library,
+        args=(config,),
+        kwargs={"torrent_name": torrent_name},
+        daemon=True
+    )
+    thread.start()

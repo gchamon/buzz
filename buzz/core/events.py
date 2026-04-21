@@ -1,13 +1,13 @@
 import json
 import threading
 from collections import deque
-from typing import Any
+from typing import Any, Optional
 
 from .utils import utc_now_iso
 
 
 class EventRegistry:
-    def __init__(self, maxlen: int = 1000, default_source: str = None):
+    def __init__(self, maxlen: int = 1000, default_source: Optional[str] = None):
         self.events = deque(maxlen=maxlen)
         self.lock = threading.Lock()
         self.default_source = default_source

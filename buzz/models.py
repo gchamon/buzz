@@ -10,6 +10,26 @@ from .core.constants import DEFAULT_ANIME_PATTERN
 DEFAULT_DAV_CONFIG_PATH = os.environ.get("BUZZ_CONFIG", "/app/buzz.yml")
 
 
+class SubtitleFilters(BaseModel):
+    # "exclude" drops HI tracks; "include" allows them; "prefer" ranks them first
+    hearing_impaired: str = "exclude"
+    exclude_ai: bool = True
+    exclude_machine: bool = True
+
+
+class SubtitleConfig(BaseModel):
+    enabled: bool = False
+    fetch_on_resync: bool = False
+    api_key: str = ""
+    username: str = ""
+    password: str = ""
+    languages: list[str] = ["en"]
+    strategy: str = "most-downloaded"  # best-match | most-downloaded | best-rated | trusted | latest
+    filters: SubtitleFilters = Field(default_factory=SubtitleFilters)
+    search_delay_secs: float = 0.5
+    download_delay_secs: float = 1.0
+
+
 class DavConfig(BaseModel):
     token: str
     poll_interval_secs: int = 10
@@ -30,6 +50,7 @@ class DavConfig(BaseModel):
     library_mount: str = ""
     verbose: bool = False
     log_max_entries: int = 1000
+    subtitles: SubtitleConfig = Field(default_factory=SubtitleConfig)
 
     @classmethod
     def load(cls, path: str = DEFAULT_DAV_CONFIG_PATH) -> "DavConfig":
@@ -43,6 +64,9 @@ class DavConfig(BaseModel):
         anime = directories.get("anime", {})
         compat = raw.get("compat", {})
         logging = raw.get("logging", {})
+        subs_raw = raw.get("subtitles", {})
+        opensubs = subs_raw.get("opensubtitles", {})
+        subs_filters = subs_raw.get("filters", {})
 
         token = provider.get("token", "").strip()
         if not token:
@@ -70,6 +94,22 @@ class DavConfig(BaseModel):
             version_label=str(raw.get("version_label", "buzz/0.1")),
             verbose=bool(logging.get("verbose", False)),
             log_max_entries=int(logging.get("max_entries", 1000)),
+            subtitles=SubtitleConfig(
+                enabled=bool(subs_raw.get("enabled", False)),
+                fetch_on_resync=bool(subs_raw.get("fetch_on_resync", False)),
+                api_key=str(opensubs.get("api_key", "")),
+                username=str(opensubs.get("username", "")),
+                password=str(opensubs.get("password", "")),
+                languages=list(subs_raw.get("languages", ["en"])),
+                strategy=str(subs_raw.get("strategy", "most-downloaded")),
+                filters=SubtitleFilters(
+                    hearing_impaired=str(subs_filters.get("hearing_impaired", "exclude")),
+                    exclude_ai=bool(subs_filters.get("exclude_ai", True)),
+                    exclude_machine=bool(subs_filters.get("exclude_machine", True)),
+                ),
+                search_delay_secs=float(subs_raw.get("search_delay_secs", 0.5)),
+                download_delay_secs=float(subs_raw.get("download_delay_secs", 1.0)),
+            ),
         )
 
 
@@ -139,6 +179,59 @@ class PresentationConfig(BaseModel):
     log_max_entries: int = Field(
         default_factory=lambda: int(os.environ.get("PRESENTATION_LOG_MAX_ENTRIES", "1000"))
     )
+    subtitles: SubtitleConfig = Field(default_factory=SubtitleConfig)
+    subtitle_root: Path = Field(
+        default_factory=lambda: Path(os.environ.get("SUBTITLE_ROOT", "/mnt/buzz/subs"))
+    )
+
+    def __init__(self, **data):
+        # If subtitles aren't explicitly passed, try loading from buzz.yml
+        if "subtitles" not in data:
+            try:
+                path = os.environ.get("BUZZ_CONFIG", "/app/buzz.yml")
+                if os.path.exists(path):
+                    with open(path, "r", encoding="utf-8") as handle:
+                        raw = yaml.safe_load(handle) or {}
+                    
+                    subs_raw = raw.get("subtitles")
+                    if subs_raw:
+                        opensubs = subs_raw.get("opensubtitles", {})
+                        subs_filters = subs_raw.get("filters", {})
+                        data["subtitles"] = SubtitleConfig(
+                            enabled=bool(subs_raw.get("enabled", False)),
+                            fetch_on_resync=bool(subs_raw.get("fetch_on_resync", False)),
+                            api_key=str(opensubs.get("api_key", "")),
+                            username=str(opensubs.get("username", "")),
+                            password=str(opensubs.get("password", "")),
+                            languages=list(subs_raw.get("languages", ["en"])),
+                            strategy=str(subs_raw.get("strategy", "most-downloaded")),
+                            filters=SubtitleFilters(
+                                hearing_impaired=str(subs_filters.get("hearing_impaired", "exclude")),
+                                exclude_ai=bool(subs_filters.get("exclude_ai", True)),
+                                exclude_machine=bool(subs_filters.get("exclude_machine", True)),
+                            ),
+                            search_delay_secs=float(subs_raw.get("search_delay_secs", 0.5)),
+                            download_delay_secs=float(subs_raw.get("download_delay_secs", 1.0)),
+                        )
+            except Exception as exc:
+                print(f"Warning: Failed to load subtitles from buzz.yml: {exc}")
+
+        # Fallback to environment variables if still not set
+        if "subtitles" not in data:
+            data["subtitles"] = SubtitleConfig(
+                enabled=os.environ.get("SUBTITLE_ENABLED", "").lower() in {"1", "true", "yes"},
+                fetch_on_resync=os.environ.get("SUBTITLE_FETCH_ON_RESYNC", "").lower() in {"1", "true", "yes"},
+                api_key=os.environ.get("OPENSUBTITLES_API_KEY", ""),
+                username=os.environ.get("OPENSUBTITLES_USERNAME", ""),
+                password=os.environ.get("OPENSUBTITLES_PASSWORD", ""),
+                languages=[
+                    lang.strip()
+                    for lang in os.environ.get("SUBTITLE_LANGUAGES", "en").split(",")
+                    if lang.strip()
+                ],
+                strategy=os.environ.get("SUBTITLE_STRATEGY", "most-downloaded"),
+            )
+        super().__init__(**data)
 
 
 class ErrorResponse(BaseModel):

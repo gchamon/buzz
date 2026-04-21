@@ -19,7 +19,7 @@ Before starting the stack, ensure the required host directories exist and have t
 
 ```sh
 # 1. Create mountpoints and state directories
-sudo mkdir -p /mnt/buzz/raw /mnt/buzz/curated
+sudo mkdir -p /mnt/buzz/raw /mnt/buzz/curated /mnt/buzz/subs/{movies,shows,anime}
 mkdir -p data state/curator cache/jellyfin config/plex config/jellyfin
 
 # 2. Set ownership to the container user (1000:1000)
@@ -72,6 +72,61 @@ This file handles the DAV server logic and RD polling.
 | `request_timeout_secs` | `30` | Timeout in seconds for API requests to Real-Debrid. |
 | `logging.verbose` | `false` | Enable verbose request and debug logging. |
 
+These settings control the automatic subtitle fetcher.
+
+| Key | Default | Description |
+| :--- | :--- | :--- |
+| `enabled` | `false` | Whether to enable automatic subtitle fetching from OpenSubtitles. |
+| `opensubtitles.api_key` | *(Required)* | Your OpenSubtitles.com API Key (needed for search and download). |
+| `opensubtitles.username` | *(Required)* | Your OpenSubtitles.com username (needed for download authentication). |
+| `opensubtitles.password` | *(Required)* | Your OpenSubtitles.com password (needed for download authentication). |
+| `languages` | `[en]` | List of language codes to download (e.g., `[en, pt-br]`). Supports regional codes like `pt-br` and `pt-pt`. |
+| `strategy` | `most-downloaded` | Ranking strategy: `best-match`, `most-downloaded`, `best-rated`, `trusted`, `latest`. |
+| `filters.hearing_impaired` | `exclude` | Handling of HI tracks: `exclude`, `include`, `prefer`. |
+| `filters.exclude_ai` | `true` | Exclude AI-translated subtitles. |
+| `filters.exclude_machine` | `true` | Exclude machine-translated subtitles. |
+| `search_delay_secs` | `0.5` | Delay between API search calls to respect rate limits. |
+| `download_delay_secs` | `1.0` | Delay between download calls. |
+
+Complete example:
+
+```yaml
+provider:
+  token: "YOUR_RD_TOKEN"
+
+poll_interval_secs: 10
+
+server:
+  bind: "0.0.0.0"
+  port: 9999
+  stream_buffer_size: 52428800
+
+state_dir: "/app/data"
+
+hooks:
+  on_library_change: "sh /app/scripts/media_update.sh"
+  curator_url: "http://buzz-curator:8400/rebuild"
+  rd_update_delay_secs: 15
+
+subtitles:
+  enabled: true
+  opensubtitles:
+    api_key: "YOUR_API_KEY"
+    username: "YOUR_USERNAME"
+    password: "YOUR_PASSWORD"
+  languages:
+    - en
+    - pt-br
+  strategy: most-downloaded
+  filters:
+    hearing_impaired: exclude
+    exclude_ai: true
+    exclude_machine: true
+
+logging:
+  verbose: false
+```
+
 ### `.env`
 
 This file handles the stack deployment and media-server integration.
@@ -86,6 +141,13 @@ This file handles the stack deployment and media-server integration.
 | `JELLYFIN_URL` | `http://jellyfin:8096` | URL to the Jellyfin server (must be reachable from the Buzz container). |
 | `JELLYFIN_API_KEY` | *(Empty)* | Jellyfin API Key used to trigger library scans. |
 | `JELLYFIN_SCAN_TASK_ID` | *(Empty)* | Optional. Used if automatic task discovery fails. |
+| `SUBTITLE_ENABLED` | `false` | Enable or disable subtitle fetching. |
+| `OPENSUBTITLES_API_KEY` | *(Empty)* | API Key for OpenSubtitles. |
+| `OPENSUBTITLES_USERNAME` | *(Empty)* | Username for OpenSubtitles. |
+| `OPENSUBTITLES_PASSWORD` | *(Empty)* | Password for OpenSubtitles. |
+| `SUBTITLE_LANGUAGES` | `en` | Comma-separated list of language codes. |
+| `SUBTITLE_STRATEGY` | `most-downloaded` | Subtitle ranking strategy. |
+| `SUBTITLE_ROOT` | `/mnt/buzz/subs` | Path where subtitles are stored. |
 
 ## Architecture
 

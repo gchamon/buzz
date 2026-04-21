@@ -29,3 +29,20 @@ user_agent: buzz/0.1
 version_label: buzz/0.1
 logging:
   verbose: false
+
+subtitles:
+  enabled: false
+  fetch_on_resync: false
+  opensubtitles:
+    api_key: ""
+    username: ""
+    password: ""
+  languages:
+    - en
+  strategy: most-downloaded
+  filters:
+    hearing_impaired: exclude
+    exclude_ai: true
+    exclude_machine: true
+  search_delay_secs: 0.5
+  download_delay_secs: 1.0

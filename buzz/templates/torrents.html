@@ -38,6 +38,10 @@
         <b class="meta-item-label">console:</b> <span id="meta-console-msg"></span>
         <button class="secondary btn-sm" onclick="triggerManualRebuild()">RESYNC LIB</button>
       </div>
+      <div id="subtitle-status-row" class="meta-row meta-console {% if not subtitle_enabled %}hidden{% endif %}">
+        <b class="meta-item-label">subtitles:</b> <span id="subtitle-status-msg"></span>
+        <button class="secondary btn-sm" onclick="triggerSubtitleFetch()">FETCH SUBS</button>
+      </div>
     </div>
 
     {% if last_error %}
@@ -113,6 +117,10 @@
             <td class="yellow" data-value="{{ torrent.short_id }}"><code>{{ torrent.short_id }}</code></td>
             <td>
               <div class="delete-container">
+                {% if subtitle_enabled %}
+                <div class="btn-s" data-torrent-name="{{ torrent.name }}" onclick="fetchSubsForTorrent(this.dataset.torrentName, this)"
+                  title="Fetch subtitles">[S]</div>
+                {% endif %}
                 <div class="confirm-opts" id="confirm-{{ torrent.id }}">
                   <div class="opt opt-y" onclick="deleteTorrent('{{ torrent.id }}', this)"
                     title="Confirm Move to Trashcan">[Y]</div>
@@ -381,6 +389,37 @@
         alert("Delete failed: " + err.message);
       }
     }
+
+    {% if subtitle_enabled %}
+    async function fetchSubsForTorrent(name, el) {
+      const consoleMsg = document.getElementById("meta-console-msg");
+      const original = el.innerText;
+      el.innerText = "[...]";
+      el.style.pointerEvents = "none";
+
+      try {
+        const res = await fetch("/api/subtitles/fetch-torrent", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({torrent_name: name})
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        if (consoleMsg) {
+          consoleMsg.innerText = `subs fetch triggered for: ${name}`;
+          consoleMsg.className = "service-status-green";
+        }
+      } catch (err) {
+        if (consoleMsg) {
+          consoleMsg.innerText = `subs fetch failed: ${err.message}`;
+          consoleMsg.className = "service-status-red";
+        }
+      } finally {
+        el.innerText = original;
+        el.style.pointerEvents = "";
+      }
+    }
+    {% endif %}
 
     function formatBytes(bytes) {
       if (bytes === 0) {
