@@ -12,7 +12,10 @@ from buzz.core.subtitles import (
     rank_subtitles,
     get_search_params,
     apply_subtitle_overlay,
-    fetch_subtitles_for_library
+    fetch_subtitles_for_library,
+    _read_subtitle_meta,
+    _write_subtitle_meta,
+    _subtitle_meta_path,
 )
 from buzz.models import PresentationConfig, SubtitleConfig, SubtitleFilters
 
@@ -232,6 +235,148 @@ class SubtitleTests(unittest.TestCase):
         self.assertFalse(_source_matches_torrent("movies/OtherMovie/file.mkv", "MyMovie"))
         # Single component path should not match
         self.assertFalse(_source_matches_torrent("movies", "movies"))
+
+    def test_subtitle_meta_helpers(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sub_path = root / "movie.en.srt"
+            meta_path = _subtitle_meta_path(sub_path)
+            self.assertEqual(meta_path, root / "movie.en.srt.buzz.json")
+            
+            # Read non-existent meta returns None
+            self.assertIsNone(_read_subtitle_meta(sub_path))
+            
+            # Write and read back
+            _write_subtitle_meta(sub_path, {"file_id": 123, "release": "Test.Release"})
+            self.assertTrue(meta_path.exists())
+            meta = _read_subtitle_meta(sub_path)
+            self.assertEqual(meta, {"file_id": 123, "release": "Test.Release"})
+
+    @patch("buzz.core.subtitles.trigger_jellyfin_selective_refresh")
+    @patch("buzz.core.subtitles.OpenSubtitlesClient")
+    def test_fetch_subtitles_skips_when_meta_matches(self, mock_client_cls, mock_refresh):
+        """If subtitle exists and metadata file_id matches, skip downloading."""
+        mock_client = mock_client_cls.return_value.__enter__.return_value
+        mock_client.search.return_value = [
+            {"attributes": {"release": "Movie.2024.srt", "download_count": 100, "files": [{"file_id": 123}]}}
+        ]
+        mock_client.download.return_value = "http://download"
+        mock_client.fetch_content.return_value = b"new subtitle content"
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = PresentationConfig(
+                source_root=root / "raw",
+                target_root=root / "curated",
+                state_root=root / "state",
+                subtitles=SubtitleConfig(enabled=True, api_key="key"),
+                subtitle_root=root / "subs"
+            )
+            
+            # Pre-create existing subtitle with matching metadata
+            sub_file = root / "subs/movies/Movie (2024)/Movie (2024).en.srt"
+            sub_file.parent.mkdir(parents=True)
+            sub_file.write_text("existing content")
+            _write_subtitle_meta(sub_file, {"file_id": 123, "release": "Movie.2024.srt"})
+            
+            mapping = [
+                {"type": "movie", "source": "movies/Movie.2024.mkv", "target": "movies/Movie (2024)/Movie (2024).mkv"}
+            ]
+            
+            fetch_subtitles_for_library(config, mapping)
+            
+            # Should have searched but NOT downloaded
+            mock_client.search.assert_called_once()
+            mock_client.download.assert_not_called()
+            self.assertEqual(sub_file.read_text(), "existing content")
+
+    @patch("buzz.core.subtitles.trigger_jellyfin_selective_refresh")
+    @patch("buzz.core.subtitles.OpenSubtitlesClient")
+    def test_fetch_subtitles_replaces_when_meta_mismatches(self, mock_client_cls, mock_refresh):
+        """If subtitle exists but metadata file_id differs, replace it."""
+        mock_client = mock_client_cls.return_value.__enter__.return_value
+        mock_client.search.return_value = [
+            {"attributes": {"release": "Movie.2024.srt", "download_count": 100, "files": [{"file_id": 999}]}}
+        ]
+        mock_client.download.return_value = "http://download"
+        mock_client.fetch_content.return_value = b"new subtitle content"
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = PresentationConfig(
+                source_root=root / "raw",
+                target_root=root / "curated",
+                state_root=root / "state",
+                subtitles=SubtitleConfig(enabled=True, api_key="key"),
+                subtitle_root=root / "subs"
+            )
+            
+            # Pre-create existing subtitle with OLD metadata
+            sub_file = root / "subs/movies/Movie (2024)/Movie (2024).en.srt"
+            sub_file.parent.mkdir(parents=True)
+            sub_file.write_text("old content")
+            _write_subtitle_meta(sub_file, {"file_id": 123, "release": "Old.Release"})
+            
+            mapping = [
+                {"type": "movie", "source": "movies/Movie.2024.mkv", "target": "movies/Movie (2024)/Movie (2024).mkv"}
+            ]
+            
+            fetch_subtitles_for_library(config, mapping)
+            
+            # Should have searched AND downloaded
+            mock_client.search.assert_called_once()
+            mock_client.download.assert_called_once()
+            self.assertEqual(sub_file.read_text(), "new subtitle content")
+            
+            # Metadata should be updated
+            meta = _read_subtitle_meta(sub_file)
+            self.assertEqual(meta["file_id"], 999)
+            self.assertEqual(meta["release"], "Movie.2024.srt")
+            
+            # Curated symlink should exist and point to new file
+            curated_sub = root / "curated/movies/Movie (2024)/Movie (2024).en.srt"
+            self.assertTrue(curated_sub.is_symlink())
+
+    @patch("buzz.core.subtitles.trigger_jellyfin_selective_refresh")
+    @patch("buzz.core.subtitles.OpenSubtitlesClient")
+    def test_fetch_subtitles_replaces_when_no_meta(self, mock_client_cls, mock_refresh):
+        """If subtitle exists but has no metadata, replace it."""
+        mock_client = mock_client_cls.return_value.__enter__.return_value
+        mock_client.search.return_value = [
+            {"attributes": {"release": "Movie.2024.srt", "download_count": 100, "files": [{"file_id": 999}]}}
+        ]
+        mock_client.download.return_value = "http://download"
+        mock_client.fetch_content.return_value = b"new subtitle content"
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = PresentationConfig(
+                source_root=root / "raw",
+                target_root=root / "curated",
+                state_root=root / "state",
+                subtitles=SubtitleConfig(enabled=True, api_key="key"),
+                subtitle_root=root / "subs"
+            )
+            
+            # Pre-create existing subtitle WITHOUT metadata
+            sub_file = root / "subs/movies/Movie (2024)/Movie (2024).en.srt"
+            sub_file.parent.mkdir(parents=True)
+            sub_file.write_text("old content")
+            
+            mapping = [
+                {"type": "movie", "source": "movies/Movie.2024.mkv", "target": "movies/Movie (2024)/Movie (2024).mkv"}
+            ]
+            
+            fetch_subtitles_for_library(config, mapping)
+            
+            # Should have searched AND downloaded
+            mock_client.search.assert_called_once()
+            mock_client.download.assert_called_once()
+            self.assertEqual(sub_file.read_text(), "new subtitle content")
+            
+            # Metadata should be written
+            meta = _read_subtitle_meta(sub_file)
+            self.assertEqual(meta["file_id"], 999)
 
 if __name__ == "__main__":
     unittest.main()

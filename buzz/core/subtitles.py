@@ -297,6 +297,29 @@ def _source_matches_torrent(source: str, torrent_name: str) -> bool:
     return len(parts) >= 2 and parts[1] == torrent_name
 
 
+def _subtitle_meta_path(overlay_path: Path) -> Path:
+    """Return the path for the subtitle metadata sidecar file."""
+    return overlay_path.with_suffix(overlay_path.suffix + ".buzz.json")
+
+
+def _read_subtitle_meta(overlay_path: Path) -> Optional[dict]:
+    """Read subtitle metadata if it exists."""
+    meta_path = _subtitle_meta_path(overlay_path)
+    if meta_path.exists():
+        try:
+            return json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return None
+
+
+def _write_subtitle_meta(overlay_path: Path, meta: dict):
+    """Write subtitle metadata sidecar file."""
+    meta_path = _subtitle_meta_path(overlay_path)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+
 def fetch_subtitles_for_library(config: PresentationConfig, mapping: Optional[list[dict]] = None, torrent_name: Optional[str] = None):
     if not config.subtitles.enabled:
         return
@@ -324,6 +347,7 @@ def fetch_subtitles_for_library(config: PresentationConfig, mapping: Optional[li
 
     state.start()
     fetched_count = 0
+    replaced_count = 0
     skipped_count = 0
     error_count = 0
     already_exists_count = 0
@@ -341,11 +365,6 @@ def fetch_subtitles_for_library(config: PresentationConfig, mapping: Optional[li
                 
                 for lang in config.subtitles.languages:
                     overlay_path = config.subtitle_root / target_path.parent / f"{target_path.stem}.{lang}.srt"
-                    
-                    if overlay_path.exists():
-                        already_exists_count += 1
-                        continue
-                        
                     state.set_current(f"{target_path.stem} ({lang})")
                     
                     # Detailed stdout logging of search parameters
@@ -380,43 +399,63 @@ def fetch_subtitles_for_library(config: PresentationConfig, mapping: Optional[li
                             print(f"[SUBS] No match with fallback, trying best-match", flush=True)
                             best = rank_subtitles(results, "best-match", config.subtitles.filters, source_filename, query=params["query"], year=params.get("year"))
 
-                        if best:
-                            attr = best.get("attributes", {})
-                            file_id = attr.get("files", [{}])[0].get("file_id")
-                            release = attr.get("release", "unknown")
-                            if file_id:
-                                print(
-                                    f"[SUBS] Selected: '{release}' "
-                                    f"(lang={lang}, downloads={attr.get('download_count', 0)}, "
-                                    f"rating={attr.get('ratings', 0)}, "
-                                    f"hearing_impaired={attr.get('hearing_impaired', False)})",
-                                    flush=True
-                                )
-                                record_event(f"Downloading subtitle '{release}' ({lang}) for: {params['query']}")
-                                download_link = client.download(file_id)
-                                content = client.fetch_content(download_link)
-                                
-                                overlay_path.parent.mkdir(parents=True, exist_ok=True)
-                                overlay_path.write_bytes(content)
-                                
-                                # Create symlink in curated dir immediately
-                                curated_sub = config.target_root / target_path.parent / f"{target_path.stem}.{lang}.srt"
-                                curated_sub.parent.mkdir(parents=True, exist_ok=True)
-                                if curated_sub.exists() or curated_sub.is_symlink():
-                                    curated_sub.unlink()
-                                os.symlink(overlay_path, curated_sub)
-                                
-                                fetched_count += 1
-                                fetched_targets.append(entry["target"])
-                                time.sleep(config.subtitles.download_delay_secs)
-                            else:
-                                print(f"[SUBS] WARNING: No file_id in result for '{release}'", flush=True)
-                                record_event(f"No file ID in subtitle result for: {params['query']} ({lang})", level="warning")
-                                skipped_count += 1
-                        else:
+                        if not best:
                             print(f"[SUBS] No suitable subtitle found for: {search_desc} ({lang})", flush=True)
                             skipped_count += 1
-                            
+                            time.sleep(config.subtitles.search_delay_secs)
+                            continue
+
+                        attr = best.get("attributes", {})
+                        file_id = attr.get("files", [{}])[0].get("file_id")
+                        release = attr.get("release", "unknown")
+                        
+                        if not file_id:
+                            print(f"[SUBS] WARNING: No file_id in result for '{release}'", flush=True)
+                            record_event(f"No file ID in subtitle result for: {params['query']} ({lang})", level="warning")
+                            skipped_count += 1
+                            time.sleep(config.subtitles.search_delay_secs)
+                            continue
+                        
+                        # Check if we already have this exact subtitle
+                        if overlay_path.exists():
+                            meta = _read_subtitle_meta(overlay_path)
+                            if meta and meta.get("file_id") == file_id:
+                                print(f"[SUBS] Subtitle already up-to-date: '{release}' ({lang})", flush=True)
+                                already_exists_count += 1
+                                time.sleep(config.subtitles.search_delay_secs)
+                                continue
+
+                        print(
+                            f"[SUBS] Selected: '{release}' "
+                            f"(lang={lang}, downloads={attr.get('download_count', 0)}, "
+                            f"rating={attr.get('ratings', 0)}, "
+                            f"hearing_impaired={attr.get('hearing_impaired', False)})",
+                            flush=True
+                        )
+                        
+                        is_replacement = overlay_path.exists()
+                        action = "Replacing" if is_replacement else "Downloading"
+                        record_event(f"{action} subtitle '{release}' ({lang}) for: {params['query']}")
+                        download_link = client.download(file_id)
+                        content = client.fetch_content(download_link)
+                        
+                        overlay_path.parent.mkdir(parents=True, exist_ok=True)
+                        overlay_path.write_bytes(content)
+                        _write_subtitle_meta(overlay_path, {"file_id": file_id, "release": release})
+                        
+                        # Create symlink in curated dir immediately
+                        curated_sub = config.target_root / target_path.parent / f"{target_path.stem}.{lang}.srt"
+                        curated_sub.parent.mkdir(parents=True, exist_ok=True)
+                        if curated_sub.exists() or curated_sub.is_symlink():
+                            curated_sub.unlink()
+                        os.symlink(overlay_path, curated_sub)
+                        
+                        if is_replacement:
+                            replaced_count += 1
+                        else:
+                            fetched_count += 1
+                        fetched_targets.append(entry["target"])
+                        time.sleep(config.subtitles.download_delay_secs)
                         time.sleep(config.subtitles.search_delay_secs)
                         
                     except Exception as e:
@@ -430,12 +469,14 @@ def fetch_subtitles_for_library(config: PresentationConfig, mapping: Optional[li
         summary_parts = []
         if fetched_count > 0:
             summary_parts.append(f"{fetched_count} downloaded")
+        if replaced_count > 0:
+            summary_parts.append(f"{replaced_count} replaced")
         if skipped_count > 0:
             summary_parts.append(f"{skipped_count} no match")
         if error_count > 0:
             summary_parts.append(f"{error_count} errors")
         if already_exists_count > 0:
-            summary_parts.append(f"{already_exists_count} already exist")
+            summary_parts.append(f"{already_exists_count} already up-to-date")
             
         if not summary_parts:
             summary = "Subtitle fetch complete: nothing to do"
