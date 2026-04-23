@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from ..models import PresentationConfig, SubtitleConfig, SubtitleFilters
+from ..models import CuratorConfig, SubtitleConfig, SubtitleFilters
 from . import db
 from .events import record_event
 from .media import VIDEO_EXTENSIONS
@@ -395,16 +395,16 @@ def _source_matches_torrent(source: str, torrent_name: str) -> bool:
     return len(parts) >= 2 and parts[1] == torrent_name
 
 
-def _open_state_db(config: PresentationConfig):
+def _open_state_db(config: CuratorConfig):
     """Open the curator state database with migrations applied."""
-    config.state_root.mkdir(parents=True, exist_ok=True)
-    conn = db.connect(config.state_root / "buzz.sqlite")
+    config.state_dir.mkdir(parents=True, exist_ok=True)
+    conn = db.connect(config.state_dir / "buzz.sqlite")
     db.apply_migrations(conn)
     return conn
 
 
 def _read_subtitle_meta(
-    config: PresentationConfig, overlay_path: Path
+    config: CuratorConfig, overlay_path: Path
 ) -> dict | None:
     """Read subtitle metadata from the SQLite state store."""
     conn = _open_state_db(config)
@@ -418,7 +418,7 @@ def _read_subtitle_meta(
 
 
 def _write_subtitle_meta(
-    config: PresentationConfig, overlay_path: Path, meta: dict
+    config: CuratorConfig, overlay_path: Path, meta: dict
 ) -> None:
     """Write subtitle metadata into the SQLite state store."""
     conn = _open_state_db(config)
@@ -432,7 +432,7 @@ def _write_subtitle_meta(
 
 
 def fetch_subtitles_for_library(
-    config: PresentationConfig,
+    config: CuratorConfig,
     mapping: list[dict] | None = None,
     torrent_name: str | None = None,
 ) -> None:
@@ -762,7 +762,7 @@ def apply_subtitle_overlay(
 
 
 def background_fetch_subtitles(
-    config: PresentationConfig,
+    config: CuratorConfig,
     torrent_name: str | None = None,
 ) -> None:
     """Start a background thread to fetch subtitles."""

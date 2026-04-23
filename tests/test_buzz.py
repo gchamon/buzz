@@ -25,6 +25,7 @@ from buzz.models import (
     DavConfig as Config,
 )
 from buzz.models import (
+    CuratorConfig,
     deep_merge,
     mask_secrets,
 )
@@ -1496,6 +1497,24 @@ class ConfigUITests(unittest.TestCase):
             self.assertEqual(config.bind, "0.0.0.0")
         finally:
             os.unlink(base_path)
+
+    def test_presentation_config_load_uses_buzz_state_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            base_path.write_text(
+                (
+                    "provider:\n  token: testtoken\n"
+                    f"state_dir: {tmpdir}/shared-state\n"
+                ),
+                encoding="utf-8",
+            )
+
+            config = CuratorConfig.load(str(base_path))
+
+            self.assertEqual(
+                config.state_dir,
+                Path(tmpdir) / "shared-state",
+            )
 
     def test_config_load_with_overrides(self):
         with tempfile.TemporaryDirectory() as tmpdir:

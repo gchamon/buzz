@@ -2,7 +2,7 @@
 
 ## Status
 
-Done
+done
 
 ## Outcome
 
@@ -26,11 +26,11 @@ zero violations as a hard baseline.
   `state.py`. The Python 3.12 `type` statement is used (project requires 3.14):
   `SnapshotNode`, `Snapshot`, `TorrentInfo`, `TorrentSummary`, `SyncReport`,
   `StatusReport`, `ChangeClassification`, `OperationResult`.
-- **`PresentationConfig.__init__` refactored to `PresentationConfig.load()`**
+- **`CuratorConfig.__init__` refactored to `CuratorConfig.load()`**
   class method so config loading is explicit and testable without side effects
   in the constructor.
 - **`SubtitleConfig.from_raw()` and `SubtitleConfig.from_env()`** class methods
-  extracted from `PresentationConfig.__init__` to encapsulate parsing logic
+  extracted from `CuratorConfig.__init__` to encapsulate parsing logic
   close to the model it belongs to.
 - **`_env_flag()` helper** extracted to `models.py` to de-duplicate the
   `os.environ.get(...).lower() in {"1", "true", "yes"}` pattern.
@@ -59,8 +59,8 @@ zero violations as a hard baseline.
 
 - **Model refactors** (`buzz/models.py`):
   - Extract `SubtitleConfig.from_raw()` and `SubtitleConfig.from_env()`.
-  - Replace `PresentationConfig.__init__` loading logic with
-    `PresentationConfig.load()` factory method.
+  - Replace `CuratorConfig.__init__` loading logic with
+    `CuratorConfig.load()` factory method.
   - Extract `_env_flag()` helper.
   - Add docstrings to all public functions and validator methods.
 

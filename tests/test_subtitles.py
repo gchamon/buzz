@@ -16,7 +16,7 @@ from buzz.core.subtitles import (
     rank_subtitles,
     release_similarity,
 )
-from buzz.models import PresentationConfig, SubtitleConfig, SubtitleFilters
+from buzz.models import CuratorConfig, SubtitleConfig, SubtitleFilters
 
 
 class SubtitleTests(unittest.TestCase):
@@ -118,10 +118,10 @@ class SubtitleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = PresentationConfig(
+            config = CuratorConfig(
                 source_root=root / "raw",
                 target_root=root / "curated",
-                state_root=root / "state",
+                state_dir=root / "state",
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs"
             )
@@ -177,10 +177,10 @@ class SubtitleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = PresentationConfig(
+            config = CuratorConfig(
                 source_root=root / "raw",
                 target_root=root / "curated",
-                state_root=root / "state",
+                state_dir=root / "state",
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs"
             )
@@ -211,10 +211,10 @@ class SubtitleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = PresentationConfig(
+            config = CuratorConfig(
                 source_root=root / "raw",
                 target_root=root / "curated",
-                state_root=root / "state",
+                state_dir=root / "state",
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs",
                 jellyfin_api_key="jf_key"
@@ -239,10 +239,10 @@ class SubtitleTests(unittest.TestCase):
     def test_subtitle_meta_helpers(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = PresentationConfig(
+            config = CuratorConfig(
                 source_root=root / "raw",
                 target_root=root / "curated",
-                state_root=root / "state",
+                state_dir=root / "state",
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs",
             )
@@ -257,7 +257,7 @@ class SubtitleTests(unittest.TestCase):
                 sub_path,
                 {"file_id": 123, "release": "Test.Release"},
             )
-            conn = db.connect(config.state_root / "buzz.sqlite")
+            conn = db.connect(config.state_dir / "buzz.sqlite")
             db.apply_migrations(conn)
             try:
                 rows = conn.execute(
@@ -282,10 +282,10 @@ class SubtitleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = PresentationConfig(
+            config = CuratorConfig(
                 source_root=root / "raw",
                 target_root=root / "curated",
-                state_root=root / "state",
+                state_dir=root / "state",
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs"
             )
@@ -324,10 +324,10 @@ class SubtitleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = PresentationConfig(
+            config = CuratorConfig(
                 source_root=root / "raw",
                 target_root=root / "curated",
-                state_root=root / "state",
+                state_dir=root / "state",
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs"
             )
@@ -377,10 +377,10 @@ class SubtitleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = PresentationConfig(
+            config = CuratorConfig(
                 source_root=root / "raw",
                 target_root=root / "curated",
-                state_root=root / "state",
+                state_dir=root / "state",
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs"
             )

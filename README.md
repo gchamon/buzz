@@ -20,10 +20,10 @@ Before starting the stack, ensure the required host directories exist and have t
 ```sh
 # 1. Create mountpoints and state directories
 sudo mkdir -p /mnt/buzz/raw /mnt/buzz/curated /mnt/buzz/subs/{movies,shows,anime}
-mkdir -p data state/curator cache/jellyfin config/plex config/jellyfin
+mkdir -p data cache/jellyfin config/plex config/jellyfin
 
 # 2. Set ownership to the container user (1000:1000)
-sudo chown -R 1000:1000 /mnt/buzz data state/curator cache/jellyfin config/plex config/jellyfin
+sudo chown -R 1000:1000 /mnt/buzz data cache/jellyfin config/plex config/jellyfin
 ```
 
 ## Quick Start
@@ -68,7 +68,7 @@ This file handles the DAV server logic and RD polling.
 | `server.bind` | `0.0.0.0` | IP address the DAV server binds to. |
 | `server.port` | `9999` | Port for the DAV server. |
 | `server.stream_buffer_size` | `0` | Read-ahead buffer size in bytes for streaming media (e.g., 50MB: `52428800`). Set to `0` to disable. |
-| `state_dir` | `/app/data` | Path to store the SQLite DB and snapshots inside the container. |
+| `state_dir` | `/app/data` | Shared path used by both `buzz-dav` and `buzz-curator` for `buzz.sqlite` and related state. |
 | `hooks.on_library_change` | `sh /app/scripts/media_update.sh` | Shell command executed when a change in the library is detected. |
 | `hooks.curator_url` | `http://buzz-curator:8400/rebuild` | Internal URL to trigger the Curator rebuild. |
 | `hooks.rd_update_delay_secs` | `15` | Delay before triggering a hook on RD updates (allows inventory to settle). |

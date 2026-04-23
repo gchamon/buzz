@@ -13,7 +13,7 @@ services:
       - JELLYFIN_URL=${JELLYFIN_URL:-http://jellyfin:8096}
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
       - JELLYFIN_SCAN_TASK_ID=${JELLYFIN_SCAN_TASK_ID:-}
-      - PRESENTATION_BUILDER_URL=${PRESENTATION_BUILDER_URL:-http://buzz-curator:8400/rebuild}
+      - CURATOR_BUILDER_URL=${CURATOR_BUILDER_URL:-http://buzz-curator:8400/rebuild}
       - UV_CACHE_DIR=/app/cache/uv-buzz
     ports:
       - 9999:9999
@@ -116,13 +116,13 @@ services:
       rclone:
         condition: service_healthy
     environment:
-      - PRESENTATION_BIND=0.0.0.0
-      - PRESENTATION_PORT=${PRESENTATION_PORT:-8400}
-      - PRESENTATION_BUILD_ON_START=${PRESENTATION_BUILD_ON_START:-true}
-      - PRESENTATION_SOURCE_ROOT=/mnt/buzz/raw
-      - PRESENTATION_TARGET_ROOT=/mnt/buzz/curated
-      - PRESENTATION_STATE_ROOT=/state
-      - PRESENTATION_OVERRIDES=/config/overrides.yml
+      - CURATOR_BIND=0.0.0.0
+      - CURATOR_PORT=${CURATOR_PORT:-8400}
+      - CURATOR_BUILD_ON_START=${CURATOR_BUILD_ON_START:-true}
+      - CURATOR_SOURCE_ROOT=/mnt/buzz/raw
+      - CURATOR_TARGET_ROOT=/mnt/buzz/curated
+      - CURATOR_STATE_DIR=/app/data
+      - CURATOR_OVERRIDES=/config/overrides.yml
       - JELLYFIN_URL=${JELLYFIN_URL:-http://jellyfin:8096}
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
       - JELLYFIN_SCAN_TASK_ID=${JELLYFIN_SCAN_TASK_ID:-}
@@ -132,7 +132,7 @@ services:
     command: ["curator", "server"]
     volumes:
       - ./presentation/overrides.yml:/config/overrides.yml:ro
-      - ./state/curator:/state
+      - ./data:/app/data
       - ./buzz.yml:/app/buzz.yml:rp
       - /mnt/buzz/curated:/mnt/buzz/curated
       - /mnt/buzz/raw:/mnt/buzz/raw:ro

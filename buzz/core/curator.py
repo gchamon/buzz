@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-from ..models import PresentationConfig
+from ..models import CuratorConfig
 from . import db
 from .events import record_event
 from .media import (
@@ -207,7 +207,7 @@ def log_mapping_event(diff: dict, report: dict, mapping_entries: int) -> None:
     )
 
 
-def build_library(config: PresentationConfig) -> dict:
+def build_library(config: CuratorConfig) -> dict:
     """Build the curated library from source directories."""
     overrides = load_overrides(config.overrides_path)
     movies_source = config.source_root / "movies"
@@ -219,10 +219,10 @@ def build_library(config: PresentationConfig) -> dict:
             f"Source root does not exist: {config.source_root}"
         )
 
-    config.state_root.mkdir(parents=True, exist_ok=True)
+    config.state_dir.mkdir(parents=True, exist_ok=True)
     config.target_root.mkdir(parents=True, exist_ok=True)
 
-    conn = db.connect(config.state_root / "buzz.sqlite")
+    conn = db.connect(config.state_dir / "buzz.sqlite")
     db.apply_migrations(conn)
     previous_mapping = load_previous_mapping(conn)
     mapping = []
@@ -511,7 +511,7 @@ def build_anime(
 
 
 def rebuild_and_trigger(
-    config: PresentationConfig,
+    config: CuratorConfig,
     changed_roots: list[str] | None = None,
 ) -> dict:
     """Rebuild the library and optionally trigger a Jellyfin scan."""
@@ -565,8 +565,8 @@ def rebuild_and_trigger(
 class Curator:
     """Thread-safe wrapper around library rebuild operations."""
 
-    def __init__(self, config: PresentationConfig) -> None:
-        """Initialize with the presentation configuration."""
+    def __init__(self, config: CuratorConfig) -> None:
+        """Initialize with the curator configuration."""
         self.config = config
         self.lock = threading.Lock()
 
