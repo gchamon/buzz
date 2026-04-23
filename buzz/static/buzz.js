@@ -495,3 +495,118 @@ function initTableFit() {
   fitTableToViewport();
   window.addEventListener("resize", fitTableToViewport);
 }
+
+
+function buildNestedValue(obj, path, value) {
+  const keys = path.split(".");
+  let current = obj;
+  for (let i = 0; i < keys.length - 1; i++) {
+    const key = keys[i];
+    if (!(key in current)) {
+      current[key] = {};
+    }
+    current = current[key];
+  }
+  current[keys[keys.length - 1]] = value;
+}
+
+async function copyEffectiveConfig() {
+  const code = document.querySelector("#effective-config-section .config-yaml");
+  if (!code) return;
+  await copyToClipboard(code.innerText, "config copied to clipboard!");
+}
+
+function toggleEditOverrides() {
+  const effectiveSection = document.getElementById("effective-config-section");
+  const editSection = document.getElementById("edit-overrides-section");
+  if (!effectiveSection || !editSection) return;
+
+  const isEditing = !editSection.classList.contains("hidden");
+  if (isEditing) {
+    editSection.classList.add("hidden");
+    effectiveSection.classList.remove("hidden");
+  } else {
+    editSection.classList.remove("hidden");
+    effectiveSection.classList.add("hidden");
+  }
+}
+
+function filterLanguages(query) {
+  const list = document.getElementById("lang-list");
+  if (!list) return;
+  const term = query.toLowerCase().trim();
+  list.querySelectorAll(".lang-item").forEach((item) => {
+    const name = item.dataset.langName || "";
+    const code = item.dataset.langCode || "";
+    if (!term || name.includes(term) || code.includes(term)) {
+      item.classList.remove("hidden");
+    } else {
+      item.classList.add("hidden");
+    }
+  });
+}
+
+async function saveConfig() {
+  const form = document.getElementById("config-form");
+  if (!form) return;
+
+  const overrides = {};
+  const textInputs = form.querySelectorAll("input[type=\"text\"], input[type=\"number\"], textarea, select");
+  const checkboxes = form.querySelectorAll("input[type=\"checkbox\"]");
+
+  textInputs.forEach((el) => {
+    if (!el.name) return;
+    let value = el.value;
+    if (el.type === "number") {
+      value = el.value.includes(".") ? parseFloat(el.value) : parseInt(el.value, 10);
+      if (Number.isNaN(value)) value = 0;
+    } else if (el.tagName.toLowerCase() === "textarea") {
+      value = el.value.split("\n").map((s) => s.trim()).filter((s) => s !== "");
+    }
+    buildNestedValue(overrides, el.name, value);
+  });
+
+  const langValues = [];
+  checkboxes.forEach((el) => {
+    if (!el.name) return;
+    if (el.name === "subtitles.languages") {
+      if (el.checked) langValues.push(el.value);
+      return;
+    }
+    buildNestedValue(overrides, el.name, el.checked);
+  });
+
+  if (langValues.length > 0) {
+    buildNestedValue(overrides, "subtitles.languages", langValues);
+  }
+
+  const consoleMsg = document.getElementById("meta-console-msg");
+  if (consoleMsg) {
+    consoleMsg.innerText = "saving...";
+    consoleMsg.className = "service-status-orange";
+  }
+
+  try {
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overrides }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      throw new Error(data.error);
+    }
+    window.scrollTo(0, 0);
+    const banner = document.getElementById("restart-banner");
+    if (banner) banner.classList.remove("hidden");
+    if (consoleMsg) {
+      consoleMsg.innerText = "saved.";
+      consoleMsg.className = "service-status-green";
+    }
+  } catch (err) {
+    if (consoleMsg) {
+      consoleMsg.innerText = "save failed: " + err.message;
+      consoleMsg.className = "service-status-red";
+    }
+  }
+}

@@ -303,7 +303,7 @@ class CuratorAppTests(unittest.TestCase):
             self.assertTrue(report["jellyfin_scan_triggered"])
             self.assertEqual(report["jellyfin_scan_status"], "selective_triggered")
 
-    @patch("buzz.core.curator.discover_jellyfin_libraries")
+    @patch("buzz.core.media_server.discover_jellyfin_libraries")
     @patch("urllib.request.urlopen")
     def test_trigger_jellyfin_selective_refresh_calls_correct_id(
         self, mock_urlopen, mock_discover

@@ -9,6 +9,7 @@ from typing import Any
 from urllib import error
 
 import jinja2
+import yaml
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -29,6 +30,10 @@ from .models import (
     DeleteTrashRequest,
     ErrorResponse,
     SelectFilesRequest,
+    mask_secrets,
+    save_overrides,
+    to_nested_dict,
+    _strip_secrets,
 )
 from .core.state import (
     BuzzState,
@@ -37,6 +42,17 @@ from .core.state import (
     dav_rel_path,
     read_range_header,
 )
+
+
+def _fetch_opensubtitles_languages() -> list[tuple[str, str]]:
+    try:
+        import httpx
+        resp = httpx.get("https://api.opensubtitles.com/api/v1/infos/languages", timeout=10.0)
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        return [(item["language_code"], item["language_name"]) for item in data]
+    except Exception:
+        return []
 
 
 class DavApp:
@@ -49,6 +65,7 @@ class DavApp:
         os.environ["RD_APITOKEN"] = config.token
         self.client = RD()
         self.state = BuzzState(config, self.client)
+        self.opensubtitles_languages = _fetch_opensubtitles_languages()
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
@@ -90,6 +107,32 @@ class DavApp:
         @self.app.get("/trashcan", response_class=HTMLResponse)
         def trashcan():
             return self._trashcan_page()
+        @self.app.get("/config", response_class=HTMLResponse)
+        def config_page():
+            return self._config_page()
+
+        @self.app.get("/api/config")
+        def get_config():
+            effective = to_nested_dict(self.config)
+            masked = mask_secrets(effective)
+            overrides = {}
+            if self.config._overrides_path.exists():
+                try:
+                    with open(self.config._overrides_path, "r", encoding="utf-8") as handle:
+                        overrides = yaml.safe_load(handle) or {}
+                except Exception:  # noqa: BLE001
+                    pass
+            return {"effective": masked, "overrides": overrides}
+
+        @self.app.post("/api/config")
+        def post_config(payload: dict):
+            try:
+                overrides = payload.get("overrides", {})
+                overrides = _strip_secrets(overrides)
+                save_overrides(overrides, self.config._overrides_path)
+                return {"status": "saved", "restart_required": True}
+            except Exception as exc:
+                return JSONResponse(status_code=400, content={"error": str(exc)})
 
         @self.app.get("/healthz")
         def healthz():
@@ -538,6 +581,35 @@ class DavApp:
             trash_count=len(self.state.trashcan),
             log_count=len(registry.events),
             ui_poll_interval_secs=self.config.ui_poll_interval_secs,
+        )
+    def _config_page(self) -> str:
+        from .core.events import registry
+
+        status = self.state.status()
+        sync_state = "syncing" if status.get("sync_in_progress") else "idle"
+        effective = to_nested_dict(self.config)
+        masked = mask_secrets(effective)
+        effective_yaml = yaml.safe_dump(masked, default_flow_style=False, sort_keys=False)
+
+        selected = set(self.config.subtitles.languages)
+        languages = sorted(
+            self.opensubtitles_languages or [],
+            key=lambda item: (item[0] not in selected, item[1].lower()),
+        )
+
+        template = self.templates.get_template("config.html")
+        return template.render(
+            torrents_count=len(self.state.torrents()),
+            last_sync_at=status.get("last_sync_at") or "never",
+            sync_state=sync_state,
+            snapshot_ready="true" if status.get("snapshot_loaded") else "false",
+            last_error=status.get("last_error"),
+            trash_count=len(self.state.trashcan),
+            log_count=len(registry.events),
+            ui_poll_interval_secs=self.config.ui_poll_interval_secs,
+            effective_yaml=effective_yaml,
+            config=self.config,
+            opensubtitles_languages=languages,
         )
 
     async def _handle_validation_error(

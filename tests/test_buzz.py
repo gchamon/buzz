@@ -1,17 +1,25 @@
 import json
+import os
 import subprocess
 import tempfile
 import threading
 import time
 import unittest
+import yaml
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
 from fastapi.testclient import TestClient
 
 from buzz.dav_app import DavApp
 from buzz.dav_protocol import open_remote_media, propfind_body
-from buzz.models import DavConfig as Config
+from buzz.models import (
+    DavConfig as Config,
+    deep_merge,
+    mask_secrets,
+    save_overrides,
+    to_nested_dict,
+    _strip_secrets,
+    )
 from buzz.core.state import (
     BuzzState,
     LibraryBuilder,
@@ -19,7 +27,7 @@ from buzz.core.state import (
     canonical_snapshot,
     dav_rel_path,
     normalize_posix_path,
-)
+    )
 from scripts.migrate_config import (
     buzz_to_zurg,
     convert,
@@ -1441,5 +1449,154 @@ class DavBufferedStreamingTests(unittest.TestCase):
         # Background thread must have joined before gen.close() returned.
         self.assertLessEqual(threads_after, threads_before)
         self.assertTrue(fake_response.closed)
+class ConfigUITests(unittest.TestCase):
+    def test_deep_merge_nested_overrides(self):
+        base = {"a": 1, "b": {"c": 2, "d": 3}}
+        overrides = {"b": {"c": 99}}
+        result = deep_merge(base, overrides)
+        self.assertEqual(result, {"a": 1, "b": {"c": 99, "d": 3}})
+
+    def test_deep_merge_empty_overrides(self):
+        base = {"a": 1, "b": {"c": 2}}
+        result = deep_merge(base, {})
+        self.assertEqual(result, base)
+
+    def test_deep_merge_additive_keys(self):
+        base = {"a": 1}
+        overrides = {"b": 2}
+        result = deep_merge(base, overrides)
+        self.assertEqual(result, {"a": 1, "b": 2})
+
+    def test_deep_merge_replaces_non_dict(self):
+        base = {"a": {"b": 1}}
+        overrides = {"a": 2}
+        result = deep_merge(base, overrides)
+        self.assertEqual(result, {"a": 2})
+
+    def test_mask_secrets(self):
+        d = {
+            "provider": {"token": "secret123"},
+            "subtitles": {
+                "opensubtitles": {
+                    "api_key": "ak",
+                    "username": "user",
+                    "password": "pass",
+                    "other": "ok",
+                }
+            },
+            "public": "visible",
+        }
+        result = mask_secrets(d)
+        self.assertEqual(result["provider"]["token"], "***")
+        self.assertEqual(result["subtitles"]["opensubtitles"]["api_key"], "***")
+        self.assertEqual(result["subtitles"]["opensubtitles"]["username"], "***")
+        self.assertEqual(result["subtitles"]["opensubtitles"]["password"], "***")
+        self.assertEqual(result["subtitles"]["opensubtitles"]["other"], "ok")
+        self.assertEqual(result["public"], "visible")
+
+    def test_config_load_without_overrides(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+            f.write("provider:\n  token: testtoken\n")
+            base_path = f.name
+        try:
+            config = Config.load(base_path)
+            self.assertEqual(config.token, "testtoken")
+            self.assertEqual(config.poll_interval_secs, 10)
+            self.assertEqual(config.bind, "0.0.0.0")
+        finally:
+            os.unlink(base_path)
+
+    def test_config_load_with_overrides(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            overrides_path = Path(tmpdir) / "buzz.overrides.yml"
+            base_path.write_text(
+                f"provider:\n  token: testtoken\nserver:\n  port: 9999\nstate_dir: {tmpdir}\n", encoding="utf-8"
+            )
+            overrides_path.write_text(
+                "server:\n  port: 8888\npoll_interval_secs: 60\n", encoding="utf-8"
+            )
+            config = Config.load(str(base_path))
+            self.assertEqual(config.token, "testtoken")
+            self.assertEqual(config.port, 8888)
+            self.assertEqual(config.poll_interval_secs, 60)
+
+    def test_get_api_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            base_path.write_text(
+                "provider:\n  token: sekrit\nserver:\n  port: 9999\n", encoding="utf-8"
+            )
+            config = Config.load(str(base_path))
+            rd_patcher = patch("buzz.dav_app.RD", return_value=DavAppTests.FakeRD())
+            rd_patcher.start()
+            self.addCleanup(rd_patcher.stop)
+            app = DavApp(config)
+            client = TestClient(app.app)
+            resp = client.get("/api/config")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertEqual(data["effective"]["provider"]["token"], "***")
+            self.assertEqual(data["effective"]["server"]["port"], 9999)
+
+    def test_post_api_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            overrides_path = Path(tmpdir) / "buzz.overrides.yml"
+            base_path.write_text(
+                f"provider:\n  token: testtoken\nserver:\n  port: 9999\nstate_dir: {tmpdir}\n", encoding="utf-8"
+            )
+            config = Config.load(str(base_path))
+            rd_patcher = patch("buzz.dav_app.RD", return_value=DavAppTests.FakeRD())
+            rd_patcher.start()
+            self.addCleanup(rd_patcher.stop)
+            app = DavApp(config)
+            client = TestClient(app.app)
+            resp = client.post(
+                "/api/config",
+                json={"overrides": {"server": {"port": 7777}}},
+            )
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json()["status"], "saved")
+            self.assertTrue(resp.json()["restart_required"])
+            written = yaml.safe_load(overrides_path.read_text(encoding="utf-8"))
+            self.assertEqual(written["server"]["port"], 7777)
+
+    def test_post_api_config_strips_secrets(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            overrides_path = Path(tmpdir) / "buzz.overrides.yml"
+            base_path.write_text(
+                f"provider:\n  token: testtoken\nstate_dir: {tmpdir}\n", encoding="utf-8"
+            )
+            config = Config.load(str(base_path))
+            rd_patcher = patch("buzz.dav_app.RD", return_value=DavAppTests.FakeRD())
+            rd_patcher.start()
+            self.addCleanup(rd_patcher.stop)
+            app = DavApp(config)
+            client = TestClient(app.app)
+            resp = client.post(
+                "/api/config",
+                json={
+                    "overrides": {
+                        "provider": {"token": "hacked"},
+                        "subtitles": {
+                            "opensubtitles": {
+                                "api_key": "hacked",
+                                "username": "hacked",
+                                "password": "hacked",
+                            }
+                        },
+                        "server": {"port": 7777},
+                    }
+                },
+            )
+            self.assertEqual(resp.status_code, 200)
+            written = yaml.safe_load(overrides_path.read_text(encoding="utf-8"))
+            self.assertNotIn("provider", written)
+            self.assertNotIn("subtitles", written)
+            self.assertEqual(written["server"]["port"], 7777)
+
+
 if __name__ == "__main__":
     unittest.main()

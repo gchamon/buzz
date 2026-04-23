@@ -960,3 +960,193 @@ input[type="text"]:focus {
     display: none;
   }
 }
+
+
+/* --- Page: Config --- */
+.config-page-container {
+  margin-top: 24px;
+}
+
+.config-header {
+  color: var(--pink);
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  letter-spacing: 1px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--selection);
+  padding: 10px 15px;
+  border: 1px solid var(--comment);
+  border-radius: 4px 4px 0 0;
+  border-bottom: none;
+}
+
+.config-title {
+  margin: 0;
+  font: inherit;
+}
+
+.config-yaml {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.8rem;
+  background: var(--bg);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: var(--fg);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.config-panel-body {
+  background: var(--bg);
+  border: 1px solid var(--comment);
+  border-radius: 0 0 4px 4px;
+  margin: 0 0 24px 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
+  overflow: hidden;
+}
+
+.config-scrollable {
+  overflow-y: auto;
+  flex: 1 1 auto;
+  padding: 10px 15px;
+}
+
+.config-panel-footer {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  border-top: 1px solid var(--comment);
+  padding: 12px 15px;
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+div.code-toolbar > .toolbar {
+  display: none;
+}
+
+.lang-list {
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid var(--comment);
+  border-radius: 3px;
+  padding: 8px;
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.lang-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lang-item.hidden {
+  display: none;
+}
+
+.config-section {
+  border: 1px solid var(--comment);
+  border-radius: 4px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+}
+
+.config-section legend {
+  color: var(--orange);
+  font-weight: bold;
+  padding: 0 8px;
+}
+
+.config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.config-field:last-child {
+  margin-bottom: 0;
+}
+
+.config-field label {
+  color: var(--cyan);
+  font-size: 0.8rem;
+}
+
+.config-field input[type="text"],
+.config-field input[type="number"],
+.config-field select,
+.config-field textarea {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--comment);
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 0.85rem;
+}
+
+.config-field input[type="text"]:focus,
+.config-field input[type="number"]:focus,
+.config-field select:focus,
+.config-field textarea:focus {
+  outline: none;
+  border-color: var(--purple);
+}
+
+.checkbox-field {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkbox-field label {
+  margin: 0;
+}
+
+.config-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.restart-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: rgba(255, 184, 108, 0.15);
+  border: 1px solid var(--orange);
+  border-radius: 4px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  color: var(--orange);
+  font-weight: bold;
+}
+
+.restart-banner.hidden {
+  display: none;
+}
+
+.restart-banner button {
+  background: var(--orange);
+  color: var(--bg);
+}
