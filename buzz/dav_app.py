@@ -78,6 +78,7 @@ class DavApp:
             poller.start()
             yield
             poller.stop()
+            self.state.close()
 
         self.app = FastAPI(lifespan=lifespan)
         self.app.add_exception_handler(

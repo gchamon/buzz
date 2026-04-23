@@ -6,9 +6,10 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
+from typing import Any, cast
 
 import yaml
-from pathlib import Path
 
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -68,9 +69,10 @@ def parse_zurg_config(raw: str) -> dict:
                     current_filter = None
                 elif in_filters and indent == 6 and stripped.startswith("- "):
                     current_filter = {}
-                    config["directories"][directory_name]["filters"].append(
-                        current_filter
-                    )
+                    directories = _as_dict(config["directories"])
+                    directory_config = _as_dict(directories.get(directory_name, {}))
+                    filters = cast(list[dict[str, str]], directory_config["filters"])
+                    filters.append(current_filter)
                     remainder = stripped[2:].strip()
                     if remainder and ":" in remainder:
                         key, value = remainder.split(":", 1)
@@ -87,7 +89,9 @@ def parse_zurg_config(raw: str) -> dict:
                     continue
                 elif indent == 4 and ":" in stripped:
                     key, value = stripped.split(":", 1)
-                    config["directories"][directory_name][key.strip()] = value.strip()
+                    directories = _as_dict(config["directories"])
+                    directory_config = _as_dict(directories.get(directory_name, {}))
+                    directory_config[key.strip()] = value.strip()
                     continue
 
         if indent == 0 and ":" in stripped:
@@ -97,8 +101,15 @@ def parse_zurg_config(raw: str) -> dict:
     return config
 
 
-def zurg_to_buzz(zurg: dict) -> dict:
-    anime_filters = zurg.get("directories", {}).get("anime", {}).get("filters", [])
+def _as_dict(value: object) -> dict[str, Any]:
+    """Return *value* as a dict when possible, otherwise an empty dict."""
+    return cast(dict[str, Any], value) if isinstance(value, dict) else {}
+
+
+def zurg_to_buzz(zurg: dict[str, Any]) -> dict[str, Any]:
+    directories = _as_dict(zurg.get("directories", {}))
+    anime = _as_dict(directories.get("anime", {}))
+    anime_filters = anime.get("filters", [])
     anime_patterns = []
     for item in anime_filters:
         if not isinstance(item, dict):
@@ -136,20 +147,22 @@ def zurg_to_buzz(zurg: dict) -> dict:
     return buzz
 
 
-def parse_buzz_config(raw: str) -> dict:
-    return yaml.safe_load(raw)
+def parse_buzz_config(raw: str) -> dict[str, Any]:
+    loaded = yaml.safe_load(raw)
+    return _as_dict(loaded)
 
 
-def buzz_to_zurg(buzz: dict) -> str:
-    token = str(buzz.get("provider", {}).get("token", ""))
+def buzz_to_zurg(buzz: dict[str, Any]) -> str:
+    provider = _as_dict(buzz.get("provider", {}))
+    server = _as_dict(buzz.get("server", {}))
+    hooks = _as_dict(buzz.get("hooks", {}))
+    directories = _as_dict(buzz.get("directories", {}))
+    anime = _as_dict(directories.get("anime", {}))
+    token = str(provider.get("token", ""))
     poll = int(buzz.get("poll_interval_secs", 10))
-    port = int(buzz.get("server", {}).get("port", 9999))
-    hook = str(buzz.get("hooks", {}).get("on_library_change", DEFAULT_HOOK)).strip()
-    anime_patterns = list(
-        buzz.get("directories", {})
-        .get("anime", {})
-        .get("patterns", [DEFAULT_ANIME_PATTERN])
-    )
+    port = int(server.get("port", 9999))
+    hook = str(hooks.get("on_library_change", DEFAULT_HOOK)).strip()
+    anime_patterns = list(anime.get("patterns", [DEFAULT_ANIME_PATTERN]))
     regex_lines = []
     for pattern in anime_patterns:
         regex = ensure_regex_delimiters(pattern)

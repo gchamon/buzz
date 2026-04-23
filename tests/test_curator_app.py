@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
+from buzz.core import db
 from buzz.core.curator import RebuildError, build_library, rebuild_and_trigger
 from buzz.curator_app import CuratorApp
 from buzz.models import PresentationConfig
@@ -81,7 +82,13 @@ class CuratorAppTests(unittest.TestCase):
                     response = client.get("/healthz")
 
             self.assertEqual(response.status_code, 200)
-            self.assertTrue((root / "state" / "report.json").exists())
+            conn = db.connect(root / "state" / "buzz.sqlite")
+            db.apply_migrations(conn)
+            try:
+                report = db.load_curator_report(conn)
+            finally:
+                conn.close()
+            self.assertIsNotNone(report)
 
     def test_curator_subtitle_fetch_uses_consistent_torrent_name(self):
         with tempfile.TemporaryDirectory() as tmpdir:

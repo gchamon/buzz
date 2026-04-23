@@ -49,6 +49,12 @@ If you change `buzz.yml`, restart the service:
 docker compose restart buzz
 ```
 
+To inspect machine-managed state:
+
+```sh
+sqlite3 /path/to/state_dir/buzz.sqlite ".tables"
+```
+
 ## Configuration Reference
 
 ### `buzz.yml`

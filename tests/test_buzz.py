@@ -938,7 +938,8 @@ class DavAppTests(unittest.TestCase):
             "Little%20Shop%20of%20Horrors%20%281986%29.mkv"
         )
         node = self.state.lookup(encoded_path)
-        self.assertIsNotNone(node)
+        if node is None:
+            self.fail("Expected encoded DAV path to resolve")
         self.assertEqual(node["size"], 2)
         self.assertEqual(node["content"], "ok")
 
@@ -1117,13 +1118,12 @@ class DavAppTests(unittest.TestCase):
         }
 
         with patch("buzz.dav_protocol.request.urlopen", side_effect=response_queue):
-            response, first_chunk = open_remote_media(
-                self.state,
-                self.state.lookup(
-                    "movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv"
-                ),
-                None,
+            node = self.state.lookup(
+                "movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv"
             )
+            if node is None:
+                self.fail("Expected snapshot node for streaming test")
+            response, first_chunk = open_remote_media(self.state, node, None)
             self.assertEqual(first_chunk, b"\x1a\x45\xdf\xa3media-bytes")
             response.close()
 
@@ -1516,7 +1516,12 @@ class ConfigUITests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             base_path = Path(tmpdir) / "buzz.yml"
             base_path.write_text(
-                "provider:\n  token: sekrit\nserver:\n  port: 9999\n", encoding="utf-8"
+                (
+                    "provider:\n  token: sekrit\n"
+                    "server:\n  port: 9999\n"
+                    f"state_dir: {tmpdir}\n"
+                ),
+                encoding="utf-8",
             )
             config = Config.load(str(base_path))
             rd_patcher = patch("buzz.dav_app.RD", return_value=DavAppTests.FakeRD())
