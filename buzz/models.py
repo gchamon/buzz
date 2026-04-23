@@ -50,6 +50,7 @@ class DavConfig(BaseModel):
     library_mount: str = ""
     verbose: bool = False
     log_max_entries: int = 1000
+    ui_poll_interval_secs: int = 3
     subtitles: SubtitleConfig = Field(default_factory=SubtitleConfig)
 
     @classmethod
@@ -67,6 +68,7 @@ class DavConfig(BaseModel):
         subs_raw = raw.get("subtitles", {})
         opensubs = subs_raw.get("opensubtitles", {})
         subs_filters = subs_raw.get("filters", {})
+        ui_raw = raw.get("ui", {})
 
         token = provider.get("token", "").strip()
         if not token:
@@ -94,6 +96,7 @@ class DavConfig(BaseModel):
             version_label=str(raw.get("version_label", "buzz/0.1")),
             verbose=bool(logging.get("verbose", False)),
             log_max_entries=int(logging.get("max_entries", 1000)),
+            ui_poll_interval_secs=int(ui_raw.get("poll_interval_secs", 3)),
             subtitles=SubtitleConfig(
                 enabled=bool(subs_raw.get("enabled", False)),
                 fetch_on_resync=bool(subs_raw.get("fetch_on_resync", False)),

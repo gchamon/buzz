@@ -67,7 +67,9 @@
     // Force logs to show immediately on this page
     pollLogs();
 
-    initBuzzPage({});
+    initBuzzPage({
+      pollIntervalMs: {{ ui_poll_interval_secs * 1000 }},
+    });
   </script>
 </body>
 

@@ -199,66 +199,6 @@ async function triggerRestart() {
   }
 }
 
-async function triggerSubtitleFetch() {
-  const msg = document.getElementById("subtitle-status-msg");
-  if (!msg) return;
-  
-  msg.innerText = "triggering fetch...";
-  msg.className = "ready-label-orange";
-
-  try {
-    const res = await fetch("/api/subtitles/fetch", { method: "POST" });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    msg.innerText = "fetch triggered.";
-    msg.className = "ready-label-green";
-  } catch (err) {
-    msg.innerText = "fetch failed: " + err.message;
-    msg.className = "ready-label-red";
-  }
-}
-
-async function updateSubtitleStatus() {
-  const row = document.getElementById("subtitle-status-row");
-  const msg = document.getElementById("subtitle-status-msg");
-  if (!row || !msg) return;
-
-  try {
-    const res = await fetch("/api/subtitles/status");
-    if (!res.ok) {
-      if (res.status === 404 || res.status === 400) {
-        row.classList.add("hidden");
-      }
-      return;
-    }
-    const data = await res.json();
-    if (data.enabled === false) {
-      row.classList.add("hidden");
-      return;
-    }
-    row.classList.remove("hidden");
-    if (data.is_running) {
-      msg.innerText = `Running: ${data.current_file || "starting..."}`;
-      msg.className = "service-status-orange";
-    } else {
-      let text = "Idle";
-      if (data.last_run_at) {
-        const date = new Date(data.last_run_at * 1000);
-        text += ` (Last run: ${date.toLocaleTimeString()})`;
-      }
-      if (data.error_count > 0) {
-        text += ` - ${data.error_count} errors`;
-        msg.className = "service-status-red";
-      } else {
-        msg.className = "service-status-green";
-      }
-      msg.innerText = text;
-    }
-  } catch (err) {
-    console.error("Failed to update subtitle status:", err);
-  }
-}
-
 async function copyToClipboard(text, successMsg = "copied to clipboard!") {
   const consoleMsg = document.getElementById("meta-console-msg");
 
@@ -441,9 +381,7 @@ function initBuzzPage(config) {
     pollStatus();
     setInterval(pollStatus, buzzPageConfig.pollIntervalMs);
     
-    // Subtitle status polling
-    updateSubtitleStatus();
-    setInterval(updateSubtitleStatus, 5000);
+
 
     // Initial log fetch
     pollLogs();

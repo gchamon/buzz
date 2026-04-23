@@ -38,10 +38,7 @@
         <b class="meta-item-label">console:</b> <span id="meta-console-msg"></span>
         <button class="secondary btn-sm" onclick="triggerManualRebuild()">RESYNC LIB</button>
       </div>
-      <div id="subtitle-status-row" class="meta-row meta-console {% if not subtitle_enabled %}hidden{% endif %}">
-        <b class="meta-item-label">subtitles:</b> <span id="subtitle-status-msg"></span>
-        <button class="secondary btn-sm" onclick="triggerSubtitleFetch()">FETCH SUBS</button>
-      </div>
+
     </div>
 
     {% if last_error %}
@@ -433,7 +430,8 @@
     }
 
     initBuzzPage({
-      tableId: "torrent-table"
+      tableId: "torrent-table",
+      pollIntervalMs: {{ ui_poll_interval_secs * 1000 }},
     });
     initTruncCells();
     initTableFit();

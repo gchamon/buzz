@@ -486,6 +486,7 @@ class DavApp:
             trash_count=len(self.state.trashcan),
             log_count=len(registry.events),
             subtitle_enabled=self.config.subtitles.enabled,
+            ui_poll_interval_secs=self.config.ui_poll_interval_secs,
         )
 
     def _trashcan_page(self) -> str:
@@ -518,6 +519,7 @@ class DavApp:
             trash_torrents=trash_torrents,
             trash_count=len(trash_torrents),
             log_count=len(registry.events),
+            ui_poll_interval_secs=self.config.ui_poll_interval_secs,
         )
 
     def _logs_page(self) -> str:
@@ -535,6 +537,7 @@ class DavApp:
             last_error=status.get("last_error"),
             trash_count=len(self.state.trashcan),
             log_count=len(registry.events),
+            ui_poll_interval_secs=self.config.ui_poll_interval_secs,
         )
 
     async def _handle_validation_error(
