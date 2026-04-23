@@ -362,7 +362,7 @@ code {
   padding: 40px;
 }
 
-.trashcan-opts,
+.archive-opts,
 .delete-container {
   display: flex;
   width: 100%;
@@ -371,7 +371,7 @@ code {
   min-width: 70px;
 }
 
-.trashcan-opts,
+.archive-opts,
 .confirm-opts {
   flex-direction: row;
   align-items: center;
@@ -616,7 +616,7 @@ code {
   color: var(--red);
 }
 
-/* --- Page: Torrents --- */
+/* --- Page: Cache --- */
 .add-torrent-section {
   background: var(--selection);
   padding: 15px;
@@ -932,7 +932,7 @@ input[type="text"]:focus {
   font-weight: bold;
 }
 
-/* --- Page: Trashcan --- */
+/* --- Page: Archive --- */
 #trash-table th:nth-child(1),
 #trash-table td:nth-child(1) {
   width: auto;

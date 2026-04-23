@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>buzz: list torrents</title>
+  <title>buzz: cache</title>
   <link rel="icon"
     href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐝</text></svg>">
   <link rel="stylesheet" href="/static/buzz.css">
@@ -16,9 +16,9 @@
     <div class="prompt">
       <b>buzz:</b>
       <div class="menu-options">
-        <a href="/torrents" class="nav-link active">🪎 cache</a>
+        <a href="/cache" class="nav-link active">🪎 cache</a>
         <span class="nav-sep">◈</span>
-        <a href="/trashcan" class="nav-link" id="nav-archive"><i class="fa-solid fa-box-archive nav-icon" aria-hidden="true"></i>archive(<span id="nav-archive-count">{{ trash_count }}</span>)</a>
+        <a href="/archive" class="nav-link" id="nav-archive"><i class="fa-solid fa-box-archive nav-icon" aria-hidden="true"></i>archive(<span id="nav-archive-count">{{ trash_count }}</span>)</a>
         <span class="nav-sep">◈</span>
         <a href="/logs" class="nav-link" id="nav-logs">📜 logs(<span id="nav-log-count">{{ log_count }}</span>)</a>
         <span class="nav-sep">◈</span>
@@ -28,7 +28,7 @@
 
     <div class="meta-bar">
       <div class="meta-row">
-        <div class="meta-item"><b class="meta-item-label">[torrents]</b> <span>{{ torrents_count }}</span></div>
+        <div class="meta-item"><b class="meta-item-label">[cache]</b> <span>{{ torrents_count }}</span></div>
         <div class="meta-item"><b class="meta-item-label">[last_sync]</b> <span id="status-last-sync">{{ last_sync_at }}</span></div>
         <div class="meta-item"><b class="meta-item-label">[state]</b> <span id="status-sync">{{ sync_state }}</span></div>
         <div class="meta-item">
@@ -99,7 +99,7 @@
           </tr>
         </thead>
         <tbody>
-          {% for torrent in torrents %}
+          {% for torrent in cache_items %}
           <tr>
             <td class="name trunc-cell" data-value="{{ torrent.name }}">
               <div class="trunc-idle">{{ torrent.name }}</div>
@@ -122,17 +122,17 @@
                 {% endif %}
                 <div class="confirm-opts" id="confirm-{{ torrent.id }}">
                   <div class="opt opt-y" onclick="deleteTorrent('{{ torrent.id }}', this)"
-                    title="Confirm Move to Trashcan">[Y]</div>
+                    title="Confirm Move to Archive">[Y]</div>
                   <div class="opt opt-n" onclick="toggleDelete('{{ torrent.id }}', false)" title="Cancel">[N]</div>
                 </div>
                 <div class="btn-x" id="btn-x-{{ torrent.id }}" onclick="toggleDelete('{{ torrent.id }}', true)"
-                  title="Move to Trashcan">[X]</div>
+                  title="Move to Archive">[X]</div>
               </div>
             </td>
           </tr>
           {% else %}
           <tr>
-            <td colspan="8" class="empty">No cached torrents yet. Wait for the first sync or trigger <code>POST
+            <td colspan="8" class="empty">No cached items yet. Wait for the first sync or trigger <code>POST
                 /sync</code>.</td>
           </tr>
           {% endfor %}
@@ -191,7 +191,7 @@
         }
 
         try {
-          const res = await fetch("/api/torrents/add", {
+          const res = await fetch("/api/cache/add", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({magnet: magnets[i]})
@@ -294,7 +294,7 @@
             consoleMsg.innerText = `Caching torrent ${i + 1}/${torrentIds.length}...`;
           }
 
-          const res = await fetch("/api/torrents/select", {
+          const res = await fetch("/api/cache/select", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({torrent_id: torrentId, file_ids: fileIds})
@@ -307,7 +307,7 @@
         }
 
         if (consoleMsg) {
-          consoleMsg.innerText = "Torrents added! Refreshing...";
+          consoleMsg.innerText = "Items added! Refreshing...";
           consoleMsg.className = "ready-label-green";
         }
 
@@ -369,7 +369,7 @@
       }
 
       try {
-        const res = await fetch("/api/torrents/delete", {
+        const res = await fetch("/api/cache/delete", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({torrent_id: id})

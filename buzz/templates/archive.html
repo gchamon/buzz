@@ -16,9 +16,9 @@
     <div class="prompt">
       <b>buzz:</b>
       <div class="menu-options">
-        <a href="/torrents" class="nav-link">🪎 cache</a>
+        <a href="/cache" class="nav-link">🪎 cache</a>
         <span class="nav-sep">◈</span>
-        <a href="/trashcan" class="nav-link active" id="nav-archive"><i class="fa-solid fa-box-archive nav-icon" aria-hidden="true"></i>archive(<span id="nav-archive-count">{{ trash_count }}</span>)</a>
+        <a href="/archive" class="nav-link active" id="nav-archive"><i class="fa-solid fa-box-archive nav-icon" aria-hidden="true"></i>archive(<span id="nav-archive-count">{{ trash_count }}</span>)</a>
         <span class="nav-sep">◈</span>
         <a href="/logs" class="nav-link" id="nav-logs">📜 logs(<span id="nav-log-count">{{ log_count }}</span>)</a>
         <span class="nav-sep">◈</span>
@@ -28,7 +28,7 @@
 
     <div class="meta-bar">
       <div class="meta-row">
-        <div class="meta-item"><b class="meta-item-label">[torrents]</b> <span>{{ torrents_count }}</span></div>
+        <div class="meta-item"><b class="meta-item-label">[cache]</b> <span>{{ torrents_count }}</span></div>
         <div class="meta-item"><b class="meta-item-label">[last_sync]</b> <span id="status-last-sync">{{ last_sync_at }}</span></div>
         <div class="meta-item"><b class="meta-item-label">[state]</b> <span id="status-sync">{{ sync_state }}</span></div>
         <div class="meta-item">
@@ -57,7 +57,7 @@
           </tr>
         </thead>
         <tbody>
-          {% for torrent in trash_torrents %}
+          {% for torrent in archive_items %}
           <tr>
             <td class="name trunc-cell" data-value="{{ torrent.name }}">
               <div class="trunc-idle">{{ torrent.name }}</div>
@@ -82,7 +82,7 @@
                   <div class="opt opt-n" onclick="toggleDel('{{ torrent.hash }}', false)" title="Cancel">[N]</div>
                 </div>
 
-                <div class="trashcan-opts" id="trashcan-opts-{{ torrent.hash }}">
+                <div class="archive-opts" id="archive-opts-{{ torrent.hash }}">
                   <div class="opt btn-r" onclick="toggleRestore('{{ torrent.hash }}', true)" title="Restore to Cache">
                     [R]
                   </div>
@@ -107,13 +107,13 @@
     function toggleRestore(id, show) {
       document.getElementById('confirm-restore-' + id).style.display = show ? 'flex' : 'none';
       document.getElementById('confirm-del-' + id).style.display = 'none';
-      document.getElementById('trashcan-opts-' + id).style.display = show ? 'none' : 'flex';
+      document.getElementById('archive-opts-' + id).style.display = show ? 'none' : 'flex';
     }
 
     function toggleDel(id, show) {
       document.getElementById('confirm-del-' + id).style.display = show ? 'flex' : 'none';
       document.getElementById('confirm-restore-' + id).style.display = 'none';
-      document.getElementById('trashcan-opts-' + id).style.display = show ? 'none' : 'flex';
+      document.getElementById('archive-opts-' + id).style.display = show ? 'none' : 'flex';
     }
 
     async function restoreTrash(hash, el) {
@@ -124,7 +124,7 @@
       }
 
       try {
-        const res = await fetch("/api/torrents/restore", {
+        const res = await fetch("/api/cache/restore", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({hash: hash})
@@ -154,7 +154,7 @@
       }
 
       try {
-        const res = await fetch("/api/torrents/delete_permanently", {
+        const res = await fetch("/api/cache/delete_permanently", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({hash: hash})

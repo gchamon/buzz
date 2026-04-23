@@ -949,7 +949,7 @@ class DavAppTests(unittest.TestCase):
         self.assertEqual(node["size"], 2)
         self.assertEqual(node["content"], "ok")
 
-    def test_torrents_page_renders_cached_torrents(self):
+    def test_cache_page_renders_cached_items(self):
         self.state.cache = {
             "torrent-1": {
                 "signature": {},
@@ -967,11 +967,11 @@ class DavAppTests(unittest.TestCase):
         }
         self.state.last_sync_at = "2026-01-02T00:00:00Z"
 
-        response = self.client.get("/torrents")
+        response = self.client.get("/cache")
         body = response.text
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("buzz: list torrents", body)
+        self.assertIn("buzz: cache", body)
         self.assertIn("Movie &amp; Stuff", body)
         self.assertIn("1.5 MiB", body)
         self.assertIn("2026-01-02T00:00:00Z", body)
@@ -979,7 +979,7 @@ class DavAppTests(unittest.TestCase):
         self.assertIn('href="/static/buzz.css"', body)
         self.assertIn('src="/static/buzz.js"', body)
 
-    def test_trashcan_page_renders_shared_assets(self):
+    def test_archive_page_renders_shared_assets(self):
         self.state.trashcan = {
             "trash-1": {
                 "name": "Old & Gone",
@@ -990,7 +990,7 @@ class DavAppTests(unittest.TestCase):
             }
         }
 
-        response = self.client.get("/trashcan")
+        response = self.client.get("/archive")
         body = response.text
 
         self.assertEqual(response.status_code, 200)
@@ -1003,18 +1003,18 @@ class DavAppTests(unittest.TestCase):
         self.assertIn('href="/static/buzz.css"', body)
         self.assertIn('src="/static/buzz.js"', body)
 
-    def test_torrents_page_renders_empty_state_and_error_banner(self):
+    def test_cache_page_renders_empty_state_and_error_banner(self):
         self.state.last_error = "Boom & stuff"
 
-        response = self.client.get("/torrents")
+        response = self.client.get("/cache")
         body = response.text
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("No cached torrents yet.", body)
+        self.assertIn("No cached items yet.", body)
         self.assertIn("Boom &amp; stuff", body)
 
-    def test_trashcan_page_renders_empty_state(self):
-        response = self.client.get("/trashcan")
+    def test_archive_page_renders_empty_state(self):
+        response = self.client.get("/archive")
         body = response.text
 
         self.assertEqual(response.status_code, 200)
@@ -1056,7 +1056,7 @@ class DavAppTests(unittest.TestCase):
         )
 
     def test_api_validation_errors_return_json_error_envelope(self):
-        response = self.client.post("/api/torrents/add", json={"magnet": "  "})
+        response = self.client.post("/api/cache/add", json={"magnet": "  "})
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json(), {"error": "Value error, Missing magnet link"})

@@ -396,7 +396,7 @@ class BuzzState:
                         continue
                     info = cached.get("info")
                     if isinstance(info, dict) and info.get("hash"):
-                        self._add_to_trashcan(info)
+                        self._add_to_archive(info)
 
                 changed = digest != self.snapshot_digest
                 classified_changes = (
@@ -776,7 +776,7 @@ class BuzzState:
                 self._write_json(self.cache_path, self.cache)
         return {"status": "success"}
 
-    def _add_to_trashcan(self, info: dict[str, Any]) -> None:
+    def _add_to_archive(self, info: dict[str, Any]) -> None:
         thash = info.get("hash")
         if not thash:
             return
@@ -797,7 +797,7 @@ class BuzzState:
         }
         self._write_json(self.trashcan_path, self.trashcan)
 
-    def trash_torrents(self) -> list[dict[str, Any]]:
+    def archive_torrents(self) -> list[dict[str, Any]]:
         with self.lock:
             results = []
             for thash, entry in self.trashcan.items():

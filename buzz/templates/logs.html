@@ -16,9 +16,9 @@
     <div class="prompt">
       <b>buzz:</b>
       <div class="menu-options">
-        <a href="/torrents" class="nav-link">🪎 cache</a>
+        <a href="/cache" class="nav-link">🪎 cache</a>
         <span class="nav-sep">◈</span>
-        <a href="/trashcan" class="nav-link" id="nav-archive"><i class="fa-solid fa-box-archive nav-icon" aria-hidden="true"></i>archive(<span id="nav-archive-count">{{ trash_count }}</span>)</a>
+        <a href="/archive" class="nav-link" id="nav-archive"><i class="fa-solid fa-box-archive nav-icon" aria-hidden="true"></i>archive(<span id="nav-archive-count">{{ trash_count }}</span>)</a>
         <span class="nav-sep">◈</span>
         <a href="/logs" class="nav-link active" id="nav-logs">📜 logs(<span id="nav-log-count">{{ log_count }}</span>)</a>
         <span class="nav-sep">◈</span>
@@ -28,7 +28,7 @@
 
     <div class="meta-bar">
       <div class="meta-row">
-        <div class="meta-item"><b class="meta-item-label">[torrents]</b> <span>{{ torrents_count }}</span></div>
+        <div class="meta-item"><b class="meta-item-label">[cache]</b> <span>{{ torrents_count }}</span></div>
         <div class="meta-item"><b class="meta-item-label">[last_sync]</b> <span id="status-last-sync">{{ last_sync_at }}</span></div>
         <div class="meta-item"><b class="meta-item-label">[state]</b> <span id="status-sync">{{ sync_state }}</span></div>
         <div class="meta-item">

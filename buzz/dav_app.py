@@ -100,13 +100,13 @@ class DavApp:
             return self._logs_page()
 
         @self.app.get("/", response_class=HTMLResponse)
-        @self.app.get("/torrents", response_class=HTMLResponse)
+        @self.app.get("/cache", response_class=HTMLResponse)
         def index():
-            return self._torrents_page()
+            return self._cache_page()
 
-        @self.app.get("/trashcan", response_class=HTMLResponse)
-        def trashcan():
-            return self._trashcan_page()
+        @self.app.get("/archive", response_class=HTMLResponse)
+        def archive():
+            return self._archive_page()
         @self.app.get("/config", response_class=HTMLResponse)
         def config_page():
             return self._config_page()
@@ -184,7 +184,7 @@ class DavApp:
                 return JSONResponse(status_code=500, content={"error": str(exc)})
 
         @self.app.post(
-            "/api/torrents/add",
+            "/api/cache/add",
             responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
         )
         def add_torrent(payload: AddTorrentRequest):
@@ -195,7 +195,7 @@ class DavApp:
                 return JSONResponse(status_code=500, content={"error": str(exc)})
 
         @self.app.post(
-            "/api/torrents/select",
+            "/api/cache/select",
             responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
         )
         def select_files(payload: SelectFilesRequest):
@@ -206,7 +206,7 @@ class DavApp:
                 return JSONResponse(status_code=500, content={"error": str(exc)})
 
         @self.app.post(
-            "/api/torrents/delete",
+            "/api/cache/delete",
             responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
         )
         def delete_torrent(payload: DeleteTorrentRequest):
@@ -217,7 +217,7 @@ class DavApp:
                 return JSONResponse(status_code=500, content={"error": str(exc)})
 
         @self.app.post(
-            "/api/torrents/restore",
+            "/api/cache/restore",
             responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
         )
         def restore_trash(payload: RestoreTrashRequest):
@@ -228,7 +228,7 @@ class DavApp:
                 return JSONResponse(status_code=500, content={"error": str(exc)})
 
         @self.app.post(
-            "/api/torrents/delete_permanently",
+            "/api/cache/delete_permanently",
             responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
         )
         def delete_trash_permanently(payload: DeleteTrashRequest):
@@ -494,7 +494,7 @@ class DavApp:
                 )
                 return Response(status_code=502, content=str(exc))
 
-    def _torrents_page(self) -> str:
+    def _cache_page(self) -> str:
         from .core.events import registry
 
         status = self.state.status()
@@ -518,28 +518,28 @@ class DavApp:
 
         sync_state = "syncing" if status.get("sync_in_progress") else "idle"
 
-        template = self.templates.get_template("torrents.html")
+        template = self.templates.get_template("cache.html")
         return template.render(
             torrents_count=len(torrents),
             last_sync_at=status.get("last_sync_at") or "never",
             sync_state=sync_state,
             snapshot_ready="true" if status.get("snapshot_loaded") else "false",
             last_error=status.get("last_error"),
-            torrents=page_torrents,
+            cache_items=page_torrents,
             trash_count=len(self.state.trashcan),
             log_count=len(registry.events),
             subtitle_enabled=self.config.subtitles.enabled,
             ui_poll_interval_secs=self.config.ui_poll_interval_secs,
         )
 
-    def _trashcan_page(self) -> str:
+    def _archive_page(self) -> str:
         from .core.events import registry
 
         status = self.state.status()
-        torrents = self.state.trash_torrents()
-        trash_torrents = []
+        torrents = self.state.archive_torrents()
+        archive_items = []
         for torrent in torrents:
-            trash_torrents.append(
+            archive_items.append(
                 {
                     "hash": torrent["hash"],
                     "name": torrent["name"],
@@ -552,15 +552,15 @@ class DavApp:
 
         sync_state = "syncing" if status.get("sync_in_progress") else "idle"
 
-        template = self.templates.get_template("trashcan.html")
+        template = self.templates.get_template("archive.html")
         return template.render(
             torrents_count=len(self.state.torrents()),
             last_sync_at=status.get("last_sync_at") or "never",
             sync_state=sync_state,
             snapshot_ready="true" if status.get("snapshot_loaded") else "false",
             last_error=status.get("last_error"),
-            trash_torrents=trash_torrents,
-            trash_count=len(trash_torrents),
+            archive_items=archive_items,
+            trash_count=len(archive_items),
             log_count=len(registry.events),
             ui_poll_interval_secs=self.config.ui_poll_interval_secs,
         )
