@@ -95,5 +95,38 @@ if (typeof window !== "undefined") {
     },
   };
 
+  hooks.BuzzLogGlow = {
+    mounted() {
+      this._updateGlow();
+      this._onClick = () => {
+        const countSpan = document.getElementById("nav-log-count");
+        const logCount = parseInt(countSpan?.innerText || "0", 10);
+        localStorage.setItem("buzz_seen_logs", String(logCount));
+        this.el.classList.remove("nav-logs-new");
+      };
+      this.el.addEventListener("click", this._onClick);
+    },
+    updated() {
+      this._updateGlow();
+    },
+    destroyed() {
+      this.el.removeEventListener("click", this._onClick);
+    },
+    _updateGlow() {
+      const countSpan = document.getElementById("nav-log-count");
+      const logCount = parseInt(countSpan?.innerText || "0", 10);
+      const isLogsPage = window.location.pathname === "/logs";
+      if (isLogsPage) {
+        localStorage.setItem("buzz_seen_logs", String(logCount));
+        this.el.classList.remove("nav-logs-new");
+        return;
+      }
+      const seenLogs = parseInt(
+        localStorage.getItem("buzz_seen_logs") || "0", 10
+      );
+      this.el.classList.toggle("nav-logs-new", logCount > seenLogs);
+    },
+  };
+
   window.Hooks = hooks;
 }

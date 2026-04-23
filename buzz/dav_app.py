@@ -10,7 +10,6 @@ from contextlib import asynccontextmanager
 from http import HTTPStatus
 from urllib import error
 
-import jinja2
 import yaml
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -95,12 +94,6 @@ class DavApp:
         self.app.add_exception_handler(
             RequestValidationError, self._handle_validation_error
         )
-        self.templates = jinja2.Environment(
-            loader=jinja2.FileSystemLoader(
-                os.path.join(os.path.dirname(__file__), "templates")
-            ),
-            autoescape=jinja2.select_autoescape(["html", "xml"]),
-        )
         self.app.mount(
             "/static",
             StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
@@ -123,8 +116,12 @@ class DavApp:
     def _setup_routes(self):
         @self.app.get("/", response_class=HTMLResponse)
         @self.app.get("/cache", response_class=HTMLResponse)
-        def index():
-            return self._cache_page()
+        async def cache_page(request: Request):
+            return await liveview_container(
+                self.ui.rootTemplate,
+                self.ui.view_lookup,
+                request,
+            )
 
         @self.app.get("/archive", response_class=HTMLResponse)
         async def archive_page(request: Request):
@@ -536,42 +533,24 @@ class DavApp:
                 )
                 return Response(status_code=502, content=str(exc))
 
-    def _cache_page(self) -> str:
-        from .core.events import registry
+    def fetch_subtitles(self, torrent_name: str) -> dict:
+        """Request subtitle fetch for a torrent from the curator."""
+        import httpx
 
-        status = self.state.status()
-        torrents = self.state.torrents()
-        page_torrents = [
-            {
-                "id": torrent["id"],
-                "name": torrent["name"],
-                "status": torrent["status"],
-                "progress": torrent["progress"],
-                "bytes": torrent["bytes"],
-                "size": format_bytes(torrent["bytes"]),
-                "selected_files": torrent["selected_files"],
-                "links": torrent["links"],
-                "ended": torrent["ended"] or "-",
-                "short_id": torrent["id"][:8],
-            }
-            for torrent in torrents
-        ]
+        if not self.config.curator_url:
+            return {"error": "No curator configured"}
 
-        sync_state = "syncing" if status.get("sync_in_progress") else "idle"
-
-        template = self.templates.get_template("cache.html")
-        return template.render(
-            torrents_count=len(torrents),
-            last_sync_at=status.get("last_sync_at") or "never",
-            sync_state=sync_state,
-            snapshot_ready="true" if status.get("snapshot_loaded") else "false",
-            last_error=status.get("last_error"),
-            cache_items=page_torrents,
-            trash_count=len(self.state.trashcan),
-            log_count=self.log_count(),
-            subtitle_enabled=self.config.subtitles.enabled,
-            ui_poll_interval_secs=self.config.ui_poll_interval_secs,
+        subs_url = self.config.curator_url.replace(
+            "/rebuild", "/api/subtitles/fetch"
         )
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                resp = client.post(
+                    subs_url, json={"torrent_name": torrent_name}
+                )
+                return {"status_code": resp.status_code, "data": resp.json()}
+        except Exception as exc:
+            return {"error": f"Curator unreachable: {exc}"}
 
     async def _handle_validation_error(
         self, request: Request, exc: Exception

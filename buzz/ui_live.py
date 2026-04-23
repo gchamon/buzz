@@ -67,6 +67,34 @@ class PageContext(TypedDict):
     nav: PageNav
 
 
+class CacheFileItem(TypedDict):
+    id: str
+    path: str
+    bytes: int
+    size: str
+    is_video: bool
+    selected: bool
+
+
+class CacheAnalysisResult(TypedDict):
+    torrent_id: str
+    filename: str
+    files: list[CacheFileItem]
+
+
+class CacheTorrentItem(TypedDict):
+    id: str
+    name: str
+    status: str
+    progress: int
+    bytes: int
+    size: str
+    selected_files: int
+    links: int
+    ended: str
+    short_id: str
+
+
 class ArchiveItem(TypedDict):
     bytes: int
     deleted_at: str
@@ -74,6 +102,22 @@ class ArchiveItem(TypedDict):
     hash: str
     name: str
     size: str
+
+
+class CacheContext(PageContext):
+    analysis_error: str
+    analysis_results: list[CacheAnalysisResult]
+    analyzing: bool
+    caching: bool
+    confirm_delete_id: str | None
+    has_multiple_analysis_results: bool
+    has_torrents: bool
+    magnet_inputs: list[str]
+    show_overlay: bool
+    sort_col: int
+    sort_dir: str
+    subtitle_enabled: bool
+    torrents: list[CacheTorrentItem]
 
 
 class ArchiveContext(PageContext):
@@ -174,6 +218,7 @@ def _build_root_template() -> Any:
   <link rel="stylesheet" href="/static/prism-tomorrow.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   <script defer src="/static/pyview_helpers.js"></script>
+  <script defer src="/static/buzz.js"></script>
   <script defer src="/static/prism.js"></script>
   <script defer type="text/javascript" src="/pyview/assets/app.js"></script>
   {additional_head}
@@ -187,6 +232,16 @@ def _build_root_template() -> Any:
   >
     {context["content"]}
   </div>
+  <script>
+    document.addEventListener("DOMContentLoaded", function() {{
+      if (typeof zookeeper !== "undefined") zookeeper.hydrate();
+      if (typeof initializeReadyLabel !== "undefined") initializeReadyLabel();
+      if (typeof pollStatus !== "undefined") {{
+        pollStatus();
+        setInterval(pollStatus, 3000);
+      }}
+    }});
+  </script>
 </body>
 </html>"""
             )
@@ -199,6 +254,7 @@ def build_ui(owner: Any) -> PyView:
     """Build the PyView application mounted into the DAV app."""
     app = PyView()
     app.rootTemplate = _build_root_template()
+    app.add_live_view("/cache", lambda: CacheLiveView(owner))
     app.add_live_view("/archive", lambda: ArchiveLiveView(owner))
     app.add_live_view("/logs", lambda: LogsLiveView(owner))
     app.add_live_view("/config", lambda: ConfigLiveView(owner))
@@ -208,6 +264,26 @@ def build_ui(owner: Any) -> PyView:
 class _BaseBuzzLiveView(LiveView[PageContext]):
     page_title = "buzz"
     page_name = "cache"
+
+    def _sort_torrents(
+        self,
+        torrents: list[CacheTorrentItem],
+        col: int,
+        dir: str,
+    ) -> list[CacheTorrentItem]:
+        key_funcs = [
+            lambda t: t["name"].lower(),
+            lambda t: t["status"].lower(),
+            lambda t: t["progress"],
+            lambda t: t["bytes"],
+            lambda t: t["selected_files"],
+            lambda t: t["ended"] or "",
+            lambda t: t["short_id"].lower(),
+        ]
+        if col < 0 or col >= len(key_funcs):
+            return torrents
+        reverse = dir == "desc"
+        return sorted(torrents, key=key_funcs[col], reverse=reverse)
 
     def __init__(self, owner: Any) -> None:
         self.owner = owner
@@ -257,6 +333,304 @@ class _BaseBuzzLiveView(LiveView[PageContext]):
         _session: dict[str, Any],
     ) -> None:
         socket.live_title = self.page_title
+
+
+class CacheLiveView(_BaseBuzzLiveView):
+    page_name = "cache"
+    page_title = "buzz: cache"
+
+    async def mount(
+        self,
+        socket: LiveViewSocket[CacheContext],
+        session: dict[str, Any],
+    ) -> None:
+        await super().mount(socket, session)
+        socket.context = self._context()
+        if is_connected(socket):
+            await socket.subscribe("buzz:status")
+            await socket.subscribe("buzz:archive")
+
+    async def handle_event(
+        self,
+        event: str,
+        socket: ConnectedLiveViewSocket[CacheContext],
+        payload: dict[str, Any] | None = None,
+        hash: str = "",
+        index: str = "",
+        torrent_name: str = "",
+        torrent_id: str = "",
+        file_id: str = "",
+        mode: str = "",
+        col: str = "",
+    ) -> None:
+        if event == "prompt_delete":
+            socket.context["confirm_delete_id"] = hash
+            return
+        if event == "cancel_delete":
+            socket.context["confirm_delete_id"] = None
+            return
+        if event == "delete":
+            try:
+                self.owner.state.delete_torrent(hash)
+                socket.context = self._context(
+                    console_msg="item moved to archive",
+                    console_class="service-status-green",
+                    confirm_delete_id=None,
+                    magnet_inputs=socket.context["magnet_inputs"],
+                    analysis_results=socket.context["analysis_results"],
+                    analysis_error=socket.context["analysis_error"],
+                    analyzing=socket.context["analyzing"],
+                    caching=socket.context["caching"],
+                    sort_col=socket.context["sort_col"],
+                    sort_dir=socket.context["sort_dir"],
+                )
+            except Exception as exc:
+                socket.context["console_msg"] = f"delete failed: {exc}"
+                socket.context["console_class"] = "service-status-red"
+            return
+        if event == "fetch_subs":
+            result = self.owner.fetch_subtitles(torrent_name)
+            if result.get("error"):
+                socket.context["console_msg"] = (
+                    f"subs fetch failed: {result['error']}"
+                )
+                socket.context["console_class"] = "service-status-red"
+            else:
+                socket.context["console_msg"] = (
+                    f"subs fetch triggered for: {torrent_name}"
+                )
+                socket.context["console_class"] = "service-status-green"
+            return
+        if event == "resync":
+            socket.context["console_msg"] = "resyncing library..."
+            socket.context["console_class"] = "service-status-orange"
+            try:
+                self.owner.state.manual_rebuild()
+                socket.context["console_msg"] = "library resynced!"
+                socket.context["console_class"] = "service-status-green"
+            except Exception as exc:
+                socket.context["console_msg"] = f"resync failed: {exc}"
+                socket.context["console_class"] = "service-status-red"
+            return
+        if event == "add_magnet_input":
+            socket.context["magnet_inputs"].append("")
+            return
+        if event == "remove_magnet_input":
+            try:
+                idx = int(index) - 1
+                if 0 <= idx < len(socket.context["magnet_inputs"]):
+                    socket.context["magnet_inputs"].pop(idx)
+            except ValueError:
+                pass
+            return
+        if event == "update_magnets":
+            raw = (payload or {}).get("magnet", [])
+            if isinstance(raw, str):
+                raw = [raw]
+            socket.context["magnet_inputs"] = [str(v) for v in raw]
+            return
+        if event == "analyze":
+            raw = (payload or {}).get("magnet", [])
+            if isinstance(raw, str):
+                raw = [raw]
+            magnets = [str(m).strip() for m in raw if str(m).strip()]
+            if not magnets:
+                return
+            socket.context["analyzing"] = True
+            socket.context["analysis_error"] = ""
+            results: list[CacheAnalysisResult] = []
+            errors: list[str] = []
+            import re
+
+            for magnet in magnets:
+                try:
+                    info = self.owner.state.add_magnet(magnet)
+                    files: list[CacheFileItem] = []
+                    for f in info.get("files", []):
+                        path = str(f.get("path", ""))
+                        is_video = bool(
+                            re.search(r"\.(mkv|mp4|avi|m4v|mov)$", path, re.I)
+                        )
+                        b = int(f.get("bytes", 0))
+                        files.append(
+                            {
+                                "id": str(f.get("id", "")),
+                                "path": path,
+                                "bytes": b,
+                                "size": format_bytes(b),
+                                "is_video": is_video,
+                                "selected": is_video,
+                            }
+                        )
+                    results.append(
+                        {
+                            "torrent_id": str(info["id"]),
+                            "filename": str(info.get("filename") or "Torrent Files"),
+                            "files": files,
+                        }
+                    )
+                except Exception as exc:
+                    errors.append(str(exc))
+            socket.context["analyzing"] = False
+            socket.context["analysis_results"] = results
+            if errors:
+                socket.context["analysis_error"] = f"Failed: {', '.join(errors)}"
+                socket.context["console_msg"] = (
+                    f"Resolved {len(results)} magnets, {len(errors)} failed."
+                )
+                socket.context["console_class"] = "ready-label-orange"
+            else:
+                socket.context["console_msg"] = (
+                    f"Resolved {len(results)} magnet(s)."
+                    if len(results) != 1
+                    else "Ready to cache."
+                )
+                socket.context["console_class"] = "ready-label-green"
+            return
+        if event == "select_files":
+            for result in socket.context["analysis_results"]:
+                for file in result["files"]:
+                    if mode == "all":
+                        file["selected"] = True
+                    elif mode == "none":
+                        file["selected"] = False
+                    elif mode == "video":
+                        file["selected"] = file["is_video"]
+            return
+        if event == "toggle_file":
+            for result in socket.context["analysis_results"]:
+                if result["torrent_id"] == torrent_id:
+                    for file in result["files"]:
+                        if file["id"] == file_id:
+                            file["selected"] = not file["selected"]
+                            break
+            return
+        if event == "confirm_cache":
+            socket.context["caching"] = True
+            try:
+                for result in socket.context["analysis_results"]:
+                    selected = [
+                        f["id"] for f in result["files"] if f["selected"]
+                    ]
+                    if selected:
+                        self.owner.state.select_files(
+                            result["torrent_id"], selected
+                        )
+                self.owner.state.sync()
+                socket.context = self._context(
+                    console_msg="Items added and synced.",
+                    console_class="service-status-green",
+                    confirm_delete_id=socket.context["confirm_delete_id"],
+                    sort_col=socket.context["sort_col"],
+                    sort_dir=socket.context["sort_dir"],
+                )
+            except Exception as exc:
+                socket.context["caching"] = False
+                socket.context["console_msg"] = f"Error: {exc}"
+                socket.context["console_class"] = "service-status-red"
+            return
+        if event == "cancel_cache":
+            socket.context = self._context(
+                console_msg=socket.context["console_msg"],
+                console_class=socket.context["console_class"],
+                confirm_delete_id=socket.context["confirm_delete_id"],
+                magnet_inputs=socket.context["magnet_inputs"],
+                sort_col=socket.context["sort_col"],
+                sort_dir=socket.context["sort_dir"],
+            )
+            return
+        if event == "sort":
+            try:
+                new_col = int(col)
+            except ValueError:
+                return
+            if socket.context["sort_col"] == new_col:
+                socket.context["sort_dir"] = (
+                    "desc" if socket.context["sort_dir"] == "asc" else "asc"
+                )
+            else:
+                socket.context["sort_col"] = new_col
+                socket.context["sort_dir"] = "asc"
+            return
+
+    async def handle_info(
+        self,
+        event: InfoEvent,
+        socket: ConnectedLiveViewSocket[CacheContext],
+    ) -> None:
+        if event.name not in {"buzz:status", "buzz:archive"}:
+            return
+        socket.context = self._context(
+            console_msg=socket.context["console_msg"],
+            console_class=socket.context["console_class"],
+            confirm_delete_id=socket.context["confirm_delete_id"],
+            magnet_inputs=socket.context["magnet_inputs"],
+            analysis_results=socket.context["analysis_results"],
+            analysis_error=socket.context["analysis_error"],
+            analyzing=socket.context["analyzing"],
+            caching=socket.context["caching"],
+            sort_col=socket.context["sort_col"],
+            sort_dir=socket.context["sort_dir"],
+        )
+
+    async def render(
+        self,
+        assigns: CacheContext,
+        meta: Any,
+    ) -> RenderedContent:
+        return LiveRender(_load_template("cache_live.html"), assigns, meta)
+
+    def _context(
+        self,
+        console_msg: str = "",
+        console_class: str = "",
+        confirm_delete_id: str | None = None,
+        magnet_inputs: list[str] | None = None,
+        analysis_results: list[CacheAnalysisResult] | None = None,
+        analysis_error: str = "",
+        analyzing: bool = False,
+        caching: bool = False,
+        sort_col: int = 0,
+        sort_dir: str = "asc",
+    ) -> CacheContext:
+        torrents = []
+        for torrent in self.owner.state.torrents():
+            torrents.append(
+                {
+                    "id": torrent["id"],
+                    "name": torrent["name"],
+                    "status": torrent["status"],
+                    "progress": torrent["progress"],
+                    "bytes": torrent["bytes"],
+                    "size": format_bytes(torrent["bytes"]),
+                    "selected_files": torrent["selected_files"],
+                    "links": torrent["links"],
+                    "ended": torrent["ended"] or "-",
+                    "short_id": torrent["id"][:8],
+                }
+            )
+        torrents = self._sort_torrents(torrents, sort_col, sort_dir)
+        base = self._base_context(console_msg, console_class)
+        analysis_results = analysis_results or []
+        return cast(
+            CacheContext,
+            {
+                **base,
+                "analysis_error": analysis_error,
+                "analysis_results": analysis_results,
+                "analyzing": analyzing,
+                "caching": caching,
+                "confirm_delete_id": confirm_delete_id,
+                "has_multiple_analysis_results": len(analysis_results) > 1,
+                "has_torrents": bool(torrents),
+                "magnet_inputs": magnet_inputs or [""],
+                "show_overlay": analyzing or caching,
+                "sort_col": sort_col,
+                "sort_dir": sort_dir,
+                "subtitle_enabled": self.owner.config.subtitles.enabled,
+                "torrents": torrents,
+            },
+        )
 
 
 class ArchiveLiveView(_BaseBuzzLiveView):

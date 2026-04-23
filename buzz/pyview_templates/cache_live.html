@@ -1,0 +1,276 @@
+<main>
+  <div class="prompt">
+    <b>buzz:</b>
+    <div class="menu-options">
+      <a href="/cache" class="nav-link active">🪎 cache</a>
+      <span class="nav-sep">◈</span>
+      <a href="/archive" class="nav-link" id="nav-archive">
+        <i class="fa-solid fa-box-archive nav-icon" aria-hidden="true"></i>
+        archive(<span id="nav-archive-count">{{ nav.archive_count }}</span>)
+      </a>
+      <span class="nav-sep">◈</span>
+      <a href="/logs" class="nav-link" id="nav-logs" phx-hook="BuzzLogGlow">
+        📜 logs(<span id="nav-log-count">{{ nav.log_count }}</span>)
+      </a>
+      <span class="nav-sep">◈</span>
+      <a href="/config" class="nav-link">⚙️ config</a>
+    </div>
+  </div>
+
+  <div class="meta-bar">
+    <div class="meta-row">
+      {% for item in meta_items %}
+      <div class="meta-item">
+        <b class="meta-item-label">[{{ item.label }}]</b>
+        <span>{{ item.value }}</span>
+      </div>
+      {% endfor %}
+      <div class="meta-item">
+        {% if is_ready %}
+        <b id="status-ready-label" class="service-status-green">[ready]</b>
+        {% else %}
+        <b id="status-ready-label" class="service-status-orange">[starting]</b>
+        {% endif %}
+      </div>
+    </div>
+    <div class="meta-row meta-console">
+      <b class="meta-item-label">console:</b>
+      <span id="meta-console-msg" class="{{ console_class }}">{{ console_msg }}</span>
+      <button class="secondary btn-sm" phx-click="resync">RESYNC LIB</button>
+    </div>
+  </div>
+
+  {% if has_error %}
+  <div class="error"><span class="label-red">[ERROR]</span> {{ last_error }}</div>
+  {% endif %}
+
+  <section class="add-torrent-section">
+    {% if not analysis_results %}
+    <div class="add-torrent-header">
+      <span>ADD NEW MAGNET TO THE CACHE:</span>
+    </div>
+    <form phx-change="update_magnets" phx-submit="analyze">
+      <div id="magnet-inputs-container">
+        {% for input in magnet_inputs %}
+        <div class="input-group m-b-5">
+          <input
+            type="text"
+            name="magnet"
+            value="{{ input }}"
+            class="bulk-magnet-input"
+            placeholder="magnet:?xt=urn:btih:..."
+          >
+          {% if not loop.is_first %}
+          <button
+            type="button"
+            class="secondary bulk-magnet-remove"
+            phx-click="remove_magnet_input"
+            phx-value-index="{{ loop.index }}"
+          >-</button>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      <div class="file-actions m-b-10">
+        <button
+          type="button"
+          class="secondary btn-icon"
+          phx-click="add_magnet_input"
+        >+</button>
+        <button
+          type="submit"
+          id="resolve-btn"
+          {% if analyzing %}disabled{% endif %}
+        >{% if analyzing %}Analyzing...{% else %}Analyze{% endif %}</button>
+      </div>
+    </form>
+    {% else %}
+    <div class="add-torrent-header">
+      <span>SELECT FILES TO CACHE:</span>
+    </div>
+    <div class="file-actions m-b-10">
+      <button
+        type="button"
+        class="secondary"
+        phx-click="select_files"
+        phx-value-mode="all"
+      >All</button>
+      <button
+        type="button"
+        class="secondary"
+        phx-click="select_files"
+        phx-value-mode="video"
+      >Videos</button>
+      <button
+        type="button"
+        class="secondary"
+        phx-click="select_files"
+        phx-value-mode="none"
+      >None</button>
+    </div>
+    <div class="file-list" id="file-list">
+      {% for result in analysis_results %}
+      {% if has_multiple_analysis_results %}
+      <div class="file-torrent-header">{{ result.filename }}</div>
+      {% endif %}
+      {% for file in result.files %}
+      <div class="file-item">
+        <input
+          type="checkbox"
+          phx-click="toggle_file"
+          phx-value-torrent_id="{{ result.torrent_id }}"
+          phx-value-file_id="{{ file.id }}"
+          {% if file.selected %}checked{% endif %}
+        >
+        <div class="file-info">
+          <span>{{ file.path }}</span>
+          <span class="file-size">{{ file.size }}</span>
+        </div>
+      </div>
+      {% endfor %}
+      {% endfor %}
+    </div>
+    <div class="file-actions">
+      <button
+        id="confirm-btn"
+        phx-click="confirm_cache"
+        {% if caching %}disabled{% endif %}
+      >{% if caching %}Caching...{% else %}Cache Selected Files{% endif %}</button>
+      <button
+        type="button"
+        class="secondary"
+        phx-click="cancel_cache"
+      >Cancel</button>
+    </div>
+    {% endif %}
+  </section>
+
+  <div class="table-container relative" id="torrent-table-container">
+    <div
+      id="processing-overlay"
+      class="{% if not show_overlay %}hidden{% endif %} absolute-fill flex flex-center overlay"
+    >
+      <span class="overlay-msg">processing...</span>
+    </div>
+    <table id="torrent-table">
+      <thead>
+        <tr>
+          <th
+            phx-click="sort"
+            phx-value-col="0"
+            {% if sort_col == 0 %}class="sort-{{ sort_dir }}"{% endif %}
+          >Name</th>
+          <th
+            phx-click="sort"
+            phx-value-col="1"
+            {% if sort_col == 1 %}class="sort-{{ sort_dir }}"{% endif %}
+          >Status</th>
+          <th
+            phx-click="sort"
+            phx-value-col="2"
+            {% if sort_col == 2 %}class="sort-{{ sort_dir }}"{% endif %}
+          >Prog</th>
+          <th
+            phx-click="sort"
+            phx-value-col="3"
+            {% if sort_col == 3 %}class="sort-{{ sort_dir }}"{% endif %}
+          >Size</th>
+          <th
+            phx-click="sort"
+            phx-value-col="4"
+            {% if sort_col == 4 %}class="sort-{{ sort_dir }}"{% endif %}
+          >Files</th>
+          <th
+            phx-click="sort"
+            phx-value-col="5"
+            {% if sort_col == 5 %}class="sort-{{ sort_dir }}"{% endif %}
+          >Ended</th>
+          <th
+            phx-click="sort"
+            phx-value-col="6"
+            {% if sort_col == 6 %}class="sort-{{ sort_dir }}"{% endif %}
+          >ID</th>
+          <th>Act</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if has_torrents %}
+        {% for torrent in torrents %}
+        <tr>
+          <td class="name trunc-cell" data-value="{{ torrent.name }}">
+            <div class="trunc-idle">{{ torrent.name }}</div>
+            <div class="trunc-scroll-wrap">
+              <span class="trunc-scroll">{{ torrent.name }}</span>
+            </div>
+          </td>
+          <td data-value="{{ torrent.status }}">
+            <span class="status status-{{ torrent.status }}">[{{ torrent.status }}]</span>
+          </td>
+          <td data-value="{{ torrent.progress }}">{{ torrent.progress }}%</td>
+          <td data-value="{{ torrent.bytes }}">{{ torrent.size }}</td>
+          <td>{{ torrent.selected_files }}</td>
+          <td class="comment timestamp" data-value="{{ torrent.ended }}">{{ torrent.ended }}</td>
+          <td class="yellow" data-value="{{ torrent.short_id }}">
+            <code>{{ torrent.short_id }}</code>
+          </td>
+          <td>
+            <div class="delete-container">
+              {% if subtitle_enabled %}
+              <button
+                class="btn-s"
+                phx-click="fetch_subs"
+                phx-value-torrent_name="{{ torrent.name }}"
+                title="Fetch subtitles"
+              >[S]</button>
+              {% endif %}
+              {% if confirm_delete_id == torrent.id %}
+              <div class="confirm-opts" style="display:flex">
+                <button
+                  class="opt opt-y"
+                  phx-click="delete"
+                  phx-value-hash="{{ torrent.id }}"
+                  title="Confirm Move to Archive"
+                >[Y]</button>
+                <button
+                  class="opt opt-n"
+                  phx-click="cancel_delete"
+                  title="Cancel"
+                >[N]</button>
+              </div>
+              {% else %}
+              <div class="confirm-opts" style="display:none">
+                <button
+                  class="opt opt-y"
+                  phx-click="delete"
+                  phx-value-hash="{{ torrent.id }}"
+                  title="Confirm Move to Archive"
+                >[Y]</button>
+                <button
+                  class="opt opt-n"
+                  phx-click="cancel_delete"
+                  title="Cancel"
+                >[N]</button>
+              </div>
+              <button
+                class="btn-x"
+                phx-click="prompt_delete"
+                phx-value-hash="{{ torrent.id }}"
+                title="Move to Archive"
+              >[X]</button>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+        {% else %}
+        <tr>
+          <td colspan="8" class="empty">
+            No cached items yet. Wait for the first sync or trigger
+            <code>POST /sync</code>.
+          </td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</main>

@@ -2,7 +2,20 @@
 
 ## Status
 
-planned
+in progress
+
+## Progress
+
+- **Integration spike** — complete; pyview is mounted inside the FastAPI app
+- **Archive page migration** — complete
+- **Logs page migration** — complete
+- **Config page migration** — complete
+- **Cache page migration** — complete; add-magnet, file-selection, delete-confirmation,
+  subtitle-fetch, and server-side sorting are all server-managed
+- **Cleanup** — superseded Jinja templates (`buzz/templates/*.html`) and the
+  `_cache_page()` helper have been removed
+- **Tests** — rendering tests updated for all pyview pages; HTTP endpoint tests
+  preserved
 
 ## Outcome
 

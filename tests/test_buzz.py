@@ -1089,7 +1089,7 @@ class DavAppTests(unittest.TestCase):
         self.assertEqual(node["size"], 2)
         self.assertEqual(node["content"], "ok")
 
-    def test_cache_page_renders_cached_items(self):
+    def test_cache_page_renders_pyview_shell(self):
         self.dav_app.config.subtitles.enabled = True
         self.state.cache = {
             "torrent-1": {
@@ -1113,16 +1113,13 @@ class DavAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("buzz: cache", body)
+        self.assertIn('data-phx-main="true"', body)
+        self.assertIn('src="/pyview/assets/app.js"', body)
         self.assertIn("Movie &amp; Stuff", body)
         self.assertIn("1.5 MiB", body)
-        self.assertIn("2026-01-02T00:00:00Z", body)
-        self.assertIn("status-downloaded", body)
         self.assertIn('href="/static/buzz.css"', body)
-        self.assertIn('src="/static/buzz.js"', body)
-        self.assertIn('id="btn-s-torrent-1"', body)
-        self.assertIn('document.getElementById("btn-x-" + id).style.display', body)
-        self.assertIn('const subtitleButton = document.getElementById("btn-s-" + id);', body)
-        self.assertIn('subtitleButton.style.display = show ? "none" : "flex";', body)
+        self.assertIn('phx-click="prompt_delete"', body)
+        self.assertIn('phx-click="fetch_subs"', body)
 
     def test_archive_page_renders_pyview_shell(self):
         self.state.trashcan = {
@@ -1158,6 +1155,7 @@ class DavAppTests(unittest.TestCase):
         body = response.text
 
         self.assertEqual(response.status_code, 200)
+        self.assertIn('data-phx-main="true"', body)
         self.assertIn("No cached items yet.", body)
         self.assertIn("Boom &amp; stuff", body)
 
