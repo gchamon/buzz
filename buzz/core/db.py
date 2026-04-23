@@ -59,6 +59,13 @@ _MIGRATIONS: list[tuple[int, str]] = [
         );
         """,
     ),
+    (
+        2,
+        """
+        ALTER TABLE torrents ADD COLUMN magnet TEXT;
+        ALTER TABLE archive ADD COLUMN magnet TEXT;
+        """,
+    ),
 ]
 
 def connect(path: Path | str) -> sqlite3.Connection:
@@ -137,13 +144,15 @@ def _migrate_torrent_cache(conn: sqlite3.Connection, state_dir: Path) -> None:
             if not isinstance(entry, dict):
                 continue
             conn.execute(
-                "INSERT OR REPLACE INTO torrents (id, signature_json, info_json, updated_at)"
-                " VALUES (?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO torrents "
+                "(id, signature_json, info_json, updated_at, magnet) "
+                "VALUES (?, ?, ?, ?, ?)",
                 (
                     torrent_id,
                     json.dumps(entry.get("signature", {})),
                     json.dumps(entry.get("info", {})),
                     now,
+                    entry.get("magnet"),
                 ),
             )
     _rename_migrated(path)
@@ -163,14 +172,16 @@ def _migrate_archive(conn: sqlite3.Connection, state_dir: Path) -> None:
             if not isinstance(entry, dict):
                 continue
             conn.execute(
-                "INSERT OR REPLACE INTO archive (hash, name, bytes, files_json, deleted_at)"
-                " VALUES (?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO archive "
+                "(hash, name, bytes, files_json, deleted_at, magnet) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     thash,
                     entry.get("name"),
                     entry.get("bytes"),
                     json.dumps(entry.get("files", [])),
                     entry.get("deleted_at", _now_iso()),
+                    entry.get("magnet"),
                 ),
             )
     _rename_migrated(path)

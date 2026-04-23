@@ -338,12 +338,13 @@ class BuzzState:
 
     def _load_cache(self) -> dict:
         rows = self.conn.execute(
-            "SELECT id, signature_json, info_json FROM torrents"
+            "SELECT id, signature_json, info_json, magnet FROM torrents"
         ).fetchall()
         return {
             row["id"]: {
                 "signature": json.loads(row["signature_json"]),
                 "info": json.loads(row["info_json"]),
+                "magnet": row["magnet"],
             }
             for row in rows
         }
@@ -352,12 +353,14 @@ class BuzzState:
         with self.conn:
             self.conn.execute(
                 "INSERT OR REPLACE INTO torrents"
-                " (id, signature_json, info_json, updated_at) VALUES (?, ?, ?, ?)",
+                " (id, signature_json, info_json, updated_at, magnet)"
+                " VALUES (?, ?, ?, ?, ?)",
                 (
                     torrent_id,
                     json.dumps(entry.get("signature", {})),
                     json.dumps(entry.get("info", {})),
                     utc_now_iso(),
+                    entry.get("magnet"),
                 ),
             )
 
@@ -371,19 +374,21 @@ class BuzzState:
             self.conn.execute("DELETE FROM torrents")
             for torrent_id, entry in new_cache.items():
                 self.conn.execute(
-                    "INSERT INTO torrents (id, signature_json, info_json, updated_at)"
-                    " VALUES (?, ?, ?, ?)",
+                    "INSERT INTO torrents "
+                    "(id, signature_json, info_json, updated_at, magnet) "
+                    "VALUES (?, ?, ?, ?, ?)",
                     (
                         torrent_id,
                         json.dumps(entry.get("signature", {})),
                         json.dumps(entry.get("info", {})),
                         utc_now_iso(),
+                        entry.get("magnet"),
                     ),
                 )
 
     def _load_archive(self) -> dict:
         rows = self.conn.execute(
-            "SELECT hash, name, bytes, files_json, deleted_at FROM archive"
+            "SELECT hash, name, bytes, files_json, deleted_at, magnet FROM archive"
         ).fetchall()
         return {
             row["hash"]: {
@@ -392,6 +397,7 @@ class BuzzState:
                 "bytes": row["bytes"],
                 "files": json.loads(row["files_json"] or "[]"),
                 "deleted_at": row["deleted_at"],
+                "magnet": row["magnet"],
             }
             for row in rows
         }
@@ -400,13 +406,15 @@ class BuzzState:
         with self.conn:
             self.conn.execute(
                 "INSERT OR REPLACE INTO archive"
-                " (hash, name, bytes, files_json, deleted_at) VALUES (?, ?, ?, ?, ?)",
+                " (hash, name, bytes, files_json, deleted_at, magnet)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     thash,
                     entry.get("name"),
                     entry.get("bytes"),
                     json.dumps(entry.get("files", [])),
                     entry.get("deleted_at", utc_now_iso()),
+                    entry.get("magnet"),
                 ),
             )
 
@@ -499,7 +507,12 @@ class BuzzState:
                     info = cached["info"]
                 else:
                     info = self.client.torrents.info(torrent_id).json()
-                new_cache[torrent_id] = {"signature": signature, "info": info}
+                cached_magnet = cached.get("magnet") if cached else None
+                new_cache[torrent_id] = {
+                    "signature": signature,
+                    "info": info,
+                    "magnet": cached_magnet,
+                }
                 infos.append(info)
 
             snapshot, _current_roots = self.builder.build(infos)
@@ -513,7 +526,7 @@ class BuzzState:
                         continue
                     info = cached.get("info")
                     if isinstance(info, dict) and info.get("hash"):
-                        self._add_to_archive(info)
+                        self._add_to_archive(info, magnet=cached.get("magnet"))
 
                 changed = digest != self.snapshot_digest
                 classified_changes = (
@@ -874,6 +887,13 @@ class BuzzState:
                     already_exists = True
                     break
 
+            self.cache[torrent_id] = {
+                "signature": {},
+                "info": info,
+                "magnet": magnet,
+            }
+            self._save_cache_entry(torrent_id, self.cache[torrent_id])
+
         return {
             "id": torrent_id,
             "filename": filename,
@@ -888,7 +908,7 @@ class BuzzState:
             if cached:
                 info = cached.get("info")
                 if isinstance(info, dict) and info.get("hash"):
-                    self._add_to_archive(info)
+                    self._add_to_archive(info, magnet=cached.get("magnet"))
 
         res = self.client.torrents.delete(torrent_id)
         if res.status_code not in (200, 204):
@@ -900,7 +920,7 @@ class BuzzState:
                 self._delete_cache_entry(torrent_id)
         return {"status": "success"}
 
-    def _add_to_archive(self, info: TorrentInfo) -> None:
+    def _add_to_archive(self, info: TorrentInfo, magnet: str | None = None) -> None:
         thash = info.get("hash")
         if not thash:
             return
@@ -918,6 +938,7 @@ class BuzzState:
                 if f.get("selected")
             ],
             "deleted_at": utc_now_iso(),
+            "magnet": magnet,
         }
         self._save_archive_entry(thash, self.trashcan[thash])
 
@@ -933,6 +954,7 @@ class BuzzState:
                         "bytes": entry.get("bytes", 0),
                         "file_count": len(entry.get("files", [])),
                         "deleted_at": entry.get("deleted_at"),
+                        "magnet": entry.get("magnet"),
                     }
                 )
             return sorted(results, key=lambda x: x["deleted_at"] or "", reverse=True)
@@ -944,7 +966,7 @@ class BuzzState:
             if not entry:
                 raise ValueError("Torrent not found in trashcan")
 
-        magnet = f"magnet:?xt=urn:btih:{thash}"
+        magnet = entry.get("magnet") or f"magnet:?xt=urn:btih:{thash}"
         res = self.client.torrents.add_magnet(magnet).json()
         torrent_id = res.get("id")
         if not torrent_id:

@@ -152,8 +152,10 @@ class LibraryBuilderTests(unittest.TestCase):
 
 class BuzzStateTests(unittest.TestCase):
     class FakeResponse:
-        def __init__(self, data):
+        def __init__(self, data, status_code=200, text=""):
             self.data = data
+            self.status_code = status_code
+            self.text = text
 
         def json(self):
             return self.data
@@ -177,12 +179,27 @@ class BuzzStateTests(unittest.TestCase):
             def __init__(self, torrents_list, torrent_infos):
                 self.torrents_list = torrents_list
                 self.torrent_infos = torrent_infos
+                self.added_magnets = []
+                self.selected_files_calls = []
+                self.deleted_ids = []
 
             def get(self):
                 return BuzzStateTests.FakeResponse(self.torrents_list)
 
             def info(self, torrent_id):
                 return BuzzStateTests.FakeResponse(self.torrent_infos.get(torrent_id))
+
+            def add_magnet(self, magnet):
+                self.added_magnets.append(magnet)
+                return BuzzStateTests.FakeResponse({"id": "NEW_TORRENT"})
+
+            def select_files(self, torrent_id, files_str):
+                self.selected_files_calls.append((torrent_id, files_str))
+                return BuzzStateTests.FakeResponse({}, status_code=204)
+
+            def delete(self, torrent_id):
+                self.deleted_ids.append(torrent_id)
+                return BuzzStateTests.FakeResponse({}, status_code=204)
 
     def _create_fake_rd(self):
         torrents_list = [
@@ -299,6 +316,124 @@ class BuzzStateTests(unittest.TestCase):
             )
             self.assertEqual(torrents[0]["selected_files"], 2)
             self.assertEqual(torrents[1]["status"], "downloading")
+
+    def test_add_magnet_persists_original_magnet_in_cache(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
+            )
+            client = self.FakeRD(
+                torrent_infos={
+                    "NEW_TORRENT": {
+                        "id": "NEW_TORRENT",
+                        "hash": "ABC123HASH",
+                        "filename": "Movie.2026.1080p.mkv",
+                        "files": [],
+                    }
+                }
+            )
+            state = BuzzState(config, client=client)
+
+            state.add_magnet("magnet:?xt=urn:btih:ABC123HASH&dn=Movie")
+
+            self.assertEqual(
+                state.cache["NEW_TORRENT"]["magnet"],
+                "magnet:?xt=urn:btih:ABC123HASH&dn=Movie",
+            )
+            row = state.conn.execute(
+                "SELECT magnet FROM torrents WHERE id = ?",
+                ("NEW_TORRENT",),
+            ).fetchone()
+            self.assertEqual(row["magnet"], "magnet:?xt=urn:btih:ABC123HASH&dn=Movie")
+
+    def test_restore_trash_prefers_stored_magnet(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
+            )
+            client = self.FakeRD()
+            state = BuzzState(config, client=client)
+            state.trashcan = {
+                "ABC123HASH": {
+                    "hash": "ABC123HASH",
+                    "name": "Movie.2026.1080p.mkv",
+                    "bytes": 123,
+                    "files": [{"id": 1, "path": "/Movie.2026.1080p.mkv"}],
+                    "deleted_at": "2026-01-01T00:00:00Z",
+                    "magnet": "magnet:?xt=urn:btih:ABC123HASH&dn=Movie",
+                }
+            }
+
+            state.restore_trash("ABC123HASH")
+
+            self.assertEqual(
+                client.torrents.added_magnets,
+                ["magnet:?xt=urn:btih:ABC123HASH&dn=Movie"],
+            )
+
+    def test_restore_trash_falls_back_to_hash_when_magnet_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
+            )
+            client = self.FakeRD()
+            state = BuzzState(config, client=client)
+            state.trashcan = {
+                "ABC123HASH": {
+                    "hash": "ABC123HASH",
+                    "name": "Movie.2026.1080p.mkv",
+                    "bytes": 123,
+                    "files": [],
+                    "deleted_at": "2026-01-01T00:00:00Z",
+                    "magnet": None,
+                }
+            }
+
+            state.restore_trash("ABC123HASH")
+
+            self.assertEqual(
+                client.torrents.added_magnets,
+                ["magnet:?xt=urn:btih:ABC123HASH"],
+            )
 
     def test_lookup_and_children_use_normalized_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -612,6 +747,7 @@ class BuzzStateTests(unittest.TestCase):
             state.cache = {
                 "TORRENT1": {
                     "signature": {"status": "downloaded"},
+                    "magnet": "magnet:?xt=urn:btih:ABC123HASH&dn=Movie",
                     "info": {
                         "id": "TORRENT1",
                         "hash": "ABC123HASH",
@@ -635,7 +771,14 @@ class BuzzStateTests(unittest.TestCase):
             self.assertTrue(report["changed"])
             self.assertEqual(state.cache, {})
             self.assertIn("ABC123HASH", state.trashcan)
-            self.assertEqual(state.trashcan["ABC123HASH"]["name"], "Movie.2026.1080p.mkv")
+            self.assertEqual(
+                state.trashcan["ABC123HASH"]["name"],
+                "Movie.2026.1080p.mkv",
+            )
+            self.assertEqual(
+                state.trashcan["ABC123HASH"]["magnet"],
+                "magnet:?xt=urn:btih:ABC123HASH&dn=Movie",
+            )
 
     @patch("buzz.core.state.record_event")
     @patch("buzz.core.state.subprocess.run")
@@ -945,6 +1088,7 @@ class DavAppTests(unittest.TestCase):
         self.assertEqual(node["content"], "ok")
 
     def test_cache_page_renders_cached_items(self):
+        self.dav_app.config.subtitles.enabled = True
         self.state.cache = {
             "torrent-1": {
                 "signature": {},
@@ -973,6 +1117,10 @@ class DavAppTests(unittest.TestCase):
         self.assertIn("status-downloaded", body)
         self.assertIn('href="/static/buzz.css"', body)
         self.assertIn('src="/static/buzz.js"', body)
+        self.assertIn('id="btn-s-torrent-1"', body)
+        self.assertIn('document.getElementById("btn-x-" + id).style.display', body)
+        self.assertIn('const subtitleButton = document.getElementById("btn-s-" + id);', body)
+        self.assertIn('subtitleButton.style.display = show ? "none" : "flex";', body)
 
     def test_archive_page_renders_shared_assets(self):
         self.state.trashcan = {

@@ -19,7 +19,7 @@ class DatabaseTests(unittest.TestCase):
             ).fetchone()["version"]
         finally:
             conn.close()
-        self.assertEqual(version, 1)
+        self.assertEqual(version, 2)
 
     def test_legacy_json_import_renames_files_to_migrated(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -30,6 +30,7 @@ class DatabaseTests(unittest.TestCase):
                         "torrent-1": {
                             "signature": {"status": "downloaded"},
                             "info": {"id": "torrent-1", "status": "downloaded"},
+                            "magnet": "magnet:?xt=urn:btih:torrent-1",
                         }
                     }
                 ),
@@ -68,6 +69,7 @@ class DatabaseTests(unittest.TestCase):
                             "bytes": 10,
                             "files": [{"id": 1, "path": "movie.mkv"}],
                             "deleted_at": "2026-01-01T00:00:00Z",
+                            "magnet": "magnet:?xt=urn:btih:hash-1",
                         }
                     }
                 ),
@@ -84,6 +86,12 @@ class DatabaseTests(unittest.TestCase):
                 archive_count = conn.execute(
                     "SELECT COUNT(*) AS count FROM archive"
                 ).fetchone()["count"]
+                torrent_row = conn.execute(
+                    "SELECT magnet FROM torrents WHERE id = 'torrent-1'"
+                ).fetchone()
+                archive_row = conn.execute(
+                    "SELECT magnet FROM archive WHERE hash = 'hash-1'"
+                ).fetchone()
                 mapping_count = conn.execute(
                     "SELECT COUNT(*) AS count FROM curator_mapping"
                 ).fetchone()["count"]
@@ -96,6 +104,8 @@ class DatabaseTests(unittest.TestCase):
 
             self.assertEqual(torrent_count, 1)
             self.assertEqual(archive_count, 1)
+            self.assertEqual(torrent_row["magnet"], "magnet:?xt=urn:btih:torrent-1")
+            self.assertEqual(archive_row["magnet"], "magnet:?xt=urn:btih:hash-1")
             self.assertEqual(mapping_count, 1)
             self.assertEqual(report, {"movies": 1})
             self.assertEqual(
@@ -156,6 +166,31 @@ class DatabaseTests(unittest.TestCase):
                 ],
             )
             self.assertTrue((state_dir / "mapping.json").exists())
+
+    def test_migration_adds_nullable_magnet_columns(self):
+        conn = db.connect(":memory:")
+        try:
+            db.apply_migrations(conn)
+            conn.execute(
+                "INSERT INTO torrents (id, signature_json, info_json, updated_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("torrent-1", "{}", "{}", "2026-01-01T00:00:00Z"),
+            )
+            conn.execute(
+                "INSERT INTO archive (hash, deleted_at) VALUES (?, ?)",
+                ("hash-1", "2026-01-01T00:00:00Z"),
+            )
+            torrent_row = conn.execute(
+                "SELECT magnet FROM torrents WHERE id = 'torrent-1'"
+            ).fetchone()
+            archive_row = conn.execute(
+                "SELECT magnet FROM archive WHERE hash = 'hash-1'"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertIsNone(torrent_row["magnet"])
+        self.assertIsNone(archive_row["magnet"])
 
     def test_subtitle_metadata_upsert_roundtrip(self):
         conn = db.connect(":memory:")
