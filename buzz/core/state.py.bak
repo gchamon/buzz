@@ -1,5 +1,3 @@
-"""DAV filesystem state, library builder, and background sync threads."""
-
 import hashlib
 import json
 import mimetypes
@@ -10,11 +8,11 @@ import shlex
 import subprocess
 import threading
 import time
+from pathlib import PurePosixPath
 from typing import Any
-from urllib import parse, request
+from urllib import error, parse, request
 
-from ..models import DavConfig
-from .constants import SHOW_PATTERNS
+from .constants import DEFAULT_ANIME_PATTERN, SHOW_PATTERNS
 from .events import record_event
 from .media import is_video_file
 from .utils import (
@@ -22,20 +20,10 @@ from .utils import (
     stable_json,
     utc_now_iso,
 )
-
-# Named aliases for the opaque dicts flowing through this module.
-type SnapshotNode = dict[str, Any]
-type Snapshot = dict[str, Any]
-type TorrentInfo = dict[str, Any]
-type TorrentSummary = dict[str, Any]
-type SyncReport = dict[str, Any]
-type StatusReport = dict[str, Any]
-type ChangeClassification = dict[str, list[str]]
-type OperationResult = dict[str, Any]
+from ..models import DavConfig
 
 
 def dav_rel_path(raw_path: str) -> str:
-    """Strip the /dav prefix and URL-decode a raw DAV path."""
     path = parse.urlsplit(raw_path).path
     if path.startswith("/dav"):
         path = path[len("/dav") :]
@@ -43,15 +31,13 @@ def dav_rel_path(raw_path: str) -> str:
 
 
 def split_path(value: str) -> tuple[str, ...]:
-    """Split a DAV path into non-empty components."""
     normalized = normalize_posix_path(value)
     if not normalized:
         return ()
     return tuple(part for part in normalized.split("/") if part)
 
 
-def canonical_snapshot(snapshot: Snapshot) -> Snapshot:
-    """Return a snapshot with volatile fields (modified, generated_at) stripped."""
+def canonical_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     files = {}
     for path, node in snapshot.get("files", {}).items():
         if not isinstance(node, dict):
@@ -77,26 +63,19 @@ def canonical_snapshot(snapshot: Snapshot) -> Snapshot:
 
 
 def is_internal_category(name: str) -> bool:
-    """Return True for virtual categories like __all__ and __unplayable__."""
     return name.startswith("__")
 
 
 class LibraryBuilder:
-    """Builds a DAV filesystem snapshot from Real-Debrid torrent info."""
-
-    def __init__(self, config: DavConfig) -> None:
-        """Initialize with the DAV configuration."""
+    def __init__(self, config: DavConfig):
         self.config = config
         self.anime_regexes = tuple(
             re.compile(pattern) for pattern in config.anime_patterns
         )
 
-    def build(
-        self, infos: list[TorrentInfo]
-    ) -> tuple[Snapshot, list[str]]:
-        """Build a snapshot and sorted root list from torrent infos."""
+    def build(self, infos: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
         dirs: set[str] = {""}
-        files: dict[str, SnapshotNode] = {
+        files: dict[str, dict[str, Any]] = {
             "version.txt": {
                 "type": "memory",
                 "content": self.config.version_label + "\n",
@@ -155,7 +134,7 @@ class LibraryBuilder:
         }
         return snapshot, sorted(current_roots)
 
-    def _selected_files(self, info: TorrentInfo) -> list[TorrentInfo]:
+    def _selected_files(self, info: dict[str, Any]) -> list[dict[str, Any]]:
         selected = [item for item in info.get("files", []) if item.get("selected")]
         links = list(info.get("links") or [])
         link_iter = iter(links)
@@ -170,7 +149,7 @@ class LibraryBuilder:
             results.append(entry)
         return results
 
-    def _torrent_name(self, info: TorrentInfo) -> str:
+    def _torrent_name(self, info: dict[str, Any]) -> str:
         name = str(
             info.get("original_filename")
             or info.get("filename")
@@ -180,7 +159,7 @@ class LibraryBuilder:
         name = name.replace("/", " ").replace("\\", " ").strip(". ")
         return name or str(info.get("id") or "torrent")
 
-    def _category_for(self, entries: list[TorrentInfo]) -> str:
+    def _category_for(self, entries: list[dict[str, Any]]) -> str:
         for entry in entries:
             rel = entry["path"]
             if any(pattern.search(rel) for pattern in self.anime_regexes):
@@ -192,11 +171,11 @@ class LibraryBuilder:
 
     def _add_tree(
         self,
-        files: dict[str, SnapshotNode],
+        files: dict[str, dict[str, Any]],
         dirs: set[str],
         prefix: str,
         torrent_name: str,
-        entries: list[TorrentInfo],
+        entries: list[dict[str, Any]],
     ) -> None:
         root = f"{prefix}/{torrent_name}"
         self._ensure_dirs(dirs, root)
@@ -217,10 +196,10 @@ class LibraryBuilder:
 
     def _add_unplayable_tree(
         self,
-        files: dict[str, SnapshotNode],
+        files: dict[str, dict[str, Any]],
         dirs: set[str],
         torrent_name: str,
-        entries: list[TorrentInfo],
+        entries: list[dict[str, Any]],
         reason: str,
     ) -> int:
         root = f"__unplayable__/{torrent_name}"
@@ -274,7 +253,7 @@ class LibraryBuilder:
                 current = ""
 
     def _unplayable_reason(
-        self, info: TorrentInfo, selected: list[TorrentInfo]
+        self, info: dict[str, Any], selected: list[dict[str, Any]]
     ) -> str:
         if not selected:
             return "no_selected_files"
@@ -293,10 +272,7 @@ class LibraryBuilder:
 
 
 class BuzzState:
-    """Thread-safe cache of torrent state, snapshot, and Real-Debrid sync."""
-
-    def __init__(self, config: DavConfig, client: Any) -> None:
-        """Initialize state storage and load persisted data from disk."""
+    def __init__(self, config: DavConfig, client: Any):
         self.config = config
         self.client = client
         self.builder = LibraryBuilder(config)
@@ -328,7 +304,7 @@ class BuzzState:
 
     def _load_json(self, path: str, default: Any) -> Any:
         try:
-            with open(path, encoding="utf-8") as handle:
+            with open(path, "r", encoding="utf-8") as handle:
                 return json.load(handle)
         except FileNotFoundError:
             return default
@@ -353,8 +329,8 @@ class BuzzState:
             return None
         return "/".join(parts[:2])
 
-    def _snapshot_root_signatures(self, snapshot: Snapshot) -> dict[str, str]:
-        root_entries: dict[str, SnapshotNode] = {}
+    def _snapshot_root_signatures(self, snapshot: dict[str, Any]) -> dict[str, str]:
+        root_entries: dict[str, dict[str, Any]] = {}
         canonical = canonical_snapshot(snapshot)
         for path, node in canonical.get("files", {}).items():
             root = self._root_for_snapshot_path(path)
@@ -366,8 +342,8 @@ class BuzzState:
         return {root: stable_json(entries) for root, entries in root_entries.items()}
 
     def _classified_changed_roots(
-        self, previous_snapshot: Snapshot, new_snapshot: Snapshot
-    ) -> ChangeClassification:
+        self, previous_snapshot: dict[str, Any], new_snapshot: dict[str, Any]
+    ) -> dict[str, list[str]]:
         previous = self._snapshot_root_signatures(previous_snapshot)
         current = self._snapshot_root_signatures(new_snapshot)
         added = sorted(root for root in current if root not in previous)
@@ -383,15 +359,14 @@ class BuzzState:
             "updated_paths": updated,
         }
 
-    def sync(self, *, trigger_hook: bool = True) -> SyncReport:
-        """Sync torrent state with Real-Debrid and rebuild the snapshot."""
+    def sync(self, *, trigger_hook: bool = True) -> dict[str, Any]:
         hook_paths: list[str] = []
         with self.lock:
             self.sync_in_progress = True
         try:
             summaries = self.client.torrents.get().json()
-            new_cache: dict[str, TorrentInfo] = {}
-            infos: list[TorrentInfo] = []
+            new_cache: dict[str, dict[str, Any]] = {}
+            infos: list[dict[str, Any]] = []
             for summary in summaries:
                 torrent_id = str(summary.get("id", "")).strip()
                 if not torrent_id:
@@ -514,7 +489,7 @@ class BuzzState:
                 self.hook_task_active = False
 
     def manual_rebuild(self) -> None:
-        """Trigger curator rebuild and hooks immediately, skipping RD delay."""
+        """Manually trigger curator rebuild and library hooks without RD delay."""
         with self.hook_lock:
             self.hook_in_progress = True
             self.hook_last_started_at = utc_now_iso()
@@ -530,7 +505,7 @@ class BuzzState:
                 self.hook_in_progress = False
                 self.hook_last_finished_at = utc_now_iso()
 
-    def _summary_signature(self, summary: TorrentInfo) -> TorrentInfo:
+    def _summary_signature(self, summary: dict[str, Any]) -> dict[str, Any]:
         return {
             "filename": summary.get("filename"),
             "bytes": summary.get("bytes"),
@@ -681,18 +656,15 @@ class BuzzState:
             record_event(f"Library update hook failed: {exc}", level="error")
 
     def mark_startup_sync_complete(self) -> None:
-        """Flag that the initial startup sync has finished."""
         with self.lock:
             self.startup_sync_complete = True
 
     def is_ready(self) -> bool:
-        """Return True when the library is ready to serve DAV requests."""
         return self.snapshot_loaded or (
             self.startup_sync_complete and self.last_sync_at is not None
         )
 
-    def lookup(self, path: str) -> SnapshotNode | None:
-        """Return the snapshot node for a path, or None if not found."""
+    def lookup(self, path: str) -> dict[str, Any] | None:
         normalized = normalize_posix_path(path)
         with self.lock:
             if not normalized:
@@ -704,7 +676,6 @@ class BuzzState:
         return None
 
     def list_children(self, path: str) -> list[str]:
-        """Return sorted names of immediate children for a directory path."""
         normalized = normalize_posix_path(path)
         children = set()
         with self.lock:
@@ -721,23 +692,22 @@ class BuzzState:
                         children.add(rel)
         return sorted(children)
 
-    def status(self) -> StatusReport:
-        """Return current sync and hook status as a plain dict."""
-        with self.lock, self.hook_lock:
-            return {
-                "last_sync_at": self.last_sync_at,
-                "sync_in_progress": self.sync_in_progress,
-                "last_error": self.last_error,
-                "snapshot_loaded": self.snapshot_loaded,
-                "hook_pending": bool(self.hook_pending_paths),
-                "hook_in_progress": self.hook_in_progress,
-                "hook_last_started_at": self.hook_last_started_at,
-                "hook_last_finished_at": self.hook_last_finished_at,
-                "hook_last_error": self.hook_last_error,
-            }
+    def status(self) -> dict[str, Any]:
+        with self.lock:
+            with self.hook_lock:
+                return {
+                    "last_sync_at": self.last_sync_at,
+                    "sync_in_progress": self.sync_in_progress,
+                    "last_error": self.last_error,
+                    "snapshot_loaded": self.snapshot_loaded,
+                    "hook_pending": bool(self.hook_pending_paths),
+                    "hook_in_progress": self.hook_in_progress,
+                    "hook_last_started_at": self.hook_last_started_at,
+                    "hook_last_finished_at": self.hook_last_finished_at,
+                    "hook_last_error": self.hook_last_error,
+                }
 
-    def torrents(self) -> list[TorrentSummary]:
-        """Return a sorted list of cached torrent summaries."""
+    def torrents(self) -> list[dict[str, Any]]:
         results = []
         with self.lock:
             for torrent_id, cached in self.cache.items():
@@ -761,8 +731,7 @@ class BuzzState:
                 )
         return sorted(results, key=lambda x: x["name"])
 
-    def add_magnet(self, magnet: str) -> TorrentInfo:
-        """Add a magnet link to Real-Debrid and return torrent metadata."""
+    def add_magnet(self, magnet: str) -> dict[str, Any]:
         res = self.client.torrents.add_magnet(magnet).json()
         torrent_id = res.get("id")
         if not torrent_id:
@@ -789,14 +758,13 @@ class BuzzState:
             "files": info.get("files", []),
         }
 
-    def delete_torrent(self, torrent_id: str) -> OperationResult:
-        """Delete a torrent from Real-Debrid and archive it locally."""
+    def delete_torrent(self, torrent_id: str) -> dict[str, Any]:
         with self.lock:
             cached = self.cache.get(torrent_id)
             if cached:
                 info = cached.get("info")
                 if isinstance(info, dict) and info.get("hash"):
-                    self._add_to_archive(info)
+                    self._add_to_trashcan(info)
 
         res = self.client.torrents.delete(torrent_id)
         if res.status_code not in (200, 204):
@@ -808,7 +776,7 @@ class BuzzState:
                 self._write_json(self.cache_path, self.cache)
         return {"status": "success"}
 
-    def _add_to_archive(self, info: TorrentInfo) -> None:
+    def _add_to_archive(self, info: dict[str, Any]) -> None:
         thash = info.get("hash")
         if not thash:
             return
@@ -829,8 +797,7 @@ class BuzzState:
         }
         self._write_json(self.trashcan_path, self.trashcan)
 
-    def archive_torrents(self) -> list[TorrentSummary]:
-        """Return archived (deleted) torrents sorted by deletion time."""
+    def archive_torrents(self) -> list[dict[str, Any]]:
         with self.lock:
             results = []
             for thash, entry in self.trashcan.items():
@@ -845,8 +812,7 @@ class BuzzState:
                 )
             return sorted(results, key=lambda x: x["deleted_at"] or "", reverse=True)
 
-    def restore_trash(self, thash: str) -> OperationResult:
-        """Re-add an archived torrent to Real-Debrid by its hash."""
+    def restore_trash(self, thash: str) -> dict[str, Any]:
         with self.lock:
             entry = self.trashcan.get(thash)
             if not entry:
@@ -872,28 +838,21 @@ class BuzzState:
 
         return {"status": "success", "id": torrent_id}
 
-    def delete_trash_permanently(self, thash: str) -> OperationResult:
-        """Remove an archived torrent entry without restoring it."""
+    def delete_trash_permanently(self, thash: str) -> dict[str, Any]:
         with self.lock:
             if thash in self.trashcan:
                 del self.trashcan[thash]
                 self._write_json(self.trashcan_path, self.trashcan)
         return {"status": "success"}
 
-    def select_files(
-        self, torrent_id: str, file_ids: list[str]
-    ) -> OperationResult:
-        """Select which files to download for a torrent."""
+    def select_files(self, torrent_id: str, file_ids: list[str]) -> dict[str, Any]:
         files_str = ",".join(str(f) for f in file_ids)
         res = self.client.torrents.select_files(torrent_id, files_str)
         if res.status_code not in (200, 204):
             raise ValueError(f"Failed to select files: {res.text}")
         return {"status": "success"}
 
-    def resolve_download_url(
-        self, source_url: str, force_refresh: bool = False
-    ) -> str:
-        """Unrestrict a Real-Debrid source URL to a direct download link."""
+    def resolve_download_url(self, source_url: str, force_refresh: bool = False) -> str:
         with self.lock:
             cached = self.resolved_urls.get(source_url)
             if cached and not force_refresh:
@@ -919,22 +878,17 @@ class BuzzState:
         return download_url
 
     def invalidate_download_url(self, source_url: str) -> None:
-        """Remove a cached resolved URL so the next request re-unrestricts it."""
         with self.lock:
             if source_url in self.resolved_urls:
                 del self.resolved_urls[source_url]
 
     def verbose_log(self, message: str) -> None:
-        """Log a message at debug level when verbose mode is enabled."""
         if self.config.verbose:
             record_event(message, level="debug")
 
 
 class Poller(threading.Thread):
-    """Background thread that polls Real-Debrid on a configurable interval."""
-
-    def __init__(self, state: BuzzState) -> None:
-        """Initialize with a BuzzState to sync against."""
+    def __init__(self, state: BuzzState):
         super().__init__(daemon=True)
         self.state = state
         self._stop_event = threading.Event()
@@ -959,7 +913,6 @@ class Poller(threading.Thread):
         return "\n".join(lines)
 
     def run(self) -> None:
-        """Poll Real-Debrid and emit events when the library changes."""
         while not self._stop_event.wait(self.state.config.poll_interval_secs):
             try:
                 report = self.state.sync()
@@ -979,20 +932,15 @@ class Poller(threading.Thread):
                 record_event(f"background sync failed: {exc}", level="error")
 
     def stop(self) -> None:
-        """Signal the polling thread to stop."""
         self._stop_event.set()
 
 
 class InitialSync(threading.Thread):
-    """One-shot thread that runs the startup sync and marks it complete."""
-
-    def __init__(self, state: BuzzState) -> None:
-        """Initialize with a BuzzState to sync against."""
+    def __init__(self, state: BuzzState):
         super().__init__(daemon=True)
         self.state = state
 
     def run(self) -> None:
-        """Run a single sync without triggering hooks, then mark startup done."""
         try:
             report = self.state.sync(trigger_hook=False)
             record_event("Startup sync complete", event="startup_sync", report=report)
@@ -1004,7 +952,6 @@ class InitialSync(threading.Thread):
 
 
 def read_range_header(value: str | None, size: int) -> tuple[int, int] | None:
-    """Parse a Range header and return (start, end) byte offsets, or None."""
     if not value:
         return None
     match = re.fullmatch(r"bytes=(\d*)-(\d*)", value.strip())

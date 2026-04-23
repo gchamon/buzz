@@ -38,7 +38,7 @@ fi
 for arg in "$@"
 do
     parsed_arg="${arg//\\}"
-    echo $parsed_arg
+    echo "$parsed_arg"
     modified_arg="$library_mount/$parsed_arg"
     echo "Detected update on: $arg"
     echo "Absolute path: $modified_arg"

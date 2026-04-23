@@ -1,9 +1,9 @@
 import unittest
-from unittest.mock import patch, MagicMock
-import os
-import time
+from unittest.mock import MagicMock, patch
+
 from buzz.core.state import BuzzState
 from buzz.models import DavConfig
+
 
 class VFSSyncTests(unittest.TestCase):
     def setUp(self):
@@ -34,9 +34,9 @@ class VFSSyncTests(unittest.TestCase):
         mock_time.side_effect = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
         # Mock exists to return True for the requested root
         mock_exists.return_value = True
-        
+
         self.state._trigger_curator_and_hooks(["movies/MyMovie"])
-        
+
         # Verify os.path.exists was called with the correct path
         mock_exists.assert_called_with("/mnt/buzz/raw/movies/MyMovie")
         # Verify curator and hooks were triggered
@@ -55,9 +55,9 @@ class VFSSyncTests(unittest.TestCase):
         mock_time.side_effect = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0]
         # Mock exists to return False first, then True
         mock_exists.side_effect = [False, True]
-        
+
         self.state._trigger_curator_and_hooks(["movies/MyMovie"])
-        
+
         # Verify it slept once
         mock_sleep.assert_called_once_with(2)
         # Verify curator and hooks were triggered
@@ -91,9 +91,9 @@ class VFSSyncTests(unittest.TestCase):
         ]
         # Mock exists to always return False
         mock_exists.return_value = False
-        
+
         self.state._trigger_curator_and_hooks(["movies/MyMovie"])
-        
+
         # Verify it timed out but still proceeded
         mock_trigger_curator.assert_called_once()
         mock_run_hook.assert_called_once()
@@ -106,14 +106,14 @@ class VFSSyncTests(unittest.TestCase):
     def test_wait_for_vfs_visibility_removed_root(self, mock_run_hook, mock_trigger_curator, mock_time, mock_sleep, mock_exists):
         # If a root is NOT in snapshot, we wait for it to be GONE (exists=False)
         self.state.snapshot = {"files": {}} # Empty snapshot, so MyMovie is "removed"
-        
+
         # Mock time
         mock_time.side_effect = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0]
         # Mock exists to return True (stale) then False (gone)
         mock_exists.side_effect = [True, False]
-        
+
         self.state._trigger_curator_and_hooks(["movies/MyMovie"])
-        
+
         # Should have called exists twice
         self.assertEqual(mock_exists.call_count, 2)
         # Should have slept once

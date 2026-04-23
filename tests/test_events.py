@@ -1,12 +1,14 @@
 import unittest
+
 from buzz.core.events import EventRegistry
+
 
 class EventRegistryTests(unittest.TestCase):
     def test_record_and_get_recent(self):
         registry = EventRegistry(maxlen=5)
         registry.record("msg 1")
         registry.record("msg 2", level="warning")
-        
+
         events = registry.get_recent()
         self.assertEqual(len(events), 2)
         self.assertEqual(events[0]["message"], "msg 1")
@@ -19,7 +21,7 @@ class EventRegistryTests(unittest.TestCase):
         registry = EventRegistry(maxlen=3)
         for i in range(5):
             registry.record(f"msg {i}")
-            
+
         events = registry.get_recent()
         self.assertEqual(len(events), 3)
         self.assertEqual(events[0]["message"], "msg 2")
@@ -29,7 +31,7 @@ class EventRegistryTests(unittest.TestCase):
         registry = EventRegistry(maxlen=10)
         for i in range(10):
             registry.record(f"msg {i}")
-            
+
         events = registry.get_recent(limit=3)
         self.assertEqual(len(events), 3)
         self.assertEqual(events[0]["message"], "msg 7")

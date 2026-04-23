@@ -1,9 +1,11 @@
-import os
+"""Buzz configuration models and persistence helpers."""
+
 import json
+import os
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 from .core.constants import DEFAULT_ANIME_PATTERN
 
@@ -16,6 +18,7 @@ DEFAULT_DAV_CONFIG_PATH = os.environ.get("BUZZ_CONFIG", "/app/buzz.yml")
 
 
 def deep_merge(base: dict, overrides: dict) -> dict:
+    """Recursively merge *overrides* into *base*, returning a new dict."""
     result = dict(base)
     for key, value in overrides.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
@@ -34,6 +37,7 @@ _SECRET_PATHS = [
 
 
 def mask_secrets(d: dict) -> dict:
+    """Return a copy of *d* with secret-looking keys replaced by '***'."""
     result = {}
     for key, value in d.items():
         if isinstance(value, dict):
@@ -110,7 +114,11 @@ _OVERRIDE_SCHEMA = {
 }
 
 
-def _validate_override_keys(overrides: dict, schema: dict | None = None, path: str = "") -> list[str]:
+def _validate_override_keys(
+    overrides: dict,
+    schema: dict | None = None,
+    path: str = "",
+) -> list[str]:
     if schema is None:
         schema = _OVERRIDE_SCHEMA
     errors = []
@@ -124,6 +132,7 @@ def _validate_override_keys(overrides: dict, schema: dict | None = None, path: s
 
 
 def save_overrides(overrides: dict, path: Path) -> None:
+    """Validate and write override rules to a YAML file atomically."""
     invalid = _validate_override_keys(overrides)
     if invalid:
         raise ValueError(f"Invalid override keys: {', '.join(invalid)}")
@@ -134,7 +143,8 @@ def save_overrides(overrides: dict, path: Path) -> None:
     os.replace(tmp_path, path)
 
 
-def to_nested_dict(config: "DavConfig") -> dict:
+def to_nested_dict(config: DavConfig) -> dict:
+    """Serialize a DavConfig to the nested dict structure used in buzz.yml."""
     return {
         "provider": {"token": config.token},
         "poll_interval_secs": config.poll_interval_secs,
@@ -192,6 +202,8 @@ def to_nested_dict(config: "DavConfig") -> dict:
 
 
 class SubtitleFilters(BaseModel):
+    """Filter rules for subtitle search results."""
+
     # "exclude" drops HI tracks; "include" allows them; "prefer" ranks them first
     hearing_impaired: str = "exclude"
     exclude_ai: bool = True
@@ -199,19 +211,71 @@ class SubtitleFilters(BaseModel):
 
 
 class SubtitleConfig(BaseModel):
+    """OpenSubtitles integration configuration."""
+
     enabled: bool = False
     fetch_on_resync: bool = False
     api_key: str = ""
     username: str = ""
     password: str = ""
     languages: list[str] = ["en"]
-    strategy: str = "most-downloaded"  # best-match | most-downloaded | best-rated | trusted | latest
+    # best-match | most-downloaded | best-rated | trusted | latest
+    strategy: str = "most-downloaded"
     filters: SubtitleFilters = Field(default_factory=SubtitleFilters)
     search_delay_secs: float = 0.5
     download_delay_secs: float = 1.0
 
+    @classmethod
+    def from_raw(cls, raw: dict | None) -> SubtitleConfig:
+        """Build a SubtitleConfig from a plain dict (e.g. parsed YAML)."""
+        if not raw:
+            return cls()
+        opensubs = raw.get("opensubtitles", {})
+        filters_raw = raw.get("filters", {})
+        return cls(
+            enabled=bool(raw.get("enabled", False)),
+            fetch_on_resync=bool(raw.get("fetch_on_resync", False)),
+            api_key=str(opensubs.get("api_key", "")),
+            username=str(opensubs.get("username", "")),
+            password=str(opensubs.get("password", "")),
+            languages=list(raw.get("languages", ["en"])),
+            strategy=str(raw.get("strategy", "most-downloaded")),
+            filters=SubtitleFilters(
+                hearing_impaired=str(
+                    filters_raw.get("hearing_impaired", "exclude")
+                ),
+                exclude_ai=bool(filters_raw.get("exclude_ai", True)),
+                exclude_machine=bool(filters_raw.get("exclude_machine", True)),
+            ),
+            search_delay_secs=float(raw.get("search_delay_secs", 0.5)),
+            download_delay_secs=float(raw.get("download_delay_secs", 1.0)),
+        )
+
+    @classmethod
+    def from_env(cls) -> SubtitleConfig:
+        """Build a SubtitleConfig from environment variables."""
+        return cls(
+            enabled=_env_flag("SUBTITLE_ENABLED"),
+            fetch_on_resync=_env_flag("SUBTITLE_FETCH_ON_RESYNC"),
+            api_key=os.environ.get("OPENSUBTITLES_API_KEY", ""),
+            username=os.environ.get("OPENSUBTITLES_USERNAME", ""),
+            password=os.environ.get("OPENSUBTITLES_PASSWORD", ""),
+            languages=[
+                lang.strip()
+                for lang in os.environ.get("SUBTITLE_LANGUAGES", "en").split(",")
+                if lang.strip()
+            ],
+            strategy=os.environ.get("SUBTITLE_STRATEGY", "most-downloaded"),
+        )
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").lower() in {"1", "true", "yes"}
+
 
 class DavConfig(BaseModel):
+    """Configuration for the WebDAV / Real-Debrid front-end."""
+
     token: str
     poll_interval_secs: int = 10
     bind: str = "0.0.0.0"
@@ -234,11 +298,13 @@ class DavConfig(BaseModel):
     ui_poll_interval_secs: int = 3
     subtitles: SubtitleConfig = Field(default_factory=SubtitleConfig)
 
-    _overrides_path: Path = PrivateAttr(default=Path("/app/data/buzz.overrides.yml"))
+    _overrides_path: Path = PrivateAttr(
+        default=Path("/app/data/buzz.overrides.yml")
+    )
     _raw_merged: dict = PrivateAttr(default_factory=dict)
 
     @classmethod
-    def _from_merged_dict(cls, raw: dict) -> "DavConfig":
+    def _from_merged_dict(cls, raw: dict) -> DavConfig:
         provider = raw.get("provider", {})
         server = raw.get("server", {})
         hooks = raw.get("hooks", {})
@@ -246,9 +312,6 @@ class DavConfig(BaseModel):
         anime = directories.get("anime", {})
         compat = raw.get("compat", {})
         logging_raw = raw.get("logging", {})
-        subs_raw = raw.get("subtitles", {})
-        opensubs = subs_raw.get("opensubtitles", {})
-        subs_filters = subs_raw.get("filters", {})
         ui_raw = raw.get("ui", {})
 
         token = provider.get("token", "").strip()
@@ -266,48 +329,46 @@ class DavConfig(BaseModel):
             curator_url=str(
                 hooks.get("curator_url", "http://buzz-curator:8400/rebuild")
             ),
-            rd_update_delay_secs=int(hooks.get("rd_update_delay_secs", 15)),
-            vfs_wait_timeout_secs=int(hooks.get("vfs_wait_timeout_secs", 300)),
+            rd_update_delay_secs=int(
+                hooks.get("rd_update_delay_secs", 15)
+            ),
+            vfs_wait_timeout_secs=int(
+                hooks.get("vfs_wait_timeout_secs", 300)
+            ),
             library_mount=os.environ.get("LIBRARY_MOUNT", ""),
             anime_patterns=tuple(anime.get("patterns", [DEFAULT_ANIME_PATTERN])),
             enable_all_dir=bool(compat.get("enable_all_dir", True)),
-            enable_unplayable_dir=bool(compat.get("enable_unplayable_dir", True)),
+            enable_unplayable_dir=bool(
+                compat.get("enable_unplayable_dir", True)
+            ),
             request_timeout_secs=int(raw.get("request_timeout_secs", 30)),
             user_agent=str(raw.get("user_agent", "buzz/0.1")),
             version_label=str(raw.get("version_label", "buzz/0.1")),
             verbose=bool(logging_raw.get("verbose", False)),
             log_max_entries=int(logging_raw.get("max_entries", 1000)),
-            ui_poll_interval_secs=int(ui_raw.get("poll_interval_secs", 3)),
-            subtitles=SubtitleConfig(
-                enabled=bool(subs_raw.get("enabled", False)),
-                fetch_on_resync=bool(subs_raw.get("fetch_on_resync", False)),
-                api_key=str(opensubs.get("api_key", "")),
-                username=str(opensubs.get("username", "")),
-                password=str(opensubs.get("password", "")),
-                languages=list(subs_raw.get("languages", ["en"])),
-                strategy=str(subs_raw.get("strategy", "most-downloaded")),
-                filters=SubtitleFilters(
-                    hearing_impaired=str(subs_filters.get("hearing_impaired", "exclude")),
-                    exclude_ai=bool(subs_filters.get("exclude_ai", True)),
-                    exclude_machine=bool(subs_filters.get("exclude_machine", True)),
-                ),
-                search_delay_secs=float(subs_raw.get("search_delay_secs", 0.5)),
-                download_delay_secs=float(subs_raw.get("download_delay_secs", 1.0)),
+            ui_poll_interval_secs=int(
+                ui_raw.get("poll_interval_secs", 3)
             ),
+            subtitles=SubtitleConfig.from_raw(raw.get("subtitles")),
         )
 
     @classmethod
-    def load(cls, path: str = DEFAULT_DAV_CONFIG_PATH) -> "DavConfig":
-        with open(path, "r", encoding="utf-8") as handle:
+    def load(cls, path: str = DEFAULT_DAV_CONFIG_PATH) -> DavConfig:
+        """Load and validate configuration from a YAML file."""
+        with open(path, encoding="utf-8") as handle:
             base = yaml.safe_load(handle) or {}
 
         state_dir = str(base.get("state_dir", "/app/data"))
         overrides_env = os.environ.get("BUZZ_OVERRIDES", "")
-        overrides_path = Path(overrides_env) if overrides_env else Path(state_dir) / "buzz.overrides.yml"
+        overrides_path = (
+            Path(overrides_env)
+            if overrides_env
+            else Path(state_dir) / "buzz.overrides.yml"
+        )
 
         overrides = {}
         if overrides_path.exists():
-            with open(overrides_path, "r", encoding="utf-8") as handle:
+            with open(overrides_path, encoding="utf-8") as handle:
                 overrides = yaml.safe_load(handle) or {}
 
         merged = deep_merge(base, overrides)
@@ -318,11 +379,17 @@ class DavConfig(BaseModel):
 
 
 class PresentationConfig(BaseModel):
+    """Configuration for the curator (presentation layer)."""
+
     bind: str = Field(
-        default_factory=lambda: os.environ.get("PRESENTATION_BIND", "0.0.0.0")
+        default_factory=lambda: os.environ.get(
+            "PRESENTATION_BIND", "0.0.0.0"
+        )
     )
     port: int = Field(
-        default_factory=lambda: int(os.environ.get("PRESENTATION_PORT", "8400"))
+        default_factory=lambda: int(
+            os.environ.get("PRESENTATION_PORT", "8400")
+        )
     )
     source_root: Path = Field(
         default_factory=lambda: Path(
@@ -353,7 +420,9 @@ class PresentationConfig(BaseModel):
         default_factory=lambda: os.environ.get("JELLYFIN_API_KEY", "")
     )
     jellyfin_scan_task_id: str = Field(
-        default_factory=lambda: os.environ.get("JELLYFIN_SCAN_TASK_ID", "")
+        default_factory=lambda: os.environ.get(
+            "JELLYFIN_SCAN_TASK_ID", ""
+        )
     )
     jellyfin_library_map: dict[str, str] = Field(
         default_factory=lambda: json.loads(
@@ -364,9 +433,8 @@ class PresentationConfig(BaseModel):
         )
     )
     skip_jellyfin_scan: bool = Field(
-        default_factory=lambda: (
-            os.environ.get("PRESENTATION_SKIP_JELLYFIN_SCAN", "").lower()
-            in {"1", "true", "yes"}
+        default_factory=lambda: _env_flag(
+            "PRESENTATION_SKIP_JELLYFIN_SCAN"
         )
     )
     build_on_start: bool = Field(
@@ -376,78 +444,61 @@ class PresentationConfig(BaseModel):
         )
     )
     verbose: bool = Field(
-        default_factory=lambda: (
-            os.environ.get("PRESENTATION_VERBOSE", "").lower() in {"1", "true", "yes"}
-        )
+        default_factory=lambda: _env_flag("PRESENTATION_VERBOSE")
     )
     log_max_entries: int = Field(
-        default_factory=lambda: int(os.environ.get("PRESENTATION_LOG_MAX_ENTRIES", "1000"))
+        default_factory=lambda: int(
+            os.environ.get("PRESENTATION_LOG_MAX_ENTRIES", "1000")
+        )
     )
     subtitles: SubtitleConfig = Field(default_factory=SubtitleConfig)
     subtitle_root: Path = Field(
-        default_factory=lambda: Path(os.environ.get("SUBTITLE_ROOT", "/mnt/buzz/subs"))
+        default_factory=lambda: Path(
+            os.environ.get("SUBTITLE_ROOT", "/mnt/buzz/subs")
+        )
     )
 
-    def __init__(self, **data):
-        # If subtitles aren't explicitly passed, try loading from buzz.yml
-        if "subtitles" not in data:
-            try:
-                path = os.environ.get("BUZZ_CONFIG", "/app/buzz.yml")
-                if os.path.exists(path):
-                    with open(path, "r", encoding="utf-8") as handle:
-                        raw = yaml.safe_load(handle) or {}
-                    
-                    subs_raw = raw.get("subtitles")
-                    if subs_raw:
-                        opensubs = subs_raw.get("opensubtitles", {})
-                        subs_filters = subs_raw.get("filters", {})
-                        data["subtitles"] = SubtitleConfig(
-                            enabled=bool(subs_raw.get("enabled", False)),
-                            fetch_on_resync=bool(subs_raw.get("fetch_on_resync", False)),
-                            api_key=str(opensubs.get("api_key", "")),
-                            username=str(opensubs.get("username", "")),
-                            password=str(opensubs.get("password", "")),
-                            languages=list(subs_raw.get("languages", ["en"])),
-                            strategy=str(subs_raw.get("strategy", "most-downloaded")),
-                            filters=SubtitleFilters(
-                                hearing_impaired=str(subs_filters.get("hearing_impaired", "exclude")),
-                                exclude_ai=bool(subs_filters.get("exclude_ai", True)),
-                                exclude_machine=bool(subs_filters.get("exclude_machine", True)),
-                            ),
-                            search_delay_secs=float(subs_raw.get("search_delay_secs", 0.5)),
-                            download_delay_secs=float(subs_raw.get("download_delay_secs", 1.0)),
-                        )
-            except Exception as exc:
-                print(f"Warning: Failed to load subtitles from buzz.yml: {exc}")
+    @classmethod
+    def load(cls, path: str | None = None) -> PresentationConfig:
+        """Load from env defaults and optional buzz.yml subtitle config."""
+        data: dict = {}
+        config_path = path or os.environ.get("BUZZ_CONFIG", "/app/buzz.yml")
 
-        # Fallback to environment variables if still not set
+        if config_path and os.path.exists(config_path):
+            try:
+                with open(config_path, encoding="utf-8") as handle:
+                    raw = yaml.safe_load(handle) or {}
+                if "subtitles" in raw:
+                    data["subtitles"] = SubtitleConfig.from_raw(
+                        raw["subtitles"]
+                    )
+            except Exception as exc:
+                print(
+                    f"Warning: Failed to load subtitles from {config_path}: "
+                    f"{exc}"
+                )
+
         if "subtitles" not in data:
-            data["subtitles"] = SubtitleConfig(
-                enabled=os.environ.get("SUBTITLE_ENABLED", "").lower() in {"1", "true", "yes"},
-                fetch_on_resync=os.environ.get("SUBTITLE_FETCH_ON_RESYNC", "").lower() in {"1", "true", "yes"},
-                api_key=os.environ.get("OPENSUBTITLES_API_KEY", ""),
-                username=os.environ.get("OPENSUBTITLES_USERNAME", ""),
-                password=os.environ.get("OPENSUBTITLES_PASSWORD", ""),
-                languages=[
-                    lang.strip()
-                    for lang in os.environ.get("SUBTITLE_LANGUAGES", "en").split(",")
-                    if lang.strip()
-                ],
-                strategy=os.environ.get("SUBTITLE_STRATEGY", "most-downloaded"),
-            )
-        super().__init__(**data)
+            data["subtitles"] = SubtitleConfig.from_env()
+
+        return cls(**data)
 
 
 class ErrorResponse(BaseModel):
+    """Standard error response payload."""
+
     error: str
 
 
 class AddTorrentRequest(BaseModel):
+    """Request body for adding a torrent by magnet link."""
+
     magnet: str
 
     @field_validator("magnet")
     @classmethod
     def validate_magnet(cls, value: str) -> str:
+        """Strip whitespace and reject empty magnet links."""
         value = value.strip()
         if not value:
             raise ValueError("Missing magnet link")
@@ -455,12 +506,15 @@ class AddTorrentRequest(BaseModel):
 
 
 class SelectFilesRequest(BaseModel):
+    """Request body for selecting files inside a torrent."""
+
     torrent_id: str
     file_ids: list[str]
 
     @field_validator("torrent_id")
     @classmethod
     def validate_torrent_id(cls, value: str) -> str:
+        """Strip whitespace and reject empty torrent IDs."""
         value = value.strip()
         if not value:
             raise ValueError("Missing torrent_id")
@@ -468,11 +522,14 @@ class SelectFilesRequest(BaseModel):
 
 
 class DeleteTorrentRequest(BaseModel):
+    """Request body for deleting a torrent."""
+
     torrent_id: str
 
     @field_validator("torrent_id")
     @classmethod
     def validate_torrent_id(cls, value: str) -> str:
+        """Strip whitespace and reject empty torrent IDs."""
         value = value.strip()
         if not value:
             raise ValueError("Missing torrent_id")
@@ -480,11 +537,14 @@ class DeleteTorrentRequest(BaseModel):
 
 
 class RestoreTrashRequest(BaseModel):
+    """Request body for restoring a deleted torrent from trash."""
+
     hash: str
 
     @field_validator("hash")
     @classmethod
     def validate_hash(cls, value: str) -> str:
+        """Strip whitespace and reject empty hashes."""
         value = value.strip()
         if not value:
             raise ValueError("Missing hash")
@@ -492,11 +552,14 @@ class RestoreTrashRequest(BaseModel):
 
 
 class DeleteTrashRequest(BaseModel):
+    """Request body for permanently deleting a trashed torrent."""
+
     hash: str
 
     @field_validator("hash")
     @classmethod
     def validate_hash(cls, value: str) -> str:
+        """Strip whitespace and reject empty hashes."""
         value = value.strip()
         if not value:
             raise ValueError("Missing hash")

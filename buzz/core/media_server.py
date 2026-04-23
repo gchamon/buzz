@@ -1,36 +1,47 @@
+"""Jellyfin media server integration helpers."""
+
 import json
-from typing import Optional
 from urllib import error, request
 
 from ..models import PresentationConfig
 from .events import record_event
 from .state import is_internal_category
 
+
 def discover_scan_task_id(config: PresentationConfig) -> str:
+    """Return the Jellyfin scan task ID, discovering it if necessary."""
     if config.jellyfin_scan_task_id:
         return config.jellyfin_scan_task_id
     req = request.Request(
         f"{config.jellyfin_url}/ScheduledTasks?IsHidden=false&IsEnabled=true",
-        headers={"Authorization": f"MediaBrowser Token={config.jellyfin_api_key}"},
+        headers={
+            "Authorization": f"MediaBrowser Token={config.jellyfin_api_key}"
+        },
     )
     try:
         with request.urlopen(req, timeout=30) as response:
             tasks = json.load(response)
     except error.HTTPError as exc:
         if exc.code in (401, 403):
-            raise RuntimeError("Jellyfin API Token is invalid or unauthorized") from exc
+            raise RuntimeError(
+                "Jellyfin API Token is invalid or unauthorized"
+            ) from exc
         raise
     for task in tasks:
         if task.get("Name") == "Scan Media Library":
             return task.get("Id", "")
-    raise RuntimeError("Unable to find the Jellyfin Scan Media Library task ID.")
+    raise RuntimeError(
+        "Unable to find the Jellyfin Scan Media Library task ID."
+    )
 
 
-def validate_jellyfin_auth(config: PresentationConfig):
-    """Verifies that the Jellyfin API key is valid."""
+def validate_jellyfin_auth(config: PresentationConfig) -> bool:
+    """Verify that the Jellyfin API key is valid."""
     req = request.Request(
         f"{config.jellyfin_url}/System/Info",
-        headers={"Authorization": f"MediaBrowser Token={config.jellyfin_api_key}"},
+        headers={
+            "Authorization": f"MediaBrowser Token={config.jellyfin_api_key}"
+        },
     )
     try:
         with request.urlopen(req, timeout=10):
@@ -44,10 +55,12 @@ def validate_jellyfin_auth(config: PresentationConfig):
 
 
 def discover_jellyfin_libraries(config: PresentationConfig) -> dict[str, str]:
-    """Returns a map of library Name -> ItemId."""
+    """Return a map of library Name -> ItemId."""
     req = request.Request(
         f"{config.jellyfin_url}/Library/VirtualFolders",
-        headers={"Authorization": f"MediaBrowser Token={config.jellyfin_api_key}"},
+        headers={
+            "Authorization": f"MediaBrowser Token={config.jellyfin_api_key}"
+        },
     )
     with request.urlopen(req, timeout=30) as response:
         libraries = json.load(response)
@@ -58,12 +71,15 @@ def discover_jellyfin_libraries(config: PresentationConfig) -> dict[str, str]:
     }
 
 
-def trigger_jellyfin_scan(config: PresentationConfig):
+def trigger_jellyfin_scan(config: PresentationConfig) -> None:
+    """Trigger a full Jellyfin media library scan."""
     task_id = discover_scan_task_id(config)
     req = request.Request(
         f"{config.jellyfin_url}/ScheduledTasks/Running/{task_id}",
         method="POST",
-        headers={"Authorization": f"MediaBrowser Token={config.jellyfin_api_key}"},
+        headers={
+            "Authorization": f"MediaBrowser Token={config.jellyfin_api_key}"
+        },
     )
     with request.urlopen(req, timeout=30):
         return
@@ -71,14 +87,16 @@ def trigger_jellyfin_scan(config: PresentationConfig):
 
 def trigger_jellyfin_selective_refresh(
     config: PresentationConfig, changed_roots: list[str]
-):
+) -> None:
+    """Trigger selective refreshes for Jellyfin libraries matching changed roots."""
     if not changed_roots:
         return
 
     categories = {root.split("/")[0] for root in changed_roots if "/" in root}
-    # Filter out internal/virtual categories like __unplayable__ that shouldn't trigger scans.
+    # Filter out internal/virtual categories like __unplayable__ that
+    # shouldn't trigger scans.
     categories = {cat for cat in categories if not is_internal_category(cat)}
-    
+
     if not categories:
         return
 
@@ -89,18 +107,24 @@ def trigger_jellyfin_selective_refresh(
     }
     library_names = {name for name in library_names if name}
 
-    # If all categories are known but none map to a library (e.g. __unplayable__),
-    # just skip instead of falling back to a full scan.
-    if not library_names and all(cat in config.jellyfin_library_map for cat in categories):
+    # If all categories are known but none map to a library
+    # (e.g. __unplayable__), just skip instead of falling back to a full
+    # scan.
+    if not library_names and all(
+        cat in config.jellyfin_library_map for cat in categories
+    ):
         record_event(
-            f"No Jellyfin libraries mapped for categories: {categories}. Skipping refresh.",
+            "No Jellyfin libraries mapped for categories: "
+            f"{categories}. Skipping refresh.",
             level="info",
         )
         return
 
     if not library_names:
         record_event(
-            f"Unknown categories {categories} (not in JELLYFIN_LIBRARY_MAP). Falling back to full scan.",
+            "Unknown categories "
+            f"{categories} (not in JELLYFIN_LIBRARY_MAP). "
+            "Falling back to full scan.",
             level="warning",
         )
         trigger_jellyfin_scan(config)
@@ -111,26 +135,35 @@ def trigger_jellyfin_selective_refresh(
         library_id = libraries.get(name)
         if not library_id:
             record_event(
-                f"Jellyfin library '{name}' not found. Falling back to full scan.",
+                f"Jellyfin library '{name}' not found. "
+                "Falling back to full scan.",
                 level="warning",
             )
             trigger_jellyfin_scan(config)
             return
 
         record_event(
-            f"Triggering selective refresh for Jellyfin library '{name}' ({library_id})...",
+            f"Triggering selective refresh for Jellyfin library "
+            f"'{name}' ({library_id})...",
             level="info",
         )
-        query = "Recursive=true&ImageRefreshMode=Default&MetadataRefreshMode=Default&ReplaceAllImages=false&ReplaceAllMetadata=false"
+        query = (
+            "Recursive=true&ImageRefreshMode=Default"
+            "&MetadataRefreshMode=Default&ReplaceAllImages=false"
+            "&ReplaceAllMetadata=false"
+        )
         req = request.Request(
             f"{config.jellyfin_url}/Items/{library_id}/Refresh?{query}",
             method="POST",
-            headers={"Authorization": f"MediaBrowser Token={config.jellyfin_api_key}"},
+            headers={
+                "Authorization": f"MediaBrowser Token={config.jellyfin_api_key}"
+            },
         )
         try:
             with request.urlopen(req, timeout=30):
                 pass
         except Exception as exc:
             record_event(
-                f"Failed to refresh Jellyfin library '{name}': {exc}", level="error"
+                f"Failed to refresh Jellyfin library '{name}': {exc}",
+                level="error",
             )

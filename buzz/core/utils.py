@@ -1,3 +1,5 @@
+"""Small utility helpers used across buzz."""
+
 import json
 import posixpath
 import re
@@ -9,13 +11,22 @@ from xml.sax.saxutils import escape
 
 
 def utc_now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    """Return the current UTC time as an ISO-8601 string."""
+    return (
+        datetime.now(UTC)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def http_date(value: str | None) -> str:
+    """Convert an ISO timestamp to an HTTP-date string."""
     if value:
         try:
-            timestamp = datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+            timestamp = datetime.fromisoformat(
+                value.replace("Z", "+00:00")
+            ).timestamp()
             return formatdate(timestamp, usegmt=True)
         except ValueError:
             pass
@@ -23,13 +34,15 @@ def http_date(value: str | None) -> str:
 
 
 def html_escape(value: Any) -> str:
+    """Escape a value for safe inclusion in HTML/XML."""
     return escape(str(value), {"'": "&#x27;", '"': "&quot;"})
 
 
 def format_bytes(value: Any) -> str:
+    """Format a byte count as a human-readable string."""
     try:
         size = float(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return "0 B"
     units = ("B", "KiB", "MiB", "GiB", "TiB")
     index = 0
@@ -42,10 +55,12 @@ def format_bytes(value: Any) -> str:
 
 
 def stable_json(value: Any) -> str:
+    """Return a compact, deterministic JSON representation."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def normalize_posix_path(value: str) -> str:
+    """Collapse slashes and dots in a POSIX-style path."""
     cleaned = value.strip()
     if not cleaned or cleaned == "/":
         return ""
@@ -56,6 +71,7 @@ def normalize_posix_path(value: str) -> str:
 
 
 def split_path(value: str) -> tuple[str, ...]:
+    """Split a POSIX path into its non-empty components."""
     normalized = normalize_posix_path(value)
     if not normalized:
         return ()
@@ -63,6 +79,7 @@ def split_path(value: str) -> tuple[str, ...]:
 
 
 def strip_regex_delimiters(value: str) -> str:
+    """Remove leading and trailing slashes from a regex pattern."""
     value = value.strip()
     if len(value) >= 2 and value.startswith("/") and value.endswith("/"):
         return value[1:-1]
@@ -70,6 +87,7 @@ def strip_regex_delimiters(value: str) -> str:
 
 
 def ensure_regex_delimiters(value: str) -> str:
+    """Ensure a regex pattern is wrapped in slashes."""
     stripped = value.strip()
     if stripped.startswith("/") and stripped.endswith("/"):
         return stripped
@@ -77,16 +95,21 @@ def ensure_regex_delimiters(value: str) -> str:
 
 
 def canonical_spaces(value: str) -> str:
+    """Collapse multiple whitespace characters into a single space."""
     return re.sub(r"\s+", " ", value).strip(" .-_")
 
 
 def sanitize_path_component(value: str) -> str:
+    """Remove path separators and clean whitespace."""
     value = value.replace("/", " ").replace("\\", " ")
     return canonical_spaces(value)
 
 
 def pretty_title(raw: str) -> str:
-    cleaned = canonical_spaces(raw.replace(".", " ").replace("_", " "))
+    """Convert a raw filename fragment to a pretty title case string."""
+    cleaned = canonical_spaces(
+        raw.replace(".", " ").replace("_", " ")
+    )
     words = []
     for word in cleaned.split():
         if word.isupper() and len(word) <= 4:

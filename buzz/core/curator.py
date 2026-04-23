@@ -1,50 +1,50 @@
+"""Curator module for building and maintaining the media library.
+
+This module handles symlink-based library construction from raw source
+directories, applying metadata overrides, detecting changes, and
+triggering downstream media server scans.
+"""
+
 import json
 import os
 import shutil
 import tempfile
 import threading
-from typing import Optional
+from collections.abc import Iterator
 from pathlib import Path
-from urllib import error, request
+
 import yaml
 
 from ..models import PresentationConfig
-from .constants import (
-    NOISE_RE,
-    SHOW_PATTERNS,
-    SIDECAR_EXTENSIONS,
-    VIDEO_EXTENSIONS,
-    YEAR_RE,
-)
 from .events import record_event
-from .media_server import (
-    discover_jellyfin_libraries,
-    trigger_jellyfin_scan,
-    trigger_jellyfin_selective_refresh,
-    validate_jellyfin_auth,
-)
-from .subtitles import apply_subtitle_overlay, background_fetch_subtitles
-from .state import is_internal_category
 from .media import (
     is_sidecar_file,
     is_video_file,
     parse_movie,
     parse_show,
 )
+from .media_server import (
+    trigger_jellyfin_scan,
+    trigger_jellyfin_selective_refresh,
+    validate_jellyfin_auth,
+)
+from .subtitles import apply_subtitle_overlay, background_fetch_subtitles
 from .utils import (
-    canonical_spaces,
-    pretty_title,
     sanitize_path_component,
 )
 
 
 class RebuildError(RuntimeError):
-    def __init__(self, message: str, payload: dict):
+    """Raised when a library rebuild fails with structured context."""
+
+    def __init__(self, message: str, payload: dict) -> None:
+        """Initialize with an error message and structured payload."""
         super().__init__(message)
         self.payload = payload
 
 
 def load_overrides(path: Path) -> dict:
+    """Load YAML override rules for movies and shows."""
     if not path.exists():
         return {"movies": {}, "shows": {}}
     raw = path.read_text(encoding="utf-8").strip()
@@ -56,7 +56,8 @@ def load_overrides(path: Path) -> dict:
     return overrides
 
 
-def iter_files(root: Path):
+def iter_files(root: Path) -> Iterator[Path]:
+    """Yield all files under *root* in sorted order."""
     if not root.exists():
         return
     for path in sorted(root.rglob("*")):
@@ -65,10 +66,12 @@ def iter_files(root: Path):
 
 
 def source_relpath(source_root: Path, path: Path) -> str:
+    """Return the POSIX relative path from *source_root* to *path*."""
     return path.relative_to(source_root).as_posix()
 
 
-def find_companion_files(path: Path):
+def find_companion_files(path: Path) -> list[Path]:
+    """Return sorted sidecar files sharing *path*'s stem."""
     parent = path.parent
     stem = path.stem
     companions = []
@@ -77,19 +80,22 @@ def find_companion_files(path: Path):
             continue
         if not is_sidecar_file(sibling):
             continue
-        if sibling.name == f"{stem}{sibling.suffix}" or sibling.name.startswith(
-            f"{stem}."
+        if (
+            sibling.name == f"{stem}{sibling.suffix}"
+            or sibling.name.startswith(f"{stem}.")
         ):
             companions.append(sibling)
     return sorted(companions)
 
 
-def ensure_symlink(source: Path, target: Path):
+def ensure_symlink(source: Path, target: Path) -> None:
+    """Create parent directories and a symlink from *target* to *source*."""
     target.parent.mkdir(parents=True, exist_ok=True)
     os.symlink(source, target)
 
 
-def apply_movie_override(entry: dict, override: dict):
+def apply_movie_override(entry: dict, override: dict) -> None:
+    """Apply override fields to a movie entry in place."""
     if override.get("title"):
         entry["title"] = sanitize_path_component(override["title"])
     if override.get("year"):
@@ -98,7 +104,8 @@ def apply_movie_override(entry: dict, override: dict):
         entry["id"] = sanitize_path_component(override["id"])
 
 
-def apply_show_override(entry: dict, override: dict):
+def apply_show_override(entry: dict, override: dict) -> None:
+    """Apply override fields to a show entry in place."""
     if override.get("series"):
         entry["series"] = sanitize_path_component(override["series"])
     if override.get("season") is not None:
@@ -110,6 +117,7 @@ def apply_show_override(entry: dict, override: dict):
 
 
 def movie_folder_name(entry: dict) -> str:
+    """Return the canonical folder name for a movie entry."""
     folder = f"{entry['title']} ({entry['year']})"
     if entry.get("id"):
         folder = f"{folder} [{entry['id']}]"
@@ -117,16 +125,18 @@ def movie_folder_name(entry: dict) -> str:
 
 
 def show_series_name(entry: dict) -> str:
+    """Return the canonical series name for a show entry."""
     series = entry["series"]
     if entry.get("id"):
         series = f"{series} [{entry['id']}]"
     return sanitize_path_component(series)
 
 
-def replace_root(tmp_root: Path, target_root: Path):
-    """
-    Swaps the contents of target_root with those in tmp_root.
-    Operates on contents to avoid needing write permissions on target_root's parent.
+def replace_root(tmp_root: Path, target_root: Path) -> None:
+    """Swap the contents of *target_root* with those in *tmp_root*.
+
+    Operates on contents to avoid needing write permissions on
+    *target_root*'s parent.
     """
     # 1. Remove existing contents (except the tmp_root itself)
     for item in target_root.iterdir():
@@ -143,6 +153,7 @@ def replace_root(tmp_root: Path, target_root: Path):
 
 
 def load_previous_mapping(path: Path) -> list[dict]:
+    """Load the previous mapping from a JSON file."""
     if not path.exists():
         return []
     raw = path.read_text(encoding="utf-8").strip()
@@ -153,15 +164,16 @@ def load_previous_mapping(path: Path) -> list[dict]:
 
 
 def mapping_index(entries: list[dict]) -> dict[str, dict]:
-    indexed = {}
-    for entry in entries:
-        target = entry.get("target")
-        if isinstance(target, str):
-            indexed[target] = entry
-    return indexed
+    """Build a lookup dict mapping target paths to entries."""
+    return {
+        target: entry
+        for entry in entries
+        if isinstance((target := entry.get("target")), str)
+    }
 
 
 def mapping_diff(previous: list[dict], current: list[dict]) -> dict:
+    """Compare two mappings and return added, removed, and changed items."""
     previous_index = mapping_index(previous)
     current_index = mapping_index(current)
 
@@ -177,13 +189,17 @@ def mapping_diff(previous: list[dict], current: list[dict]) -> dict:
     for target in sorted(previous_index.keys() & current_index.keys()):
         if previous_index[target] != current_index[target]:
             changed.append(
-                {"before": previous_index[target], "after": current_index[target]}
+                {
+                    "before": previous_index[target],
+                    "after": current_index[target],
+                }
             )
 
     return {"added": added, "removed": removed, "changed": changed}
 
 
-def log_mapping_event(diff: dict, report: dict, mapping_entries: int):
+def log_mapping_event(diff: dict, report: dict, mapping_entries: int) -> None:
+    """Record a curator mapping diff event."""
     record_event(
         "Curator mapping updated",
         event="curator_mapping_diff",
@@ -197,14 +213,17 @@ def log_mapping_event(diff: dict, report: dict, mapping_entries: int):
     )
 
 
-def build_library(config: PresentationConfig):
+def build_library(config: PresentationConfig) -> dict:
+    """Build the curated library from source directories."""
     overrides = load_overrides(config.overrides_path)
     movies_source = config.source_root / "movies"
     shows_source = config.source_root / "shows"
     anime_source = config.source_root / "anime"
 
     if not config.source_root.exists():
-        raise FileNotFoundError(f"Source root does not exist: {config.source_root}")
+        raise FileNotFoundError(
+            f"Source root does not exist: {config.source_root}"
+        )
 
     config.state_root.mkdir(parents=True, exist_ok=True)
     config.target_root.mkdir(parents=True, exist_ok=True)
@@ -242,12 +261,16 @@ def build_library(config: PresentationConfig):
             config.source_root,
         )
         build_anime(
-            anime_source, tmp_root / "animes", mapping, report, config.source_root
+            anime_source,
+            tmp_root / "animes",
+            mapping,
+            report,
+            config.source_root,
         )
-        
+
         if config.subtitles.enabled:
             apply_subtitle_overlay(tmp_root, config.subtitle_root)
-            
+
         replace_root(tmp_root, config.target_root)
     except Exception:
         if tmp_root is not None and tmp_root.exists():
@@ -261,8 +284,10 @@ def build_library(config: PresentationConfig):
     (config.state_root / "report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"
     )
-    
-    log_mapping_event(mapping_diff(previous_mapping, mapping), report, len(mapping))
+
+    log_mapping_event(
+        mapping_diff(previous_mapping, mapping), report, len(mapping)
+    )
     return report
 
 
@@ -270,10 +295,11 @@ def build_movies(
     source_root: Path,
     target_root: Path,
     overrides: dict,
-    mapping: list,
+    mapping: list[dict],
     report: dict,
     all_source_root: Path,
-):
+) -> None:
+    """Symlink movie files into canonical folder structures."""
     target_root.mkdir(parents=True, exist_ok=True)
     if not source_root.exists():
         return
@@ -282,16 +308,19 @@ def build_movies(
         if not is_video_file(path):
             continue
         rel_path = source_relpath(all_source_root, path)
-        
+
         # Determine torrent folder name if file is in a subdirectory
         source_rel = path.relative_to(source_root)
         folder = source_rel.parts[0] if len(source_rel.parts) > 1 else ""
-        
+
         parsed = parse_movie(path.stem, folder=folder)
         override = overrides.get(rel_path, {})
         if parsed is None and not override:
             report["skipped_movies"].append(
-                {"source": rel_path, "reason": "unable to parse movie title/year"}
+                {
+                    "source": rel_path,
+                    "reason": "unable to parse movie title/year",
+                }
             )
             continue
         if parsed is None:
@@ -299,15 +328,25 @@ def build_movies(
         apply_movie_override(parsed, override)
         if not parsed.get("title") or not parsed.get("year"):
             report["skipped_movies"].append(
-                {"source": rel_path, "reason": "movie override missing title/year"}
+                {
+                    "source": rel_path,
+                    "reason": "movie override missing title/year",
+                }
             )
             continue
         folder_name = movie_folder_name(parsed)
-        target_file = target_root / folder_name / f"{folder_name}{path.suffix.lower()}"
+        target_file = (
+            target_root
+            / folder_name
+            / f"{folder_name}{path.suffix.lower()}"
+        )
         target_key = target_file.as_posix()
         if target_key in used_targets:
             report["skipped_movies"].append(
-                {"source": rel_path, "reason": "duplicate canonical movie target"}
+                {
+                    "source": rel_path,
+                    "reason": "duplicate canonical movie target",
+                }
             )
             continue
         ensure_symlink(path, target_file)
@@ -315,7 +354,9 @@ def build_movies(
         mapping.append(
             {
                 "source": rel_path,
-                "target": target_file.relative_to(target_root.parent).as_posix(),
+                "target": target_file.relative_to(
+                    target_root.parent
+                ).as_posix(),
                 "type": "movie",
             }
         )
@@ -323,7 +364,9 @@ def build_movies(
 
         for companion in find_companion_files(path):
             extra = companion.name[len(path.stem) :]
-            companion_target = target_root / folder_name / f"{folder_name}{extra}"
+            companion_target = (
+                target_root / folder_name / f"{folder_name}{extra}"
+            )
             ensure_symlink(companion, companion_target)
 
 
@@ -331,10 +374,11 @@ def build_shows(
     source_root: Path,
     target_root: Path,
     overrides: dict,
-    mapping: list,
+    mapping: list[dict],
     report: dict,
     all_source_root: Path,
-):
+) -> None:
+    """Symlink show files into canonical series/season structures."""
     target_root.mkdir(parents=True, exist_ok=True)
     if not source_root.exists():
         return
@@ -375,7 +419,9 @@ def build_shows(
                 group_errors.append(
                     {
                         "source": rel_path,
-                        "reason": "show override missing series/season/episode",
+                        "reason": (
+                            "show override missing series/season/episode"
+                        ),
                     }
                 )
                 continue
@@ -385,12 +431,18 @@ def build_shows(
                 group_errors.append(
                     {
                         "source": rel_path,
-                        "reason": "inconsistent parsed show name within torrent",
+                        "reason": (
+                            "inconsistent parsed show name within torrent"
+                        ),
                     }
                 )
                 continue
             season_dir = f"Season {int(parsed['season']):02d}"
-            base_name = f"{show_series_name(parsed)} S{int(parsed['season']):02d}E{int(parsed['episode']):02d}"
+            base_name = (
+                f"{show_series_name(parsed)} "
+                f"S{int(parsed['season']):02d}"
+                f"E{int(parsed['episode']):02d}"
+            )
             target_file = (
                 target_root
                 / show_series_name(parsed)
@@ -400,7 +452,10 @@ def build_shows(
             target_key = target_file.as_posix()
             if target_key in used_targets or target_key in global_targets:
                 group_errors.append(
-                    {"source": rel_path, "reason": "duplicate season/episode target"}
+                    {
+                        "source": rel_path,
+                        "reason": "duplicate season/episode target",
+                    }
                 )
                 continue
             used_targets.add(target_key)
@@ -418,7 +473,9 @@ def build_shows(
             mapping.append(
                 {
                     "source": rel_path,
-                    "target": target_file.relative_to(target_root.parent).as_posix(),
+                    "target": target_file.relative_to(
+                        target_root.parent
+                    ).as_posix(),
                     "type": "show",
                 }
             )
@@ -433,10 +490,11 @@ def build_shows(
 def build_anime(
     source_root: Path,
     target_root: Path,
-    mapping: list,
+    mapping: list[dict],
     report: dict,
     all_source_root: Path,
-):
+) -> None:
+    """Symlink anime files while preserving their relative paths."""
     target_root.mkdir(parents=True, exist_ok=True)
     if not source_root.exists():
         return
@@ -447,14 +505,20 @@ def build_anime(
         mapping.append(
             {
                 "source": rel_path,
-                "target": target_file.relative_to(target_root.parent).as_posix(),
+                "target": target_file.relative_to(
+                    target_root.parent
+                ).as_posix(),
                 "type": "anime",
             }
         )
         report["anime_files"] += 1
 
 
-def rebuild_and_trigger(config: PresentationConfig, changed_roots: Optional[list[str]] = None):
+def rebuild_and_trigger(
+    config: PresentationConfig,
+    changed_roots: list[str] | None = None,
+) -> dict:
+    """Rebuild the library and optionally trigger a Jellyfin scan."""
     report = build_library(config)
     if config.skip_jellyfin_scan:
         report["jellyfin_scan_triggered"] = False
@@ -487,29 +551,38 @@ def rebuild_and_trigger(config: PresentationConfig, changed_roots: Optional[list
         report["jellyfin_scan_triggered"] = False
         report["jellyfin_scan_status"] = "failed"
         report["jellyfin_scan_error"] = str(exc)
-        # We don't raise RebuildError here anymore to ensure the curator process
-        # doesn't think the whole rebuild failed just because the scan trigger failed.
-        # The symlinks (build_library) were already successfully swapped.
+        # We don't raise RebuildError here anymore to ensure the curator
+        # process doesn't think the whole rebuild failed just because the
+        # scan trigger failed. The symlinks (build_library) were already
+        # successfully swapped.
         record_event(f"Jellyfin scan trigger failed: {exc}", level="error")
     else:
         report["jellyfin_scan_triggered"] = True
         report["jellyfin_scan_error"] = None
-    
+
     if config.subtitles.enabled and config.subtitles.fetch_on_resync:
         background_fetch_subtitles(config)
-        
+
     return report
 
 
 class Curator:
-    def __init__(self, config: PresentationConfig):
+    """Thread-safe wrapper around library rebuild operations."""
+
+    def __init__(self, config: PresentationConfig) -> None:
+        """Initialize with the presentation configuration."""
         self.config = config
         self.lock = threading.Lock()
 
-    def handle_rebuild(self, changed_roots: Optional[list[str]] = None):
+    def handle_rebuild(
+        self,
+        changed_roots: list[str] | None = None,
+    ) -> dict:
+        """Rebuild the library and trigger Jellyfin scan."""
         with self.lock:
             return rebuild_and_trigger(self.config, changed_roots)
 
-    def cleanup(self):
+    def cleanup(self) -> None:
+        """Remove the curated target directory."""
         with self.lock:
             shutil.rmtree(self.config.target_root, ignore_errors=True)

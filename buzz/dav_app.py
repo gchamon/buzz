@@ -1,11 +1,11 @@
-import hashlib
+"""FastAPI application for the WebDAV / Real-Debrid front-end."""
+
 import json
 import os
 import queue
 import threading
 from contextlib import asynccontextmanager
 from http import HTTPStatus
-from typing import Any
 from urllib import error
 
 import jinja2
@@ -16,31 +16,31 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from rdapi import RD
 
-from .dav_protocol import open_remote_media, propfind_body
 from .core.events import record_event
-from .core.utils import (
-    format_bytes,
-    http_date,
-)
-from .models import (
-    AddTorrentRequest,
-    DavConfig,
-    DeleteTorrentRequest,
-    RestoreTrashRequest,
-    DeleteTrashRequest,
-    ErrorResponse,
-    SelectFilesRequest,
-    mask_secrets,
-    save_overrides,
-    to_nested_dict,
-    _strip_secrets,
-)
 from .core.state import (
     BuzzState,
     InitialSync,
     Poller,
     dav_rel_path,
     read_range_header,
+)
+from .core.utils import (
+    format_bytes,
+    http_date,
+)
+from .dav_protocol import open_remote_media, propfind_body
+from .models import (
+    AddTorrentRequest,
+    DavConfig,
+    DeleteTorrentRequest,
+    DeleteTrashRequest,
+    ErrorResponse,
+    RestoreTrashRequest,
+    SelectFilesRequest,
+    _strip_secrets,
+    mask_secrets,
+    save_overrides,
+    to_nested_dict,
 )
 
 
@@ -56,7 +56,10 @@ def _fetch_opensubtitles_languages() -> list[tuple[str, str]]:
 
 
 class DavApp:
-    def __init__(self, config: DavConfig):
+    """FastAPI wrapper that exposes the RD cache as a WebDAV tree."""
+
+    def __init__(self, config: DavConfig) -> None:
+        """Set up the FastAPI app, event registry, and BuzzState."""
         from .core.events import registry
         registry.default_source = "dav"
         registry.reconfigure(config.log_max_entries)
@@ -107,6 +110,7 @@ class DavApp:
         @self.app.get("/archive", response_class=HTMLResponse)
         def archive():
             return self._archive_page()
+
         @self.app.get("/config", response_class=HTMLResponse)
         def config_page():
             return self._config_page()
@@ -118,7 +122,7 @@ class DavApp:
             overrides = {}
             if self.config._overrides_path.exists():
                 try:
-                    with open(self.config._overrides_path, "r", encoding="utf-8") as handle:
+                    with open(self.config._overrides_path, encoding="utf-8") as handle:
                         overrides = yaml.safe_load(handle) or {}
                 except Exception:  # noqa: BLE001
                     pass
@@ -136,8 +140,9 @@ class DavApp:
 
         @self.app.get("/healthz")
         def healthz():
-            from .core.events import registry
             import httpx
+
+            from .core.events import registry
 
             dav_count = len(registry.events)
             curator_count = 0
@@ -185,7 +190,10 @@ class DavApp:
 
         @self.app.post(
             "/api/cache/add",
-            responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+            responses={
+                400: {"model": ErrorResponse},
+                500: {"model": ErrorResponse},
+            },
         )
         def add_torrent(payload: AddTorrentRequest):
             try:
@@ -196,7 +204,10 @@ class DavApp:
 
         @self.app.post(
             "/api/cache/select",
-            responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+            responses={
+                400: {"model": ErrorResponse},
+                500: {"model": ErrorResponse},
+            },
         )
         def select_files(payload: SelectFilesRequest):
             try:
@@ -207,7 +218,10 @@ class DavApp:
 
         @self.app.post(
             "/api/cache/delete",
-            responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+            responses={
+                400: {"model": ErrorResponse},
+                500: {"model": ErrorResponse},
+            },
         )
         def delete_torrent(payload: DeleteTorrentRequest):
             try:
@@ -218,7 +232,10 @@ class DavApp:
 
         @self.app.post(
             "/api/cache/restore",
-            responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+            responses={
+                400: {"model": ErrorResponse},
+                500: {"model": ErrorResponse},
+            },
         )
         def restore_trash(payload: RestoreTrashRequest):
             try:
@@ -229,7 +246,10 @@ class DavApp:
 
         @self.app.post(
             "/api/cache/delete_permanently",
-            responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+            responses={
+                400: {"model": ErrorResponse},
+                500: {"model": ErrorResponse},
+            },
         )
         def delete_trash_permanently(payload: DeleteTrashRequest):
             try:
@@ -255,23 +275,40 @@ class DavApp:
 
             torrent_name = payload.get("torrent_name", "").strip()
             if not torrent_name:
-                return JSONResponse(status_code=400, content={"error": "torrent_name is required"})
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "torrent_name is required"},
+                )
 
             if not self.config.curator_url:
-                return JSONResponse(status_code=400, content={"error": "No curator configured"})
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "No curator configured"},
+                )
 
-            subs_url = self.config.curator_url.replace("/rebuild", "/api/subtitles/fetch")
+            subs_url = self.config.curator_url.replace(
+                "/rebuild", "/api/subtitles/fetch"
+            )
             try:
                 with httpx.Client(timeout=5.0) as client:
-                    resp = client.post(subs_url, json={"torrent_name": torrent_name})
-                    return JSONResponse(status_code=resp.status_code, content=resp.json())
+                    resp = client.post(
+                        subs_url, json={"torrent_name": torrent_name}
+                    )
+                    return JSONResponse(
+                        status_code=resp.status_code,
+                        content=resp.json(),
+                    )
             except Exception as exc:
-                return JSONResponse(status_code=502, content={"error": f"Curator unreachable: {exc}"})
+                return JSONResponse(
+                    status_code=502,
+                    content={"error": f"Curator unreachable: {exc}"},
+                )
 
         @self.app.get("/api/logs")
         def get_logs(limit: int = 100):
-            from .core.events import registry
             import httpx
+
+            from .core.events import registry
 
             logs = registry.get_recent(limit)
             for log in logs:
@@ -443,7 +480,10 @@ class DavApp:
                         except Exception as exc:
                             print(
                                 json.dumps(
-                                    {"event": "buffer_reader_error", "error": str(exc)},
+                                    {
+                                        "event": "buffer_reader_error",
+                                        "error": str(exc),
+                                    },
                                     sort_keys=True,
                                 ),
                                 flush=True,
@@ -499,22 +539,21 @@ class DavApp:
 
         status = self.state.status()
         torrents = self.state.torrents()
-        page_torrents = []
-        for torrent in torrents:
-            page_torrents.append(
-                {
-                    "id": torrent["id"],
-                    "name": torrent["name"],
-                    "status": torrent["status"],
-                    "progress": torrent["progress"],
-                    "bytes": torrent["bytes"],
-                    "size": format_bytes(torrent["bytes"]),
-                    "selected_files": torrent["selected_files"],
-                    "links": torrent["links"],
-                    "ended": torrent["ended"] or "-",
-                    "short_id": torrent["id"][:8],
-                }
-            )
+        page_torrents = [
+            {
+                "id": torrent["id"],
+                "name": torrent["name"],
+                "status": torrent["status"],
+                "progress": torrent["progress"],
+                "bytes": torrent["bytes"],
+                "size": format_bytes(torrent["bytes"]),
+                "selected_files": torrent["selected_files"],
+                "links": torrent["links"],
+                "ended": torrent["ended"] or "-",
+                "short_id": torrent["id"][:8],
+            }
+            for torrent in torrents
+        ]
 
         sync_state = "syncing" if status.get("sync_in_progress") else "idle"
 
@@ -626,7 +665,8 @@ class DavApp:
         )
 
 
-def run_dav_server(config: DavConfig):
+def run_dav_server(config: DavConfig) -> None:
+    """Start the uvicorn server for the DAV application."""
     import uvicorn
 
     dav_app = DavApp(config)

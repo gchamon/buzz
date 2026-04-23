@@ -5,21 +5,12 @@ import tempfile
 import threading
 import time
 import unittest
-import yaml
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import yaml
 from fastapi.testclient import TestClient
 
-from buzz.dav_app import DavApp
-from buzz.dav_protocol import open_remote_media, propfind_body
-from buzz.models import (
-    DavConfig as Config,
-    deep_merge,
-    mask_secrets,
-    save_overrides,
-    to_nested_dict,
-    _strip_secrets,
-    )
 from buzz.core.state import (
     BuzzState,
     LibraryBuilder,
@@ -27,13 +18,15 @@ from buzz.core.state import (
     canonical_snapshot,
     dav_rel_path,
     normalize_posix_path,
-    )
-from scripts.migrate_config import (
-    buzz_to_zurg,
-    convert,
-    parse_buzz_config,
-    parse_zurg_config,
-    zurg_to_buzz,
+)
+from buzz.dav_app import DavApp
+from buzz.dav_protocol import open_remote_media, propfind_body
+from buzz.models import (
+    DavConfig as Config,
+)
+from buzz.models import (
+    deep_merge,
+    mask_secrets,
 )
 
 
@@ -1174,9 +1167,8 @@ class DavAppTests(unittest.TestCase):
                 FakeResponse(b"<!DOCTYPE html>bad", "text/html"),
                 FakeResponse(b"<!DOCTYPE html>worse", "text/html"),
             ],
-        ):
-            with self.assertRaisesRegex(ValueError, "non-media content type|markup"):
-                open_remote_media(self.state, node, None)
+        ), self.assertRaisesRegex(ValueError, "non-media content type|markup"):
+            open_remote_media(self.state, node, None)
 
     def test_force_download_media_payload_is_accepted(self):
         self.state.client = self.FakeRD(["https://example.invalid/download"])
@@ -1377,8 +1369,7 @@ class DavBufferedStreamingTests(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def _start_patches(self, fake_response):
-        """
-        Start persistent patches for open_remote_media and StreamingResponse.
+        """Start persistent patches for open_remote_media and StreamingResponse.
         Returns the captured raw sync generator after serve_dav is called.
         Both patches remain active until tearDown via addCleanup, so the
         open_remote_media mock is still in place when the generator runs.

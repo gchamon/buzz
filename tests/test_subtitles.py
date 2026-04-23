@@ -1,23 +1,23 @@
-import unittest
-import tempfile
-import json
 import os
+import tempfile
+import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from buzz.core.subtitles import (
-    release_similarity,
     _apply_filters,
+    _read_subtitle_meta,
     _source_matches_torrent,
-    rank_subtitles,
-    get_search_params,
+    _subtitle_meta_path,
+    _write_subtitle_meta,
     apply_subtitle_overlay,
     fetch_subtitles_for_library,
-    _read_subtitle_meta,
-    _write_subtitle_meta,
-    _subtitle_meta_path,
+    get_search_params,
+    rank_subtitles,
+    release_similarity,
 )
 from buzz.models import PresentationConfig, SubtitleConfig, SubtitleFilters
+
 
 class SubtitleTests(unittest.TestCase):
     def test_release_similarity(self):
@@ -32,12 +32,12 @@ class SubtitleTests(unittest.TestCase):
             {"attributes": {"ai_translated": True, "release": "AI"}},
             {"attributes": {"machine_translated": True, "release": "Machine"}},
         ]
-        
+
         f = SubtitleFilters(hearing_impaired="exclude", exclude_ai=True, exclude_machine=True)
         filtered = _apply_filters(results, f)
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["attributes"]["release"], "Regular")
-        
+
         f = SubtitleFilters(hearing_impaired="include", exclude_ai=False, exclude_machine=False)
         filtered = _apply_filters(results, f)
         self.assertEqual(len(filtered), 4)
@@ -45,14 +45,14 @@ class SubtitleTests(unittest.TestCase):
     def test_rank_subtitles_most_downloaded(self):
         results = [
             {"attributes": {
-                "download_count": 100, 
-                "new_download_count": 50, 
+                "download_count": 100,
+                "new_download_count": 50,
                 "release": "Source.Release.A",
                 "feature_details": {"title": "Source Movie"}
             }},
             {"attributes": {
-                "download_count": 200, 
-                "new_download_count": 10, 
+                "download_count": 200,
+                "new_download_count": 10,
                 "release": "Source.Release.B",
                 "feature_details": {"title": "Source Movie"}
             }},
@@ -77,21 +77,21 @@ class SubtitleTests(unittest.TestCase):
 
     def test_result_matches_query(self):
         from buzz.core.subtitles import _result_matches_query
-        
+
         # Exact match
         res = {"attributes": {"feature_details": {"title": "The Matrix", "year": 1999}}}
         self.assertTrue(_result_matches_query(res, "The Matrix", 1999))
-        
+
         # Case insensitive / tokens
         self.assertTrue(_result_matches_query(res, "the.matrix", 1999))
-        
+
         # Year mismatch (more than 1 year)
         self.assertFalse(_result_matches_query(res, "The Matrix", 2005))
-        
+
         # Year match (+/- 1)
         self.assertTrue(_result_matches_query(res, "The Matrix", 1998))
         self.assertTrue(_result_matches_query(res, "The Matrix", 2000))
-        
+
         # Wrong title
         res_wrong = {"attributes": {"feature_details": {"title": "Inception", "year": 2010}}}
         self.assertFalse(_result_matches_query(res_wrong, "The Matrix", 1999))
@@ -101,7 +101,7 @@ class SubtitleTests(unittest.TestCase):
         # but release name is completely different
         results = [
             {"attributes": {
-                "download_count": 1000, 
+                "download_count": 1000,
                 "release": "Completely.Different.Movie.Release-GRP",
                 "feature_details": {"title": "Different Movie"}
             }}
@@ -115,7 +115,7 @@ class SubtitleTests(unittest.TestCase):
     def test_search_sends_type_parameter(self, mock_client_cls):
         mock_client = mock_client_cls.return_value.__enter__.return_value
         mock_client.search.return_value = []
-        
+
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config = PresentationConfig(
@@ -125,13 +125,13 @@ class SubtitleTests(unittest.TestCase):
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs"
             )
-            
+
             # Test Movie
             mapping_movie = [{"type": "movie", "source": "movies/M.mkv", "target": "movies/M/M.mkv"}]
             fetch_subtitles_for_library(config, mapping_movie)
             args, kwargs = mock_client.search.call_args
             self.assertEqual(kwargs["type"], "movie")
-            
+
             # Test Show
             mapping_show = [{"type": "show", "source": "shows/S/E1.mkv", "target": "shows/S/S01/S01E01.mkv"}]
             fetch_subtitles_for_library(config, mapping_show)
@@ -143,7 +143,7 @@ class SubtitleTests(unittest.TestCase):
         entry = {"type": "movie", "target": "movies/Movie Name (2024)/Movie Name (2024).mkv"}
         params = get_search_params(entry)
         self.assertEqual(params, {"query": "Movie Name", "year": 2024})
-        
+
         # Show
         entry = {"type": "show", "target": "shows/Series Name/Season 01/Series Name S01E05.mkv"}
         params = get_search_params(entry)
@@ -154,13 +154,13 @@ class SubtitleTests(unittest.TestCase):
             root = Path(tmpdir)
             subs = root / "subs"
             tmp_build = root / "tmp_build"
-            
+
             sub_file = subs / "movies/Movie (2024)/Movie.en.srt"
             sub_file.parent.mkdir(parents=True)
             sub_file.write_text("content")
-            
+
             apply_subtitle_overlay(tmp_build, subs)
-            
+
             target = tmp_build / "movies/Movie (2024)/Movie.en.srt"
             self.assertTrue(target.is_symlink())
             self.assertEqual(os.readlink(target), str(sub_file))
@@ -174,7 +174,7 @@ class SubtitleTests(unittest.TestCase):
         ]
         mock_client.download.return_value = "http://download"
         mock_client.fetch_content.return_value = b"subtitle content"
-        
+
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config = PresentationConfig(
@@ -184,17 +184,17 @@ class SubtitleTests(unittest.TestCase):
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs"
             )
-            
+
             mapping = [
                 {"type": "movie", "source": "movies/Movie.2024.mkv", "target": "movies/Movie (2024)/Movie (2024).mkv"}
             ]
-            
+
             fetch_subtitles_for_library(config, mapping)
-            
+
             sub_file = root / "subs/movies/Movie (2024)/Movie (2024).en.srt"
             self.assertTrue(sub_file.exists())
             self.assertEqual(sub_file.read_text(), "subtitle content")
-            
+
             # Check curated symlink
             curated_sub = root / "curated/movies/Movie (2024)/Movie (2024).en.srt"
             self.assertTrue(curated_sub.is_symlink())
@@ -208,7 +208,7 @@ class SubtitleTests(unittest.TestCase):
         ]
         mock_client.download.return_value = "http://download"
         mock_client.fetch_content.return_value = b"subtitle content"
-        
+
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config = PresentationConfig(
@@ -219,13 +219,13 @@ class SubtitleTests(unittest.TestCase):
                 subtitle_root=root / "subs",
                 jellyfin_api_key="jf_key"
             )
-            
+
             mapping = [
                 {"type": "movie", "source": "movies/Movie.2024.mkv", "target": "movies/Movie (2024)/Movie (2024).mkv"}
             ]
-            
+
             fetch_subtitles_for_library(config, mapping)
-            
+
             # Should be called with config and the list of target paths that got new subtitles
             mock_refresh.assert_called_once_with(config, ["movies/Movie (2024)/Movie (2024).mkv"])
 
@@ -242,10 +242,10 @@ class SubtitleTests(unittest.TestCase):
             sub_path = root / "movie.en.srt"
             meta_path = _subtitle_meta_path(sub_path)
             self.assertEqual(meta_path, root / "movie.en.srt.buzz.json")
-            
+
             # Read non-existent meta returns None
             self.assertIsNone(_read_subtitle_meta(sub_path))
-            
+
             # Write and read back
             _write_subtitle_meta(sub_path, {"file_id": 123, "release": "Test.Release"})
             self.assertTrue(meta_path.exists())
@@ -262,7 +262,7 @@ class SubtitleTests(unittest.TestCase):
         ]
         mock_client.download.return_value = "http://download"
         mock_client.fetch_content.return_value = b"new subtitle content"
-        
+
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config = PresentationConfig(
@@ -272,19 +272,19 @@ class SubtitleTests(unittest.TestCase):
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs"
             )
-            
+
             # Pre-create existing subtitle with matching metadata
             sub_file = root / "subs/movies/Movie (2024)/Movie (2024).en.srt"
             sub_file.parent.mkdir(parents=True)
             sub_file.write_text("existing content")
             _write_subtitle_meta(sub_file, {"file_id": 123, "release": "Movie.2024.srt"})
-            
+
             mapping = [
                 {"type": "movie", "source": "movies/Movie.2024.mkv", "target": "movies/Movie (2024)/Movie (2024).mkv"}
             ]
-            
+
             fetch_subtitles_for_library(config, mapping)
-            
+
             # Should have searched but NOT downloaded
             mock_client.search.assert_called_once()
             mock_client.download.assert_not_called()
@@ -300,7 +300,7 @@ class SubtitleTests(unittest.TestCase):
         ]
         mock_client.download.return_value = "http://download"
         mock_client.fetch_content.return_value = b"new subtitle content"
-        
+
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config = PresentationConfig(
@@ -310,29 +310,29 @@ class SubtitleTests(unittest.TestCase):
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs"
             )
-            
+
             # Pre-create existing subtitle with OLD metadata
             sub_file = root / "subs/movies/Movie (2024)/Movie (2024).en.srt"
             sub_file.parent.mkdir(parents=True)
             sub_file.write_text("old content")
             _write_subtitle_meta(sub_file, {"file_id": 123, "release": "Old.Release"})
-            
+
             mapping = [
                 {"type": "movie", "source": "movies/Movie.2024.mkv", "target": "movies/Movie (2024)/Movie (2024).mkv"}
             ]
-            
+
             fetch_subtitles_for_library(config, mapping)
-            
+
             # Should have searched AND downloaded
             mock_client.search.assert_called_once()
             mock_client.download.assert_called_once()
             self.assertEqual(sub_file.read_text(), "new subtitle content")
-            
+
             # Metadata should be updated
             meta = _read_subtitle_meta(sub_file)
             self.assertEqual(meta["file_id"], 999)
             self.assertEqual(meta["release"], "Movie.2024.srt")
-            
+
             # Curated symlink should exist and point to new file
             curated_sub = root / "curated/movies/Movie (2024)/Movie (2024).en.srt"
             self.assertTrue(curated_sub.is_symlink())
@@ -347,7 +347,7 @@ class SubtitleTests(unittest.TestCase):
         ]
         mock_client.download.return_value = "http://download"
         mock_client.fetch_content.return_value = b"new subtitle content"
-        
+
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config = PresentationConfig(
@@ -357,23 +357,23 @@ class SubtitleTests(unittest.TestCase):
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs"
             )
-            
+
             # Pre-create existing subtitle WITHOUT metadata
             sub_file = root / "subs/movies/Movie (2024)/Movie (2024).en.srt"
             sub_file.parent.mkdir(parents=True)
             sub_file.write_text("old content")
-            
+
             mapping = [
                 {"type": "movie", "source": "movies/Movie.2024.mkv", "target": "movies/Movie (2024)/Movie (2024).mkv"}
             ]
-            
+
             fetch_subtitles_for_library(config, mapping)
-            
+
             # Should have searched AND downloaded
             mock_client.search.assert_called_once()
             mock_client.download.assert_called_once()
             self.assertEqual(sub_file.read_text(), "new subtitle content")
-            
+
             # Metadata should be written
             meta = _read_subtitle_meta(sub_file)
             self.assertEqual(meta["file_id"], 999)

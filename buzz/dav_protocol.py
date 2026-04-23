@@ -1,3 +1,5 @@
+"""WebDAV XML response generation and remote media validation."""
+
 from typing import Any
 from urllib import error, parse, request
 from xml.sax.saxutils import escape
@@ -8,6 +10,7 @@ from .core.utils import http_date
 
 
 def propfind_body(state: BuzzState, paths: list[str]) -> str:
+    """Build a WebDAV PROPFIND multistatus XML body for the given paths."""
     responses = []
     for rel in paths:
         node = state.lookup(rel)
@@ -23,12 +26,15 @@ def propfind_body(state: BuzzState, paths: list[str]) -> str:
             )
         else:
             size = str(int(node.get("size", 0)))
+            mime = escape(node.get("mime_type", "application/octet-stream"))
+            etag = escape(node.get("etag", ""))
+            modified = escape(http_date(node.get("modified")))
             prop = (
                 "<D:resourcetype/>"
                 f"<D:getcontentlength>{size}</D:getcontentlength>"
-                f"<D:getcontenttype>{escape(node.get('mime_type', 'application/octet-stream'))}</D:getcontenttype>"
-                f"<D:getetag>{escape(node.get('etag', ''))}</D:getetag>"
-                f"<D:getlastmodified>{escape(http_date(node.get('modified')))}</D:getlastmodified>"
+                f"<D:getcontenttype>{mime}</D:getcontenttype>"
+                f"<D:getetag>{etag}</D:getetag>"
+                f"<D:getlastmodified>{modified}</D:getlastmodified>"
             )
         responses.append(
             "<D:response>"
@@ -41,7 +47,9 @@ def propfind_body(state: BuzzState, paths: list[str]) -> str:
         )
     return (
         '<?xml version="1.0" encoding="utf-8"?>'
-        '<D:multistatus xmlns:D="DAV:">' + "".join(responses) + "</D:multistatus>"
+        '<D:multistatus xmlns:D="DAV:">'
+        + "".join(responses)
+        + "</D:multistatus>"
     )
 
 
@@ -50,7 +58,14 @@ def open_remote_media(
     node: dict[str, Any],
     range_header: tuple[int, int] | None,
 ) -> tuple[Any, bytes]:
-    source_url = str(node.get("source_url") or node.get("url") or "").strip()
+    """Resolve and open a remote media stream with retry logic.
+
+    Attempts to resolve the download URL, then validates the response
+    headers and payload before returning the stream and first chunk.
+    """
+    source_url = str(
+        node.get("source_url") or node.get("url") or ""
+    ).strip()
     if not source_url:
         raise ValueError("missing Real-Debrid source URL")
     last_error = "unable to resolve upstream media"
@@ -67,7 +82,9 @@ def open_remote_media(
                 continue
             raise
 
-        state.verbose_log(f"Resolved to {download_url!r} (attempt {attempt + 1}/2)")
+        state.verbose_log(
+            f"Resolved to {download_url!r} (attempt {attempt + 1}/2)"
+        )
         req = request.Request(download_url, method="GET")
         if range_header:
             start, end = range_header
@@ -76,9 +93,12 @@ def open_remote_media(
             response = request.urlopen(req, timeout=60)
         except error.HTTPError as exc:
             state.invalidate_download_url(source_url)
-            last_error = f"upstream returned HTTP {exc.code} for {download_url}"
+            last_error = (
+                f"upstream returned HTTP {exc.code} for {download_url}"
+            )
             state.verbose_log(
-                f"HTTP Error {exc.code} on attempt {attempt + 1}: {exc.reason}"
+                f"HTTP Error {exc.code} on attempt {attempt + 1}: "
+                f"{exc.reason}"
             )
             if attempt == 0:
                 continue
@@ -86,19 +106,25 @@ def open_remote_media(
         except Exception as exc:
             state.invalidate_download_url(source_url)
             last_error = f"failed to connect to upstream: {exc}"
-            state.verbose_log(f"Connection error on attempt {attempt + 1}: {exc}")
+            state.verbose_log(
+                f"Connection error on attempt {attempt + 1}: {exc}"
+            )
             if attempt == 0:
                 continue
             raise ValueError(last_error) from exc
 
         try:
-            first_chunk = validate_remote_media_response(response, range_header)
+            first_chunk = validate_remote_media_response(
+                response, range_header
+            )
             return response, first_chunk
         except ValueError as exc:
             response.close()
             state.invalidate_download_url(source_url)
             last_error = str(exc)
-            state.verbose_log(f"Validation failed on attempt {attempt + 1}: {exc}")
+            state.verbose_log(
+                f"Validation failed on attempt {attempt + 1}: {exc}"
+            )
             if attempt == 0:
                 continue
             raise
@@ -109,9 +135,15 @@ def validate_remote_media_response(
     response: Any,
     range_header: tuple[int, int] | None,
 ) -> bytes:
+    """Validate that a remote response is actually media, not markup.
+
+    Returns the first chunk of the body if the response passes validation.
+    """
     content_type = response.headers.get("Content-Type")
     if not is_probably_media_content_type(content_type):
-        raise ValueError(f"upstream returned non-media content type {content_type!r}")
+        raise ValueError(
+            f"upstream returned non-media content type {content_type!r}"
+        )
     should_peek = range_header is None or range_header[0] == 0
     if not should_peek:
         return b""

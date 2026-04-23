@@ -1,3 +1,5 @@
+"""Shared regexes and extension sets used across buzz."""
+
 import re
 
 VIDEO_EXTENSIONS = {
@@ -37,9 +39,10 @@ DEFAULT_ANIME_PATTERN = r"\b[a-fA-F0-9]{8}\b"
 
 NOISE_RE = re.compile(
     r"(?i)\b("
-    r"1080p|2160p|720p|480p|4k|bluray|brrip|bdrip|dvdrip|dvd|webrip|web[- ]?dl|"
-    r"hdr|hdr10|remux|proper|repack|extended|unrated|criterion|x264|x265|h\.?264|"
-    r"h\.?265|hevc|av1|aac|ac3|dts|truehd|atmos|yts|rarbg|amzn|nf|dsnp|hmax"
+    r"1080p|2160p|720p|480p|4k|bluray|brrip|bdrip|dvdrip|dvd|"
+    r"webrip|web[- ]?dl|hdr|hdr10|remux|proper|repack|extended|"
+    r"unrated|criterion|x264|x265|h\.?264|h\.?265|hevc|av1|aac|"
+    r"ac3|dts|truehd|atmos|yts|rarbg|amzn|nf|dsnp|hmax"
     r")\b"
 )
 
