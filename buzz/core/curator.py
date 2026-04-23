@@ -5,7 +5,6 @@ directories, applying metadata overrides, detecting changes, and
 triggering downstream media server scans.
 """
 
-import json
 import os
 import shutil
 import tempfile
@@ -15,7 +14,8 @@ from pathlib import Path
 
 import yaml
 
-from ..models import PresentationConfig
+from ..models import CuratorConfig
+from . import db
 from .events import record_event
 from .media import (
     is_sidecar_file,
@@ -152,15 +152,9 @@ def replace_root(tmp_root: Path, target_root: Path) -> None:
         shutil.move(str(item), str(target_root / item.name))
 
 
-def load_previous_mapping(path: Path) -> list[dict]:
-    """Load the previous mapping from a JSON file."""
-    if not path.exists():
-        return []
-    raw = path.read_text(encoding="utf-8").strip()
-    if not raw:
-        return []
-    payload = json.loads(raw)
-    return payload if isinstance(payload, list) else []
+def load_previous_mapping(conn) -> list[dict]:
+    """Load the previous mapping from the SQLite state store."""
+    return db.load_curator_mapping(conn)
 
 
 def mapping_index(entries: list[dict]) -> dict[str, dict]:
@@ -213,7 +207,7 @@ def log_mapping_event(diff: dict, report: dict, mapping_entries: int) -> None:
     )
 
 
-def build_library(config: PresentationConfig) -> dict:
+def build_library(config: CuratorConfig) -> dict:
     """Build the curated library from source directories."""
     overrides = load_overrides(config.overrides_path)
     movies_source = config.source_root / "movies"
@@ -225,11 +219,12 @@ def build_library(config: PresentationConfig) -> dict:
             f"Source root does not exist: {config.source_root}"
         )
 
-    config.state_root.mkdir(parents=True, exist_ok=True)
+    config.state_dir.mkdir(parents=True, exist_ok=True)
     config.target_root.mkdir(parents=True, exist_ok=True)
 
-    mapping_path = config.state_root / "mapping.json"
-    previous_mapping = load_previous_mapping(mapping_path)
+    conn = db.connect(config.state_dir / "buzz.sqlite")
+    db.apply_migrations(conn)
+    previous_mapping = load_previous_mapping(conn)
     mapping = []
     report = {
         "skipped_movies": [],
@@ -241,6 +236,9 @@ def build_library(config: PresentationConfig) -> dict:
 
     tmp_root: Path | None = None
     try:
+        if config.subtitles.enabled:
+            db.migrate_subtitle_sidecars(conn, config.subtitle_root)
+
         tmp_root = Path(
             tempfile.mkdtemp(prefix=".curator-tmp-", dir=config.target_root)
         )
@@ -275,15 +273,13 @@ def build_library(config: PresentationConfig) -> dict:
     except Exception:
         if tmp_root is not None and tmp_root.exists():
             shutil.rmtree(tmp_root, ignore_errors=True)
+        conn.close()
         raise
 
     report["mapping_entries"] = len(mapping)
-    mapping_path.write_text(
-        json.dumps(mapping, indent=2, sort_keys=True), encoding="utf-8"
-    )
-    (config.state_root / "report.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"
-    )
+    db.replace_curator_mapping(conn, mapping)
+    db.save_curator_report(conn, report)
+    conn.close()
 
     log_mapping_event(
         mapping_diff(previous_mapping, mapping), report, len(mapping)
@@ -515,7 +511,7 @@ def build_anime(
 
 
 def rebuild_and_trigger(
-    config: PresentationConfig,
+    config: CuratorConfig,
     changed_roots: list[str] | None = None,
 ) -> dict:
     """Rebuild the library and optionally trigger a Jellyfin scan."""
@@ -569,8 +565,8 @@ def rebuild_and_trigger(
 class Curator:
     """Thread-safe wrapper around library rebuild operations."""
 
-    def __init__(self, config: PresentationConfig) -> None:
-        """Initialize with the presentation configuration."""
+    def __init__(self, config: CuratorConfig) -> None:
+        """Initialize with the curator configuration."""
         self.config = config
         self.lock = threading.Lock()
 

@@ -1,4 +1,4 @@
-"""FastAPI application for the curator (presentation layer)."""
+"""FastAPI application for the curator service."""
 
 import traceback
 from contextlib import asynccontextmanager
@@ -6,12 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from .core.curator import (
-    Curator,
-    PresentationConfig,
-    RebuildError,
-    build_library,
-)
+from .core.curator import Curator, RebuildError, build_library
 from .core.events import record_event
 from .core.subtitles import (
     background_fetch_subtitles,
@@ -19,12 +14,13 @@ from .core.subtitles import (
 from .core.subtitles import (
     state as subtitle_state,
 )
+from .models import CuratorConfig
 
 
 class CuratorApp:
     """FastAPI wrapper that exposes curator rebuild and subtitle endpoints."""
 
-    def __init__(self, config: PresentationConfig) -> None:
+    def __init__(self, config: CuratorConfig) -> None:
         """Set up the FastAPI app, event registry, and Curator."""
         from .core.events import registry
 
@@ -40,14 +36,14 @@ class CuratorApp:
                 try:
                     startup_report = build_library(self.config)
                     record_event(
-                        "initial presentation build complete: "
+                        "initial curator build complete: "
                         f"{startup_report['movies']} movies, "
                         f"{startup_report['show_files']} show files, "
                         f"{startup_report['anime_files']} anime files"
                     )
                 except Exception as exc:
                     record_event(
-                        f"initial presentation build failed: {exc}",
+                        f"initial curator build failed: {exc}",
                         level="error",
                     )
             yield
@@ -139,7 +135,7 @@ class CuratorApp:
             return {"status": "triggered"}
 
 
-def run_curator_server(config: PresentationConfig) -> None:
+def run_curator_server(config: CuratorConfig) -> None:
     """Start the curator HTTP server."""
     import uvicorn
 

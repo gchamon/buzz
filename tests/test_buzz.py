@@ -25,6 +25,7 @@ from buzz.models import (
     DavConfig as Config,
 )
 from buzz.models import (
+    CuratorConfig,
     deep_merge,
     mask_secrets,
 )
@@ -151,8 +152,10 @@ class LibraryBuilderTests(unittest.TestCase):
 
 class BuzzStateTests(unittest.TestCase):
     class FakeResponse:
-        def __init__(self, data):
+        def __init__(self, data, status_code=200, text=""):
             self.data = data
+            self.status_code = status_code
+            self.text = text
 
         def json(self):
             return self.data
@@ -176,12 +179,27 @@ class BuzzStateTests(unittest.TestCase):
             def __init__(self, torrents_list, torrent_infos):
                 self.torrents_list = torrents_list
                 self.torrent_infos = torrent_infos
+                self.added_magnets = []
+                self.selected_files_calls = []
+                self.deleted_ids = []
 
             def get(self):
                 return BuzzStateTests.FakeResponse(self.torrents_list)
 
             def info(self, torrent_id):
                 return BuzzStateTests.FakeResponse(self.torrent_infos.get(torrent_id))
+
+            def add_magnet(self, magnet):
+                self.added_magnets.append(magnet)
+                return BuzzStateTests.FakeResponse({"id": "NEW_TORRENT"})
+
+            def select_files(self, torrent_id, files_str):
+                self.selected_files_calls.append((torrent_id, files_str))
+                return BuzzStateTests.FakeResponse({}, status_code=204)
+
+            def delete(self, torrent_id):
+                self.deleted_ids.append(torrent_id)
+                return BuzzStateTests.FakeResponse({}, status_code=204)
 
     def _create_fake_rd(self):
         torrents_list = [
@@ -298,6 +316,124 @@ class BuzzStateTests(unittest.TestCase):
             )
             self.assertEqual(torrents[0]["selected_files"], 2)
             self.assertEqual(torrents[1]["status"], "downloading")
+
+    def test_add_magnet_persists_original_magnet_in_cache(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
+            )
+            client = self.FakeRD(
+                torrent_infos={
+                    "NEW_TORRENT": {
+                        "id": "NEW_TORRENT",
+                        "hash": "ABC123HASH",
+                        "filename": "Movie.2026.1080p.mkv",
+                        "files": [],
+                    }
+                }
+            )
+            state = BuzzState(config, client=client)
+
+            state.add_magnet("magnet:?xt=urn:btih:ABC123HASH&dn=Movie")
+
+            self.assertEqual(
+                state.cache["NEW_TORRENT"]["magnet"],
+                "magnet:?xt=urn:btih:ABC123HASH&dn=Movie",
+            )
+            row = state.conn.execute(
+                "SELECT magnet FROM torrents WHERE id = ?",
+                ("NEW_TORRENT",),
+            ).fetchone()
+            self.assertEqual(row["magnet"], "magnet:?xt=urn:btih:ABC123HASH&dn=Movie")
+
+    def test_restore_trash_prefers_stored_magnet(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
+            )
+            client = self.FakeRD()
+            state = BuzzState(config, client=client)
+            state.trashcan = {
+                "ABC123HASH": {
+                    "hash": "ABC123HASH",
+                    "name": "Movie.2026.1080p.mkv",
+                    "bytes": 123,
+                    "files": [{"id": 1, "path": "/Movie.2026.1080p.mkv"}],
+                    "deleted_at": "2026-01-01T00:00:00Z",
+                    "magnet": "magnet:?xt=urn:btih:ABC123HASH&dn=Movie",
+                }
+            }
+
+            state.restore_trash("ABC123HASH")
+
+            self.assertEqual(
+                client.torrents.added_magnets,
+                ["magnet:?xt=urn:btih:ABC123HASH&dn=Movie"],
+            )
+
+    def test_restore_trash_falls_back_to_hash_when_magnet_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
+            )
+            client = self.FakeRD()
+            state = BuzzState(config, client=client)
+            state.trashcan = {
+                "ABC123HASH": {
+                    "hash": "ABC123HASH",
+                    "name": "Movie.2026.1080p.mkv",
+                    "bytes": 123,
+                    "files": [],
+                    "deleted_at": "2026-01-01T00:00:00Z",
+                    "magnet": None,
+                }
+            }
+
+            state.restore_trash("ABC123HASH")
+
+            self.assertEqual(
+                client.torrents.added_magnets,
+                ["magnet:?xt=urn:btih:ABC123HASH"],
+            )
 
     def test_lookup_and_children_use_normalized_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -611,6 +747,7 @@ class BuzzStateTests(unittest.TestCase):
             state.cache = {
                 "TORRENT1": {
                     "signature": {"status": "downloaded"},
+                    "magnet": "magnet:?xt=urn:btih:ABC123HASH&dn=Movie",
                     "info": {
                         "id": "TORRENT1",
                         "hash": "ABC123HASH",
@@ -634,7 +771,14 @@ class BuzzStateTests(unittest.TestCase):
             self.assertTrue(report["changed"])
             self.assertEqual(state.cache, {})
             self.assertIn("ABC123HASH", state.trashcan)
-            self.assertEqual(state.trashcan["ABC123HASH"]["name"], "Movie.2026.1080p.mkv")
+            self.assertEqual(
+                state.trashcan["ABC123HASH"]["name"],
+                "Movie.2026.1080p.mkv",
+            )
+            self.assertEqual(
+                state.trashcan["ABC123HASH"]["magnet"],
+                "magnet:?xt=urn:btih:ABC123HASH&dn=Movie",
+            )
 
     @patch("buzz.core.state.record_event")
     @patch("buzz.core.state.subprocess.run")
@@ -938,11 +1082,13 @@ class DavAppTests(unittest.TestCase):
             "Little%20Shop%20of%20Horrors%20%281986%29.mkv"
         )
         node = self.state.lookup(encoded_path)
-        self.assertIsNotNone(node)
+        if node is None:
+            self.fail("Expected encoded DAV path to resolve")
         self.assertEqual(node["size"], 2)
         self.assertEqual(node["content"], "ok")
 
     def test_cache_page_renders_cached_items(self):
+        self.dav_app.config.subtitles.enabled = True
         self.state.cache = {
             "torrent-1": {
                 "signature": {},
@@ -971,6 +1117,10 @@ class DavAppTests(unittest.TestCase):
         self.assertIn("status-downloaded", body)
         self.assertIn('href="/static/buzz.css"', body)
         self.assertIn('src="/static/buzz.js"', body)
+        self.assertIn('id="btn-s-torrent-1"', body)
+        self.assertIn('document.getElementById("btn-x-" + id).style.display', body)
+        self.assertIn('const subtitleButton = document.getElementById("btn-s-" + id);', body)
+        self.assertIn('subtitleButton.style.display = show ? "none" : "flex";', body)
 
     def test_archive_page_renders_shared_assets(self):
         self.state.trashcan = {
@@ -1117,13 +1267,12 @@ class DavAppTests(unittest.TestCase):
         }
 
         with patch("buzz.dav_protocol.request.urlopen", side_effect=response_queue):
-            response, first_chunk = open_remote_media(
-                self.state,
-                self.state.lookup(
-                    "movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv"
-                ),
-                None,
+            node = self.state.lookup(
+                "movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv"
             )
+            if node is None:
+                self.fail("Expected snapshot node for streaming test")
+            response, first_chunk = open_remote_media(self.state, node, None)
             self.assertEqual(first_chunk, b"\x1a\x45\xdf\xa3media-bytes")
             response.close()
 
@@ -1497,6 +1646,24 @@ class ConfigUITests(unittest.TestCase):
         finally:
             os.unlink(base_path)
 
+    def test_presentation_config_load_uses_buzz_state_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            base_path.write_text(
+                (
+                    "provider:\n  token: testtoken\n"
+                    f"state_dir: {tmpdir}/shared-state\n"
+                ),
+                encoding="utf-8",
+            )
+
+            config = CuratorConfig.load(str(base_path))
+
+            self.assertEqual(
+                config.state_dir,
+                Path(tmpdir) / "shared-state",
+            )
+
     def test_config_load_with_overrides(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base_path = Path(tmpdir) / "buzz.yml"
@@ -1516,7 +1683,12 @@ class ConfigUITests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             base_path = Path(tmpdir) / "buzz.yml"
             base_path.write_text(
-                "provider:\n  token: sekrit\nserver:\n  port: 9999\n", encoding="utf-8"
+                (
+                    "provider:\n  token: sekrit\n"
+                    "server:\n  port: 9999\n"
+                    f"state_dir: {tmpdir}\n"
+                ),
+                encoding="utf-8",
             )
             config = Config.load(str(base_path))
             rd_patcher = patch("buzz.dav_app.RD", return_value=DavAppTests.FakeRD())

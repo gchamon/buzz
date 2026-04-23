@@ -6,7 +6,7 @@ import json
 from .core.curator import rebuild_and_trigger
 from .curator_app import run_curator_server
 from .dav_app import run_dav_server
-from .models import DavConfig, PresentationConfig
+from .models import DavConfig, CuratorConfig
 
 
 def main() -> None:
@@ -19,14 +19,14 @@ def main() -> None:
 
     # curator
     curator_parser = subparsers.add_parser(
-        "curator", help="Curator (Presentation Layer)"
+        "curator", help="Curator service"
     )
     curator_sub = curator_parser.add_subparsers(
         dest="subcommand", required=True
     )
 
     curator_sub.add_parser("server", help="Start curator API server")
-    curator_sub.add_parser("sync", help="Run a one-time presentation build")
+    curator_sub.add_parser("sync", help="Run a one-time curator build")
 
     args = parser.parse_args()
 
@@ -34,7 +34,7 @@ def main() -> None:
         config = DavConfig.load()
         run_dav_server(config)
     elif args.command == "curator":
-        config = PresentationConfig.load()
+        config = CuratorConfig.load()
         if args.subcommand == "server":
             run_curator_server(config)
         elif args.subcommand == "sync":

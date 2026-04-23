@@ -4,11 +4,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from buzz.core import db
 from buzz.core.subtitles import (
     _apply_filters,
     _read_subtitle_meta,
     _source_matches_torrent,
-    _subtitle_meta_path,
     _write_subtitle_meta,
     apply_subtitle_overlay,
     fetch_subtitles_for_library,
@@ -16,7 +16,7 @@ from buzz.core.subtitles import (
     rank_subtitles,
     release_similarity,
 )
-from buzz.models import PresentationConfig, SubtitleConfig, SubtitleFilters
+from buzz.models import CuratorConfig, SubtitleConfig, SubtitleFilters
 
 
 class SubtitleTests(unittest.TestCase):
@@ -118,10 +118,10 @@ class SubtitleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = PresentationConfig(
+            config = CuratorConfig(
                 source_root=root / "raw",
                 target_root=root / "curated",
-                state_root=root / "state",
+                state_dir=root / "state",
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs"
             )
@@ -177,10 +177,10 @@ class SubtitleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = PresentationConfig(
+            config = CuratorConfig(
                 source_root=root / "raw",
                 target_root=root / "curated",
-                state_root=root / "state",
+                state_dir=root / "state",
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs"
             )
@@ -211,10 +211,10 @@ class SubtitleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = PresentationConfig(
+            config = CuratorConfig(
                 source_root=root / "raw",
                 target_root=root / "curated",
-                state_root=root / "state",
+                state_dir=root / "state",
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs",
                 jellyfin_api_key="jf_key"
@@ -239,17 +239,34 @@ class SubtitleTests(unittest.TestCase):
     def test_subtitle_meta_helpers(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            sub_path = root / "movie.en.srt"
-            meta_path = _subtitle_meta_path(sub_path)
-            self.assertEqual(meta_path, root / "movie.en.srt.buzz.json")
+            config = CuratorConfig(
+                source_root=root / "raw",
+                target_root=root / "curated",
+                state_dir=root / "state",
+                subtitles=SubtitleConfig(enabled=True, api_key="key"),
+                subtitle_root=root / "subs",
+            )
+            sub_path = config.subtitle_root / "movie.en.srt"
 
             # Read non-existent meta returns None
-            self.assertIsNone(_read_subtitle_meta(sub_path))
+            self.assertIsNone(_read_subtitle_meta(config, sub_path))
 
             # Write and read back
-            _write_subtitle_meta(sub_path, {"file_id": 123, "release": "Test.Release"})
-            self.assertTrue(meta_path.exists())
-            meta = _read_subtitle_meta(sub_path)
+            _write_subtitle_meta(
+                config,
+                sub_path,
+                {"file_id": 123, "release": "Test.Release"},
+            )
+            conn = db.connect(config.state_dir / "buzz.sqlite")
+            db.apply_migrations(conn)
+            try:
+                rows = conn.execute(
+                    "SELECT overlay_path FROM subtitle_metadata"
+                ).fetchall()
+            finally:
+                conn.close()
+            self.assertEqual([row["overlay_path"] for row in rows], ["movie.en.srt"])
+            meta = _read_subtitle_meta(config, sub_path)
             self.assertEqual(meta, {"file_id": 123, "release": "Test.Release"})
 
     @patch("buzz.core.subtitles.trigger_jellyfin_selective_refresh")
@@ -265,10 +282,10 @@ class SubtitleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = PresentationConfig(
+            config = CuratorConfig(
                 source_root=root / "raw",
                 target_root=root / "curated",
-                state_root=root / "state",
+                state_dir=root / "state",
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs"
             )
@@ -277,7 +294,11 @@ class SubtitleTests(unittest.TestCase):
             sub_file = root / "subs/movies/Movie (2024)/Movie (2024).en.srt"
             sub_file.parent.mkdir(parents=True)
             sub_file.write_text("existing content")
-            _write_subtitle_meta(sub_file, {"file_id": 123, "release": "Movie.2024.srt"})
+            _write_subtitle_meta(
+                config,
+                sub_file,
+                {"file_id": 123, "release": "Movie.2024.srt"},
+            )
 
             mapping = [
                 {"type": "movie", "source": "movies/Movie.2024.mkv", "target": "movies/Movie (2024)/Movie (2024).mkv"}
@@ -303,10 +324,10 @@ class SubtitleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = PresentationConfig(
+            config = CuratorConfig(
                 source_root=root / "raw",
                 target_root=root / "curated",
-                state_root=root / "state",
+                state_dir=root / "state",
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs"
             )
@@ -315,7 +336,11 @@ class SubtitleTests(unittest.TestCase):
             sub_file = root / "subs/movies/Movie (2024)/Movie (2024).en.srt"
             sub_file.parent.mkdir(parents=True)
             sub_file.write_text("old content")
-            _write_subtitle_meta(sub_file, {"file_id": 123, "release": "Old.Release"})
+            _write_subtitle_meta(
+                config,
+                sub_file,
+                {"file_id": 123, "release": "Old.Release"},
+            )
 
             mapping = [
                 {"type": "movie", "source": "movies/Movie.2024.mkv", "target": "movies/Movie (2024)/Movie (2024).mkv"}
@@ -329,7 +354,9 @@ class SubtitleTests(unittest.TestCase):
             self.assertEqual(sub_file.read_text(), "new subtitle content")
 
             # Metadata should be updated
-            meta = _read_subtitle_meta(sub_file)
+            meta = _read_subtitle_meta(config, sub_file)
+            if meta is None:
+                self.fail("Expected subtitle metadata after replacement")
             self.assertEqual(meta["file_id"], 999)
             self.assertEqual(meta["release"], "Movie.2024.srt")
 
@@ -350,10 +377,10 @@ class SubtitleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = PresentationConfig(
+            config = CuratorConfig(
                 source_root=root / "raw",
                 target_root=root / "curated",
-                state_root=root / "state",
+                state_dir=root / "state",
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs"
             )
@@ -375,7 +402,9 @@ class SubtitleTests(unittest.TestCase):
             self.assertEqual(sub_file.read_text(), "new subtitle content")
 
             # Metadata should be written
-            meta = _read_subtitle_meta(sub_file)
+            meta = _read_subtitle_meta(config, sub_file)
+            if meta is None:
+                self.fail("Expected subtitle metadata after download")
             self.assertEqual(meta["file_id"], 999)
 
 if __name__ == "__main__":

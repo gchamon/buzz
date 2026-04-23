@@ -10,10 +10,12 @@ import shlex
 import subprocess
 import threading
 import time
+from pathlib import Path
 from typing import Any
 from urllib import parse, request
 
 from ..models import DavConfig
+from . import db
 from .constants import SHOW_PATTERNS
 from .events import record_event
 from .media import is_video_file
@@ -302,16 +304,17 @@ class BuzzState:
         self.builder = LibraryBuilder(config)
         self.lock = threading.RLock()
         self.state_dir = config.state_dir
-        self.cache_path = os.path.join(self.state_dir, "torrent_cache.json")
-        self.trashcan_path = os.path.join(self.state_dir, "trashcan.json")
-        self.snapshot_path = os.path.join(self.state_dir, "library_snapshot.json")
-        self.cache = self._load_json(self.cache_path, default={})
-        self.trashcan = self._load_json(self.trashcan_path, default={})
-        self.snapshot_loaded = os.path.exists(self.snapshot_path)
-        self.snapshot = self._load_json(
-            self.snapshot_path, default={"dirs": [""], "files": {}}
-        )
-        self.snapshot_digest = stable_json(canonical_snapshot(self.snapshot))
+        os.makedirs(self.state_dir, exist_ok=True)
+        db_path = Path(self.state_dir) / "buzz.sqlite"
+        self.conn = db.connect(db_path)
+        db.apply_migrations(self.conn)
+        db.migrate_legacy_files(self.conn, Path(self.state_dir))
+        self.cache = self._load_cache()
+        self.trashcan = self._load_archive()
+        snapshot, digest = self._load_snapshot()
+        self.snapshot = snapshot
+        self.snapshot_digest = digest
+        self.snapshot_loaded = self._snapshot_exists_in_db()
         self.last_sync_at = None
         self.last_report = {}
         self.last_error = None
@@ -325,20 +328,117 @@ class BuzzState:
         self.resolved_urls: dict[str, dict[str, str]] = {}
         self.hook_lock = threading.Lock()
         self.hook_task_active = False
+        self._closed = False
 
-    def _load_json(self, path: str, default: Any) -> Any:
-        try:
-            with open(path, encoding="utf-8") as handle:
-                return json.load(handle)
-        except FileNotFoundError:
-            return default
+    def _snapshot_exists_in_db(self) -> bool:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM library_snapshot"
+        ).fetchone()
+        return bool(row[0])
 
-    def _write_json(self, path: str, payload: Any) -> None:
-        os.makedirs(self.state_dir, exist_ok=True)
-        tmp = f"{path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, sort_keys=True)
-        os.replace(tmp, path)
+    def _load_cache(self) -> dict:
+        rows = self.conn.execute(
+            "SELECT id, signature_json, info_json, magnet FROM torrents"
+        ).fetchall()
+        return {
+            row["id"]: {
+                "signature": json.loads(row["signature_json"]),
+                "info": json.loads(row["info_json"]),
+                "magnet": row["magnet"],
+            }
+            for row in rows
+        }
+
+    def _save_cache_entry(self, torrent_id: str, entry: dict) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO torrents"
+                " (id, signature_json, info_json, updated_at, magnet)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    torrent_id,
+                    json.dumps(entry.get("signature", {})),
+                    json.dumps(entry.get("info", {})),
+                    utc_now_iso(),
+                    entry.get("magnet"),
+                ),
+            )
+
+    def _delete_cache_entry(self, torrent_id: str) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM torrents WHERE id = ?", (torrent_id,))
+
+    def _save_cache(self, new_cache: dict) -> None:
+        """Replace entire torrent cache atomically."""
+        with self.conn:
+            self.conn.execute("DELETE FROM torrents")
+            for torrent_id, entry in new_cache.items():
+                self.conn.execute(
+                    "INSERT INTO torrents "
+                    "(id, signature_json, info_json, updated_at, magnet) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        torrent_id,
+                        json.dumps(entry.get("signature", {})),
+                        json.dumps(entry.get("info", {})),
+                        utc_now_iso(),
+                        entry.get("magnet"),
+                    ),
+                )
+
+    def _load_archive(self) -> dict:
+        rows = self.conn.execute(
+            "SELECT hash, name, bytes, files_json, deleted_at, magnet FROM archive"
+        ).fetchall()
+        return {
+            row["hash"]: {
+                "hash": row["hash"],
+                "name": row["name"],
+                "bytes": row["bytes"],
+                "files": json.loads(row["files_json"] or "[]"),
+                "deleted_at": row["deleted_at"],
+                "magnet": row["magnet"],
+            }
+            for row in rows
+        }
+
+    def _save_archive_entry(self, thash: str, entry: dict) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO archive"
+                " (hash, name, bytes, files_json, deleted_at, magnet)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    thash,
+                    entry.get("name"),
+                    entry.get("bytes"),
+                    json.dumps(entry.get("files", [])),
+                    entry.get("deleted_at", utc_now_iso()),
+                    entry.get("magnet"),
+                ),
+            )
+
+    def _delete_archive_entry(self, thash: str) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM archive WHERE hash = ?", (thash,))
+
+    def _load_snapshot(self) -> tuple[dict, str]:
+        row = self.conn.execute(
+            "SELECT snapshot_json, digest FROM library_snapshot WHERE singleton = 1"
+        ).fetchone()
+        if row is None:
+            default: dict = {"dirs": [""], "files": {}}
+            return default, stable_json(canonical_snapshot(default))
+        snapshot = json.loads(row["snapshot_json"])
+        return snapshot, row["digest"]
+
+    def _save_snapshot(self, snapshot: dict, digest: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO library_snapshot"
+                " (singleton, snapshot_json, digest, generated_at) VALUES (1, ?, ?, ?)",
+                (json.dumps(snapshot), digest, snapshot.get("generated_at", utc_now_iso())),
+            )
 
     def _root_for_snapshot_path(self, path: str) -> str | None:
         normalized = normalize_posix_path(path)
@@ -407,7 +507,12 @@ class BuzzState:
                     info = cached["info"]
                 else:
                     info = self.client.torrents.info(torrent_id).json()
-                new_cache[torrent_id] = {"signature": signature, "info": info}
+                cached_magnet = cached.get("magnet") if cached else None
+                new_cache[torrent_id] = {
+                    "signature": signature,
+                    "info": info,
+                    "magnet": cached_magnet,
+                }
                 infos.append(info)
 
             snapshot, _current_roots = self.builder.build(infos)
@@ -421,7 +526,7 @@ class BuzzState:
                         continue
                     info = cached.get("info")
                     if isinstance(info, dict) and info.get("hash"):
-                        self._add_to_archive(info)
+                        self._add_to_archive(info, magnet=cached.get("magnet"))
 
                 changed = digest != self.snapshot_digest
                 classified_changes = (
@@ -448,12 +553,12 @@ class BuzzState:
                 report["timestamp"] = utc_now_iso()
 
                 self.cache = new_cache
-                self._write_json(self.cache_path, self.cache)
+                self._save_cache(self.cache)
 
                 if changed:
                     self.snapshot = snapshot
                     self.snapshot_digest = digest
-                    self._write_json(self.snapshot_path, self.snapshot)
+                    self._save_snapshot(self.snapshot, self.snapshot_digest)
                     self.snapshot_loaded = True
                     if trigger_hook and (
                         self.config.hook_command or self.config.curator_url
@@ -782,6 +887,13 @@ class BuzzState:
                     already_exists = True
                     break
 
+            self.cache[torrent_id] = {
+                "signature": {},
+                "info": info,
+                "magnet": magnet,
+            }
+            self._save_cache_entry(torrent_id, self.cache[torrent_id])
+
         return {
             "id": torrent_id,
             "filename": filename,
@@ -796,7 +908,7 @@ class BuzzState:
             if cached:
                 info = cached.get("info")
                 if isinstance(info, dict) and info.get("hash"):
-                    self._add_to_archive(info)
+                    self._add_to_archive(info, magnet=cached.get("magnet"))
 
         res = self.client.torrents.delete(torrent_id)
         if res.status_code not in (200, 204):
@@ -805,10 +917,10 @@ class BuzzState:
         with self.lock:
             if torrent_id in self.cache:
                 del self.cache[torrent_id]
-                self._write_json(self.cache_path, self.cache)
+                self._delete_cache_entry(torrent_id)
         return {"status": "success"}
 
-    def _add_to_archive(self, info: TorrentInfo) -> None:
+    def _add_to_archive(self, info: TorrentInfo, magnet: str | None = None) -> None:
         thash = info.get("hash")
         if not thash:
             return
@@ -826,8 +938,9 @@ class BuzzState:
                 if f.get("selected")
             ],
             "deleted_at": utc_now_iso(),
+            "magnet": magnet,
         }
-        self._write_json(self.trashcan_path, self.trashcan)
+        self._save_archive_entry(thash, self.trashcan[thash])
 
     def archive_torrents(self) -> list[TorrentSummary]:
         """Return archived (deleted) torrents sorted by deletion time."""
@@ -841,6 +954,7 @@ class BuzzState:
                         "bytes": entry.get("bytes", 0),
                         "file_count": len(entry.get("files", [])),
                         "deleted_at": entry.get("deleted_at"),
+                        "magnet": entry.get("magnet"),
                     }
                 )
             return sorted(results, key=lambda x: x["deleted_at"] or "", reverse=True)
@@ -852,7 +966,7 @@ class BuzzState:
             if not entry:
                 raise ValueError("Torrent not found in trashcan")
 
-        magnet = f"magnet:?xt=urn:btih:{thash}"
+        magnet = entry.get("magnet") or f"magnet:?xt=urn:btih:{thash}"
         res = self.client.torrents.add_magnet(magnet).json()
         torrent_id = res.get("id")
         if not torrent_id:
@@ -868,7 +982,7 @@ class BuzzState:
         with self.lock:
             if thash in self.trashcan:
                 del self.trashcan[thash]
-                self._write_json(self.trashcan_path, self.trashcan)
+                self._delete_archive_entry(thash)
 
         return {"status": "success", "id": torrent_id}
 
@@ -877,7 +991,7 @@ class BuzzState:
         with self.lock:
             if thash in self.trashcan:
                 del self.trashcan[thash]
-                self._write_json(self.trashcan_path, self.trashcan)
+                self._delete_archive_entry(thash)
         return {"status": "success"}
 
     def select_files(
@@ -928,6 +1042,20 @@ class BuzzState:
         """Log a message at debug level when verbose mode is enabled."""
         if self.config.verbose:
             record_event(message, level="debug")
+
+    def close(self) -> None:
+        """Close the SQLite connection owned by this state instance."""
+        if self._closed:
+            return
+        self.conn.close()
+        self._closed = True
+
+    def __del__(self) -> None:
+        """Best-effort cleanup for tests and short-lived app instances."""
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class Poller(threading.Thread):

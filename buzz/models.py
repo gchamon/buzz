@@ -378,37 +378,56 @@ class DavConfig(BaseModel):
         return config
 
 
-class PresentationConfig(BaseModel):
-    """Configuration for the curator (presentation layer)."""
+class CuratorConfig(BaseModel):
+    """Configuration for the curator service."""
 
     bind: str = Field(
         default_factory=lambda: os.environ.get(
-            "PRESENTATION_BIND", "0.0.0.0"
+            "CURATOR_BIND",
+            os.environ.get("PRESENTATION_BIND", "0.0.0.0"),
         )
     )
     port: int = Field(
         default_factory=lambda: int(
-            os.environ.get("PRESENTATION_PORT", "8400")
+            os.environ.get(
+                "CURATOR_PORT",
+                os.environ.get("PRESENTATION_PORT", "8400"),
+            )
         )
     )
     source_root: Path = Field(
         default_factory=lambda: Path(
-            os.environ.get("PRESENTATION_SOURCE_ROOT", "/mnt/buzz/raw")
+            os.environ.get(
+                "CURATOR_SOURCE_ROOT",
+                os.environ.get("PRESENTATION_SOURCE_ROOT", "/mnt/buzz/raw"),
+            )
         )
     )
     target_root: Path = Field(
         default_factory=lambda: Path(
-            os.environ.get("PRESENTATION_TARGET_ROOT", "/mnt/buzz/curated")
+            os.environ.get(
+                "CURATOR_TARGET_ROOT",
+                os.environ.get("PRESENTATION_TARGET_ROOT", "/mnt/buzz/curated"),
+            )
         )
     )
-    state_root: Path = Field(
+    state_dir: Path = Field(
         default_factory=lambda: Path(
-            os.environ.get("PRESENTATION_STATE_ROOT", "/state")
+            os.environ.get(
+                "CURATOR_STATE_DIR",
+                os.environ.get(
+                    "PRESENTATION_STATE_DIR",
+                    os.environ.get("PRESENTATION_STATE_ROOT", "/app/data"),
+                ),
+            )
         )
     )
     overrides_path: Path = Field(
         default_factory=lambda: Path(
-            os.environ.get("PRESENTATION_OVERRIDES", "/config/overrides.yml")
+            os.environ.get(
+                "CURATOR_OVERRIDES",
+                os.environ.get("PRESENTATION_OVERRIDES", "/config/overrides.yml"),
+            )
         )
     )
     jellyfin_url: str = Field(
@@ -434,21 +453,30 @@ class PresentationConfig(BaseModel):
     )
     skip_jellyfin_scan: bool = Field(
         default_factory=lambda: _env_flag(
+            "CURATOR_SKIP_JELLYFIN_SCAN"
+        ) or _env_flag(
             "PRESENTATION_SKIP_JELLYFIN_SCAN"
         )
     )
     build_on_start: bool = Field(
         default_factory=lambda: (
-            os.environ.get("PRESENTATION_BUILD_ON_START", "true").lower()
+            os.environ.get(
+                "CURATOR_BUILD_ON_START",
+                os.environ.get("PRESENTATION_BUILD_ON_START", "true"),
+            ).lower()
             in {"1", "true", "yes"}
         )
     )
     verbose: bool = Field(
-        default_factory=lambda: _env_flag("PRESENTATION_VERBOSE")
+        default_factory=lambda: _env_flag("CURATOR_VERBOSE")
+        or _env_flag("PRESENTATION_VERBOSE")
     )
     log_max_entries: int = Field(
         default_factory=lambda: int(
-            os.environ.get("PRESENTATION_LOG_MAX_ENTRIES", "1000")
+            os.environ.get(
+                "CURATOR_LOG_MAX_ENTRIES",
+                os.environ.get("PRESENTATION_LOG_MAX_ENTRIES", "1000"),
+            )
         )
     )
     subtitles: SubtitleConfig = Field(default_factory=SubtitleConfig)
@@ -459,7 +487,7 @@ class PresentationConfig(BaseModel):
     )
 
     @classmethod
-    def load(cls, path: str | None = None) -> PresentationConfig:
+    def load(cls, path: str | None = None) -> CuratorConfig:
         """Load from env defaults and optional buzz.yml subtitle config."""
         data: dict = {}
         config_path = path or os.environ.get("BUZZ_CONFIG", "/app/buzz.yml")
@@ -468,6 +496,8 @@ class PresentationConfig(BaseModel):
             try:
                 with open(config_path, encoding="utf-8") as handle:
                     raw = yaml.safe_load(handle) or {}
+                if "state_dir" in raw:
+                    data["state_dir"] = Path(str(raw["state_dir"]))
                 if "subtitles" in raw:
                     data["subtitles"] = SubtitleConfig.from_raw(
                         raw["subtitles"]
@@ -482,6 +512,9 @@ class PresentationConfig(BaseModel):
             data["subtitles"] = SubtitleConfig.from_env()
 
         return cls(**data)
+
+
+PresentationConfig = CuratorConfig
 
 
 class ErrorResponse(BaseModel):

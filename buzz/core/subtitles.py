@@ -1,6 +1,5 @@
 """Subtitle search, download, and overlay management for Buzz."""
 
-import json
 import os
 import re
 import threading
@@ -10,7 +9,8 @@ from typing import Any
 
 import httpx
 
-from ..models import PresentationConfig, SubtitleConfig, SubtitleFilters
+from ..models import CuratorConfig, SubtitleConfig, SubtitleFilters
+from . import db
 from .events import record_event
 from .media import VIDEO_EXTENSIONS
 from .media_server import trigger_jellyfin_selective_refresh
@@ -395,31 +395,44 @@ def _source_matches_torrent(source: str, torrent_name: str) -> bool:
     return len(parts) >= 2 and parts[1] == torrent_name
 
 
-def _subtitle_meta_path(overlay_path: Path) -> Path:
-    """Return the path for the subtitle metadata sidecar file."""
-    return overlay_path.with_suffix(overlay_path.suffix + ".buzz.json")
+def _open_state_db(config: CuratorConfig):
+    """Open the curator state database with migrations applied."""
+    config.state_dir.mkdir(parents=True, exist_ok=True)
+    conn = db.connect(config.state_dir / "buzz.sqlite")
+    db.apply_migrations(conn)
+    return conn
 
 
-def _read_subtitle_meta(overlay_path: Path) -> dict | None:
-    """Read subtitle metadata if it exists."""
-    meta_path = _subtitle_meta_path(overlay_path)
-    if meta_path.exists():
-        try:
-            return json.loads(meta_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
-    return None
+def _read_subtitle_meta(
+    config: CuratorConfig, overlay_path: Path
+) -> dict | None:
+    """Read subtitle metadata from the SQLite state store."""
+    conn = _open_state_db(config)
+    try:
+        overlay_key = db.subtitle_overlay_key(
+            config.subtitle_root, overlay_path
+        )
+        return db.get_subtitle_metadata(conn, overlay_key)
+    finally:
+        conn.close()
 
 
-def _write_subtitle_meta(overlay_path: Path, meta: dict) -> None:
-    """Write subtitle metadata sidecar file."""
-    meta_path = _subtitle_meta_path(overlay_path)
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
-    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+def _write_subtitle_meta(
+    config: CuratorConfig, overlay_path: Path, meta: dict
+) -> None:
+    """Write subtitle metadata into the SQLite state store."""
+    conn = _open_state_db(config)
+    try:
+        overlay_key = db.subtitle_overlay_key(
+            config.subtitle_root, overlay_path
+        )
+        db.upsert_subtitle_metadata(conn, overlay_key, meta)
+    finally:
+        conn.close()
 
 
 def fetch_subtitles_for_library(
-    config: PresentationConfig,
+    config: CuratorConfig,
     mapping: list[dict] | None = None,
     torrent_name: str | None = None,
 ) -> None:
@@ -428,11 +441,12 @@ def fetch_subtitles_for_library(
         return
 
     if mapping is None:
-        mapping_path = config.state_root / "mapping.json"
-        if not mapping_path.exists():
-            return
-        mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
-        if not isinstance(mapping, list):
+        conn = _open_state_db(config)
+        try:
+            mapping = db.load_curator_mapping(conn)
+        finally:
+            conn.close()
+        if not mapping:
             return
 
     if torrent_name:
@@ -600,7 +614,7 @@ def fetch_subtitles_for_library(
 
                         # Check if we already have this exact subtitle
                         if overlay_path.exists():
-                            meta = _read_subtitle_meta(overlay_path)
+                            meta = _read_subtitle_meta(config, overlay_path)
                             if meta and meta.get("file_id") == file_id:
                                 print(
                                     f"[SUBS] Subtitle already "
@@ -640,6 +654,7 @@ def fetch_subtitles_for_library(
                         )
                         overlay_path.write_bytes(content)
                         _write_subtitle_meta(
+                            config,
                             overlay_path,
                             {"file_id": file_id, "release": release},
                         )
@@ -747,7 +762,7 @@ def apply_subtitle_overlay(
 
 
 def background_fetch_subtitles(
-    config: PresentationConfig,
+    config: CuratorConfig,
     torrent_name: str | None = None,
 ) -> None:
     """Start a background thread to fetch subtitles."""

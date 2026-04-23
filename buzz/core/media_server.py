@@ -3,12 +3,12 @@
 import json
 from urllib import error, request
 
-from ..models import PresentationConfig
+from ..models import CuratorConfig
 from .events import record_event
 from .state import is_internal_category
 
 
-def discover_scan_task_id(config: PresentationConfig) -> str:
+def discover_scan_task_id(config: CuratorConfig) -> str:
     """Return the Jellyfin scan task ID, discovering it if necessary."""
     if config.jellyfin_scan_task_id:
         return config.jellyfin_scan_task_id
@@ -35,7 +35,7 @@ def discover_scan_task_id(config: PresentationConfig) -> str:
     )
 
 
-def validate_jellyfin_auth(config: PresentationConfig) -> bool:
+def validate_jellyfin_auth(config: CuratorConfig) -> bool:
     """Verify that the Jellyfin API key is valid."""
     req = request.Request(
         f"{config.jellyfin_url}/System/Info",
@@ -54,7 +54,7 @@ def validate_jellyfin_auth(config: PresentationConfig) -> bool:
         return False
 
 
-def discover_jellyfin_libraries(config: PresentationConfig) -> dict[str, str]:
+def discover_jellyfin_libraries(config: CuratorConfig) -> dict[str, str]:
     """Return a map of library Name -> ItemId."""
     req = request.Request(
         f"{config.jellyfin_url}/Library/VirtualFolders",
@@ -71,7 +71,7 @@ def discover_jellyfin_libraries(config: PresentationConfig) -> dict[str, str]:
     }
 
 
-def trigger_jellyfin_scan(config: PresentationConfig) -> None:
+def trigger_jellyfin_scan(config: CuratorConfig) -> None:
     """Trigger a full Jellyfin media library scan."""
     task_id = discover_scan_task_id(config)
     req = request.Request(
@@ -86,7 +86,7 @@ def trigger_jellyfin_scan(config: PresentationConfig) -> None:
 
 
 def trigger_jellyfin_selective_refresh(
-    config: PresentationConfig, changed_roots: list[str]
+    config: CuratorConfig, changed_roots: list[str]
 ) -> None:
     """Trigger selective refreshes for Jellyfin libraries matching changed roots."""
     if not changed_roots:

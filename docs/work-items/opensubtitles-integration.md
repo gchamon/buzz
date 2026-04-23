@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned
+done
 
 ## Outcome
 
@@ -39,7 +39,7 @@ hearing-impaired, AI-translated, and machine-translated tracks.
 - Auth flow: API key (header `Api-Key`) is used for all requests. A JWT from
   `/login` is acquired (requiring username and password) once per curator
   process run and is required for downloads.
-  Credentials live in `PresentationConfig` via env vars
+  Credentials live in `CuratorConfig` via env vars
   (`OPENSUBTITLES_API_KEY`, `OPENSUBTITLES_USERNAME`,
   `OPENSUBTITLES_PASSWORD`).
 - Five ranking strategies are supported — `best-match`, `most-downloaded`,
@@ -50,7 +50,7 @@ hearing-impaired, AI-translated, and machine-translated tracks.
   tokenize both the source filename and the subtitle `release` field on
   `.`, `-`, `_`, space, then score `|intersection| / |union|`. This naturally
   matches resolution, codec, and release group tokens without a regex library.
-- `SubtitleConfig` is a new Pydantic model nested under `PresentationConfig`.
+- `SubtitleConfig` is a new Pydantic model nested under `CuratorConfig`.
   It is disabled by default (`enabled: false`) so no API calls are made unless
   the operator explicitly opts in and provides credentials.
 - Subtitle fetch is spawned as a background thread in `rebuild_and_trigger()`
@@ -67,7 +67,7 @@ hearing-impaired, AI-translated, and machine-translated tracks.
     (`hearing_impaired`, `exclude_ai`, `exclude_machine`),
     `search_delay_secs`, `download_delay_secs`.
   - Add `subtitles: SubtitleConfig` and `subtitle_root: Path` (default
-    `/mnt/buzz/subs`) to `PresentationConfig`, sourced from env vars.
+    `/mnt/buzz/subs`) to `CuratorConfig`, sourced from env vars.
   - Add the `subtitles:` block to `buzz.dist.yml` with all defaults shown and
     `enabled: false`.
   - Add env var stubs to `.env.dist`:

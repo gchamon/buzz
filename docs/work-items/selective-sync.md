@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned
+done
 
 ## Outcome
 
@@ -29,7 +29,7 @@ blocked by the contract chosen here.
   actual refresh. The scheduled-task call stays as the fallback when discovery
   fails or when `changed_roots` is empty (cold start, manual rebuild).
 - Library-root → Jellyfin-library mapping resolves by matching
-  `VirtualFolders.Locations` against `PRESENTATION_TARGET_ROOT/<root>`; no
+  `VirtualFolders.Locations` against `CURATOR_TARGET_ROOT/<root>`; no
   user configuration is required when the curator's target layout matches the
   Jellyfin library paths. A `media_server.library_map` override in `buzz.yml`
   covers non-conforming setups.
@@ -56,7 +56,7 @@ blocked by the contract chosen here.
   - Add `discover_library_map(config)` that calls
     `GET /Library/VirtualFolders` and returns `{root_name: library_id}`
     keyed on the last path segment of each `Locations` entry that lives under
-    `PRESENTATION_TARGET_ROOT`.
+    `CURATOR_TARGET_ROOT`.
   - Rewrite `trigger_jellyfin_scan(config, changed_roots)` so that:
     - an empty `changed_roots`, a discovery failure, or an empty map falls
       back to the existing "Scan Media Library" scheduled task (`jellyfin_
@@ -65,7 +65,7 @@ blocked by the contract chosen here.
       ImageRefreshMode=Default&MetadataRefreshMode=Default` for each matched
       library and records the set in the report
       (`jellyfin_scan_scope="selective"`)
-- Extend the `PresentationConfig` / `buzz.yml` model in `buzz/models.py` with
+- Extend the `CuratorConfig` / `buzz.yml` model in `buzz/models.py` with
   an optional `media_server.library_map` that overrides discovery.
 - Extend the curator rebuild report to include `jellyfin_scan_scope` and
   `jellyfin_scan_targets`.

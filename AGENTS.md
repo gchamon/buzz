@@ -128,6 +128,17 @@ Code tells you *how*, but documentation tells you *why*.
 * **Docstrings:** Write descriptive docstrings for all public modules, functions, classes, and methods. Use a standard format like Google, NumPy, or Sphinx.
 * **Comments:** Use inline comments sparingly. If your code is too complex to understand without comments, it might need to be refactored or renamed for clarity.
 
+#### 8. Database Access
+
+Machine-managed persistent state lives in `buzz.sqlite`.
+
+* Open SQLite state through `buzz.core.db.connect()` and run
+  `buzz.core.db.apply_migrations()` before use.
+* Prefer repository helpers in `buzz.core.db` over ad-hoc SQL in business
+  logic modules.
+* Keep user-edited configuration in YAML/JSON files; use SQLite for machine
+  state only.
+
 #### Personal preferences
 
 Less is more: a cleaner, simpler approach over lots of features and "production ready" code. The idea is to start simple, see what needs improvement and then do it in a second run.

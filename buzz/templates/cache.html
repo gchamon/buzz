@@ -117,7 +117,8 @@
             <td>
               <div class="delete-container">
                 {% if subtitle_enabled %}
-                <div class="btn-s" data-torrent-name="{{ torrent.name }}" onclick="fetchSubsForTorrent(this.dataset.torrentName, this)"
+                <div class="btn-s" id="btn-s-{{ torrent.id }}" data-torrent-name="{{ torrent.name }}"
+                  onclick="fetchSubsForTorrent(this.dataset.torrentName, this)"
                   title="Fetch subtitles">[S]</div>
                 {% endif %}
                 <div class="confirm-opts" id="confirm-{{ torrent.id }}">
@@ -359,6 +360,10 @@
     function toggleDelete(id, show) {
       document.getElementById("confirm-" + id).style.display = show ? "flex" : "none";
       document.getElementById("btn-x-" + id).style.display = show ? "none" : "flex";
+      const subtitleButton = document.getElementById("btn-s-" + id);
+      if (subtitleButton) {
+        subtitleButton.style.display = show ? "none" : "flex";
+      }
     }
 
     async function deleteTorrent(id, el) {

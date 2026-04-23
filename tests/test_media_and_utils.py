@@ -39,7 +39,8 @@ class FormatBytesTests(unittest.TestCase):
 class ParseMovieTests(unittest.TestCase):
     def test_simple_movie(self):
         result = parse_movie("The.Matrix.1999.1080p.mkv")
-        self.assertIsNotNone(result)
+        if result is None:
+            self.fail("Expected movie parse result")
         self.assertEqual(result["title"], "The Matrix")
         self.assertEqual(result["year"], 1999)
 
@@ -51,7 +52,8 @@ class ParseMovieTests(unittest.TestCase):
         result = parse_movie(
             "The.Movie.mkv", folder="The Movie 2020 BluRay"
         )
-        self.assertIsNotNone(result)
+        if result is None:
+            self.fail("Expected movie parse result from folder")
         self.assertEqual(result["year"], 2020)
 
     def test_no_year_returns_none(self):
@@ -60,21 +62,24 @@ class ParseMovieTests(unittest.TestCase):
     def test_stem_with_year_at_start(self):
         """Cases like '2001 - A Space Odyssey' should work."""
         result = parse_movie("2001.A.Space.Odyssey.1968.mkv")
-        self.assertIsNotNone(result)
+        if result is None:
+            self.fail("Expected movie parse result for year-at-start title")
         self.assertEqual(result["year"], 1968)
 
 
 class ParseShowTests(unittest.TestCase):
     def test_standard_pattern(self):
         result = parse_show("Show.Name.S03E12.1080p.mkv")
-        self.assertIsNotNone(result)
+        if result is None:
+            self.fail("Expected show parse result")
         self.assertEqual(result["series"], "Show Name")
         self.assertEqual(result["season"], 3)
         self.assertEqual(result["episode"], 12)
 
     def test_alternate_pattern(self):
         result = parse_show("Show.Name.2x05.1080p.mkv")
-        self.assertIsNotNone(result)
+        if result is None:
+            self.fail("Expected alternate show parse result")
         self.assertEqual(result["series"], "Show Name")
         self.assertEqual(result["season"], 2)
         self.assertEqual(result["episode"], 5)

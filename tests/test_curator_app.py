@@ -7,23 +7,24 @@ from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
+from buzz.core import db
 from buzz.core.curator import RebuildError, build_library, rebuild_and_trigger
 from buzz.curator_app import CuratorApp
-from buzz.models import PresentationConfig
+from buzz.models import CuratorConfig
 
 
 class CuratorAppTests(unittest.TestCase):
-    def _config(self, root: Path, **overrides) -> PresentationConfig:
+    def _config(self, root: Path, **overrides) -> CuratorConfig:
         defaults = {
             "source_root": root / "raw",
             "target_root": root / "curated",
-            "state_root": root / "state",
+            "state_dir": root / "state",
             "overrides_path": root / "overrides.yml",
             "skip_jellyfin_scan": True,
             "build_on_start": False,
         }
         defaults.update(overrides)
-        return PresentationConfig(
+        return CuratorConfig(
             **defaults,
         )
 
@@ -36,7 +37,7 @@ class CuratorAppTests(unittest.TestCase):
         anime.mkdir(parents=True, exist_ok=True)
         (movies / "Movie.2026.1080p.mkv").write_text("video", encoding="utf-8")
 
-    def test_build_library_accepts_canonical_presentation_config(self):
+    def test_build_library_accepts_canonical_curator_config(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / "raw" / "movies").mkdir(parents=True)
@@ -81,13 +82,19 @@ class CuratorAppTests(unittest.TestCase):
                     response = client.get("/healthz")
 
             self.assertEqual(response.status_code, 200)
-            self.assertTrue((root / "state" / "report.json").exists())
+            conn = db.connect(root / "state" / "buzz.sqlite")
+            db.apply_migrations(conn)
+            try:
+                report = db.load_curator_report(conn)
+            finally:
+                conn.close()
+            self.assertIsNotNone(report)
 
     def test_curator_subtitle_fetch_uses_consistent_torrent_name(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            state_root = root / "state"
-            state_root.mkdir(parents=True)
+            state_dir = root / "state"
+            state_dir.mkdir(parents=True)
 
             # Torrent name logic: original_filename or filename
             # raw tree uses _torrent_name() which prefers original_filename
@@ -115,7 +122,7 @@ class CuratorAppTests(unittest.TestCase):
                 "ended": "2024-04-21"
             }
 
-            dav_config = DavConfig(state_dir=str(state_root), token="test-token")
+            dav_config = DavConfig(state_dir=str(state_dir), token="test-token")
             state = BuzzState(dav_config, mock_client)
 
             # Manually seed cache since update() doesn't exist (it's part of sync())
