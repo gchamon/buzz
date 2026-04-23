@@ -122,6 +122,23 @@ sequenceDiagram
 2.  `buzz-dav` immediately polls the RD API, bypassing the interval.
 3.  If changes are found, it proceeds with snapshot generation and hook execution immediately.
 
+## Operator UI Integration
+
+The operator-facing HTML pages now use a split architecture:
+
+1.  FastAPI remains the outer application shell for `/dav`, health checks, and
+    machine-facing JSON endpoints such as `/api/cache/*`, `/api/config`, and
+    `/sync`.
+2.  A small embedded `PyView` application is initialized inside `DavApp` and
+    its routes are appended into the same ASGI router for `/archive`, `/logs`,
+    and `/config`.
+3.  `PyView`'s websocket endpoint lives at `/live/websocket`, and its bundled
+    frontend asset is mounted separately at `/pyview/assets/app.js` so it does
+    not collide with Buzz's existing `/static` directory.
+4.  The live views call the same in-process state and config helpers used by
+    the REST handlers, which keeps the mutation boundary shallow and makes the
+    UI layer reversible if `pyview-web` proves to be the wrong fit.
+
 ## Subtitle Integration
 
 Buzz integrates directly with OpenSubtitles.com REST API v2 to automatically fetch subtitles for your media.

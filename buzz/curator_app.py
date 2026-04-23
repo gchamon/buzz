@@ -1,7 +1,9 @@
 """FastAPI application for the curator service."""
 
+import json
 import traceback
 from contextlib import asynccontextmanager
+from urllib import request
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -29,6 +31,7 @@ class CuratorApp:
 
         self.config = config
         self.curator = Curator(config)
+        registry.add_listener(self._notify_dav_ui)
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
@@ -133,6 +136,34 @@ class CuratorApp:
                 self.config, torrent_name=torrent_name
             )
             return {"status": "triggered"}
+
+    def _notify_dav_ui(self, event: dict) -> None:
+        if not self.config.dav_ui_notify_url:
+            return
+
+        payload = {
+            "topics": ["logs", "status"],
+            "message": {
+                "source": "curator",
+                "event": event.get("event"),
+                "level": event.get("level"),
+            },
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = request.Request(
+            self.config.dav_ui_notify_url,
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with request.urlopen(req, timeout=2) as response:
+                if response.status not in (200, 204):
+                    raise ValueError(
+                        f"DAV UI notify returned HTTP {response.status}"
+                    )
+        except Exception:
+            pass
 
 
 def run_curator_server(config: CuratorConfig) -> None:

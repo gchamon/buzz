@@ -35,6 +35,11 @@ and machine-facing POST endpoints. The adoption boundary is the operator UI.
   as confirmation prompts, pending mutations, selected torrent rows, filter
   values, and transient feedback should live in the live-view context instead
   of being reconstructed from manual DOM mutations and `localStorage`.
+- **Require backend-driven live updates over websocket pushes.** Operator
+  pages should not rely on client polling, heartbeat timers, or browser-owned
+  refresh loops to discover state changes. When Real-Debrid syncs, archive
+  contents change, logs append, or config status changes, the server should
+  push the resulting live-view updates over the `pyview` websocket connection.
 - **Preserve the current visual language during the migration.** This work
   item is an interaction-model change, not a redesign. Existing copy, tables,
   CSS classes, and keyboard-sized actions (`[X]`, `[S]`, `[R]`, `[D]`) should
@@ -65,10 +70,19 @@ and machine-facing POST endpoints. The adoption boundary is the operator UI.
   - keep support for legacy archive rows with `NULL` magnet values
   - preserve current restore semantics: prefer stored magnet when present,
     fall back to `magnet:?xt=urn:btih:<hash>`
+  - react to archive changes through server-pushed live-view updates, not
+    client-side polling
 - **Logs and config migration**:
   - replace polling-heavy DOM code with live updates driven through `pyview`
+    websocket pushes from the backend
   - keep the same operator-visible controls and status surfaces
   - ensure config save, restart-required notices, and log filtering still work
+- **Live update plumbing**:
+  - connect Buzz's backend change sources (sync completion, archive mutations,
+    new log events, config save status) to `pyview` so connected sessions are
+    updated proactively
+  - avoid page-local timers, periodic `pushEvent("refresh")` hooks, and
+    equivalent browser polling loops for operator state refresh
 - **Cleanup and simplification**:
   - remove superseded Jinja templates and page-specific inline JavaScript once
     each page is migrated
@@ -90,6 +104,8 @@ and machine-facing POST endpoints. The adoption boundary is the operator UI.
   live view.
 - Archive restore/delete, logs inspection, and config editing continue to work
   with the same operator-facing behavior as before the migration.
+- Archive counts, log surfaces, and other operator-visible status views update
+  in response to backend state changes without requiring browser polling.
 - The resulting UI code is materially smaller or simpler than the combined
   Jinja-plus-inline-JS implementation it replaces.
 - New or updated tests cover the migrated UI behavior, and the Python type

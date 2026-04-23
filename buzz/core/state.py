@@ -297,7 +297,12 @@ class LibraryBuilder:
 class BuzzState:
     """Thread-safe cache of torrent state, snapshot, and Real-Debrid sync."""
 
-    def __init__(self, config: DavConfig, client: Any) -> None:
+    def __init__(
+        self,
+        config: DavConfig,
+        client: Any,
+        on_ui_change: Any | None = None,
+    ) -> None:
         """Initialize state storage and load persisted data from disk."""
         self.config = config
         self.client = client
@@ -329,6 +334,7 @@ class BuzzState:
         self.hook_lock = threading.Lock()
         self.hook_task_active = False
         self._closed = False
+        self.on_ui_change = on_ui_change
 
     def _snapshot_exists_in_db(self) -> bool:
         row = self.conn.execute(
@@ -486,6 +492,7 @@ class BuzzState:
     def sync(self, *, trigger_hook: bool = True) -> SyncReport:
         """Sync torrent state with Real-Debrid and rebuild the snapshot."""
         hook_paths: list[str] = []
+        should_notify = False
         with self.lock:
             self.sync_in_progress = True
         try:
@@ -560,6 +567,7 @@ class BuzzState:
                     self.snapshot_digest = digest
                     self._save_snapshot(self.snapshot, self.snapshot_digest)
                     self.snapshot_loaded = True
+                    should_notify = True
                     if trigger_hook and (
                         self.config.hook_command or self.config.curator_url
                     ):
@@ -570,6 +578,8 @@ class BuzzState:
                 self.last_error = None
             if hook_paths:
                 self._enqueue_hook(hook_paths)
+            if should_notify:
+                self._notify_ui_change("sync")
             return report
         except Exception as exc:
             with self.lock:
@@ -918,6 +928,7 @@ class BuzzState:
             if torrent_id in self.cache:
                 del self.cache[torrent_id]
                 self._delete_cache_entry(torrent_id)
+        self._notify_ui_change("archive")
         return {"status": "success"}
 
     def _add_to_archive(self, info: TorrentInfo, magnet: str | None = None) -> None:
@@ -983,6 +994,7 @@ class BuzzState:
             if thash in self.trashcan:
                 del self.trashcan[thash]
                 self._delete_archive_entry(thash)
+        self._notify_ui_change("archive")
 
         return {"status": "success", "id": torrent_id}
 
@@ -992,7 +1004,16 @@ class BuzzState:
             if thash in self.trashcan:
                 del self.trashcan[thash]
                 self._delete_archive_entry(thash)
+        self._notify_ui_change("archive")
         return {"status": "success"}
+
+    def _notify_ui_change(self, topic: str) -> None:
+        if self.on_ui_change is None:
+            return
+        try:
+            self.on_ui_change(topic)
+        except Exception:
+            pass
 
     def select_files(
         self, torrent_id: str, file_ids: list[str]

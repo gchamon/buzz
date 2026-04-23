@@ -3,6 +3,7 @@
 import json
 import threading
 from collections import deque
+from collections.abc import Callable
 from typing import Any
 
 from .utils import utc_now_iso
@@ -20,6 +21,7 @@ class EventRegistry:
         self.events = deque(maxlen=maxlen)
         self.lock = threading.Lock()
         self.default_source = default_source
+        self.listeners: list[Callable[[dict[str, Any]], None]] = []
 
     def record(
         self,
@@ -39,6 +41,13 @@ class EventRegistry:
             del event["source"]
         with self.lock:
             self.events.append(event)
+            listeners = list(self.listeners)
+
+        for listener in listeners:
+            try:
+                listener(event)
+            except Exception:
+                pass
 
         # Also print to stdout for legacy logging and visibility
         prefix = f"[{level.upper()}]" if level != "info" else ""
@@ -56,6 +65,11 @@ class EventRegistry:
         """Resize the ring buffer, preserving existing events."""
         with self.lock:
             self.events = deque(self.events, maxlen=maxlen)
+
+    def add_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
+        """Register a callback invoked after each event is recorded."""
+        with self.lock:
+            self.listeners.append(listener)
 
 
 # Global registry for the process

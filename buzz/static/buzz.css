@@ -400,6 +400,11 @@ code {
   font-weight: bold;
   padding: 0;
   color: var(--comment);
+  background: transparent;
+  border: none;
+  text-transform: none;
+  font-size: inherit;
+  font-family: inherit;
 }
 
 .btn-r:hover {

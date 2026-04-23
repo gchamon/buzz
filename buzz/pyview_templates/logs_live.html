@@ -1,0 +1,110 @@
+<main>
+  <div class="prompt">
+    <b>buzz:</b>
+    <div class="menu-options">
+      <a href="/cache" class="nav-link">🪎 cache</a>
+      <span class="nav-sep">◈</span>
+      <a href="/archive" class="nav-link" id="nav-archive">
+        <i class="fa-solid fa-box-archive nav-icon" aria-hidden="true"></i>
+        archive(<span id="nav-archive-count">{{ nav.archive_count }}</span>)
+      </a>
+      <span class="nav-sep">◈</span>
+      <a href="/logs" class="nav-link active" id="nav-logs">
+        📜 logs(<span id="nav-log-count">{{ nav.log_count }}</span>)
+      </a>
+      <span class="nav-sep">◈</span>
+      <a href="/config" class="nav-link">⚙️ config</a>
+    </div>
+  </div>
+
+  <div class="meta-bar">
+    <div class="meta-row">
+      {% for item in meta_items %}
+      <div class="meta-item">
+        <b class="meta-item-label">[{{ item.label }}]</b>
+        <span>{{ item.value }}</span>
+      </div>
+      {% endfor %}
+      <div class="meta-item">
+        {% if is_ready %}
+        <b id="status-ready-label" class="service-status-green">[ready]</b>
+        {% else %}
+        <b id="status-ready-label" class="service-status-orange">[starting]</b>
+        {% endif %}
+      </div>
+    </div>
+    <div class="meta-row meta-console">
+      <b class="meta-item-label">console:</b>
+      <span id="meta-console-msg" class="{{ console_class }}">{{ console_msg }}</span>
+    </div>
+  </div>
+
+  {% if has_error %}
+  <div class="error"><span class="label-red">[ERROR]</span> {{ last_error }}</div>
+  {% endif %}
+
+  <section class="logs-page-container" aria-labelledby="logs-title">
+    <div class="logs-header">
+      <h1 class="logs-title" id="logs-title">System Logs</h1>
+      <div class="logs-header-btns">
+        {% if confirm_restart %}
+        <button
+          type="button"
+          class="secondary btn-sm btn-restart"
+          phx-click="restart"
+        >CONFIRM RESTART</button>
+        <button
+          type="button"
+          class="secondary btn-sm"
+          phx-click="cancel_restart"
+        >CANCEL</button>
+        {% else %}
+        <button
+          type="button"
+          class="secondary btn-sm btn-restart"
+          phx-click="prompt_restart"
+        >RESTART STACK</button>
+        {% endif %}
+        <button
+          type="button"
+          class="secondary btn-sm"
+          onclick="buzzCopyVisibleLogs()"
+        >COPY</button>
+        <button
+          type="button"
+          class="secondary btn-sm"
+          phx-click="refresh"
+        >REFRESH</button>
+        <button
+          type="button"
+          class="secondary btn-sm"
+          phx-click="toggle_auto_refresh"
+        >
+          {% if auto_refresh %}AUTO ON{% else %}AUTO OFF{% endif %}
+        </button>
+      </div>
+    </div>
+    <div class="log-container" id="log-container" role="log" aria-live="polite">
+      {% for log in log_items %}
+      <div class="log-entry" data-copy-text="{{ log.copy_text }}">
+        <div class="log-content">
+          <span class="log-source">{{ log.source }}</span>
+          <span class="log-ts">{{ log.timestamp }}</span>
+          <span class="log-level {{ log.level_class }}">{{ log.level_label }}</span>
+          <span class="log-message">{{ log.message }}</span>
+        </div>
+        <button
+          type="button"
+          class="log-copy-btn"
+          data-copy-text="{{ log.copy_text }}"
+          title="Copy line"
+          aria-label="Copy log line"
+          onclick="buzzCopyLogLine(this)"
+        >
+          <i class="fa-regular fa-copy"></i>
+        </button>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+</main>
