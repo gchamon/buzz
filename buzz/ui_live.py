@@ -14,7 +14,7 @@ from pyview import (
     PyView,
     is_connected,
 )
-from pyview.events import InfoEvent
+from pyview.events import InfoEvent, info
 from pyview.template import LiveRender, RenderedContent, template_file
 
 from .core.utils import format_bytes
@@ -55,6 +55,7 @@ class PageNav(TypedDict):
     logs_active: bool
     config_active: bool
     log_count: int
+    log_level: str
 
 
 class PageContext(TypedDict):
@@ -296,7 +297,22 @@ class _BaseBuzzLiveView(LiveView[PageContext]):
             "logs_active": self.page_name == "logs",
             "config_active": self.page_name == "config",
             "log_count": self.owner.log_count(),
+            "log_level": self._highest_log_level(),
         }
+
+    def _highest_log_level(self) -> str:
+        from .core.events import registry
+
+        logs = registry.get_recent(limit=50)
+        priority = {"error": 3, "warning": 2, "info": 1, "debug": 0}
+        highest = priority.get(self.owner._curator_log_level, 0)
+        for log in logs:
+            level = str(log.get("level", "info")).lower()
+            highest = max(highest, priority.get(level, 0))
+        for level, p in priority.items():
+            if p == highest:
+                return level
+        return "info"
 
     def _meta_items(self) -> list[PageItem]:
         status = self.owner.state.status()
@@ -333,6 +349,13 @@ class _BaseBuzzLiveView(LiveView[PageContext]):
         _session: dict[str, Any],
     ) -> None:
         socket.live_title = self.page_title
+        if is_connected(socket):
+            await socket.subscribe("buzz:status")
+
+    @info("buzz:status")
+    async def handle_status(self, _event: InfoEvent, _socket: LiveViewSocket[PageContext]) -> None:
+        """Re-render nav when curator sends a status update."""
+        pass
 
 
 class CacheLiveView(_BaseBuzzLiveView):
@@ -747,6 +770,7 @@ class LogsLiveView(_BaseBuzzLiveView):
         session: dict[str, Any],
     ) -> None:
         await super().mount(socket, session)
+        self.owner._curator_log_level = "info"
         socket.context = self._context()
         if is_connected(socket):
             await socket.subscribe("buzz:status")
@@ -782,8 +806,6 @@ class LogsLiveView(_BaseBuzzLiveView):
         socket: ConnectedLiveViewSocket[LogsContext],
     ) -> None:
         if event.name not in {"buzz:logs", "buzz:status"}:
-            return
-        if event.name == "buzz:logs" and not socket.context["auto_refresh"]:
             return
         if event.name == "buzz:status" and not socket.context["auto_refresh"]:
             base = self._base_context(

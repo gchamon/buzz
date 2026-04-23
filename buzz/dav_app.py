@@ -76,6 +76,7 @@ class DavApp:
         self.state = BuzzState(config, self.client, on_ui_change=self._notify_ui_change)
         self.opensubtitles_languages = _fetch_opensubtitles_languages()
         self.ui = build_ui(self)
+        self._curator_log_level: str = "info"
         registry.add_listener(self._handle_recorded_event)
 
         @asynccontextmanager
@@ -172,6 +173,19 @@ class DavApp:
 
         @self.app.post("/api/ui/notify")
         def ui_notify(payload: UiNotifyRequest):
+            msg = str(payload.message.get("message", ""))
+            level = str(payload.message.get("level", "info")).lower()
+            source = str(payload.message.get("source", "dav"))
+            event_name = str(payload.message.get("event", ""))
+            priority = {"error": 3, "warning": 2, "info": 1, "debug": 0}
+            if priority.get(level, 0) > priority.get(self._curator_log_level, 0):
+                self._curator_log_level = level
+            record_event(
+                msg,
+                level=level,
+                source=source,
+                event=event_name or None,
+            )
             for topic in payload.topics:
                 self._notify_ui_topic(
                     f"buzz:{topic}",
@@ -566,29 +580,11 @@ class DavApp:
         )
 
     def get_logs(self, limit: int = 100) -> list[dict]:
-        import httpx
-
         from .core.events import registry
 
         logs = registry.get_recent(limit)
         for log in logs:
             log.setdefault("source", "dav")
-
-        if self.config.curator_url:
-            try:
-                curator_logs_url = self.config.curator_url.replace(
-                    "/rebuild",
-                    "/api/logs",
-                )
-                with httpx.Client(timeout=2.0) as client:
-                    resp = client.get(f"{curator_logs_url}?limit={limit}")
-                    if resp.status_code == 200:
-                        curator_logs = resp.json()
-                        for log in curator_logs:
-                            log.setdefault("source", "curator")
-                        logs.extend(curator_logs)
-            except Exception:  # noqa: BLE001
-                pass
 
         logs.sort(key=lambda item: item.get("timestamp", ""))
         return logs[-limit:]
@@ -619,24 +615,9 @@ class DavApp:
         return formatted
 
     def log_count(self) -> int:
-        import httpx
-
         from .core.events import registry
 
-        total = len(registry.events)
-        if not self.config.curator_url:
-            return total
-
-        try:
-            count_url = self.config.curator_url.replace("/rebuild", "/api/logs/count")
-            with httpx.Client(timeout=1.0) as client:
-                resp = client.get(count_url)
-                if resp.status_code == 200:
-                    total += int(resp.json().get("count", 0))
-        except Exception:  # noqa: BLE001
-            pass
-
-        return total
+        return len(registry.events)
 
     def restart_service(self) -> None:
         record_event("Restart requested via API", level="warning")

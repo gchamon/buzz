@@ -102,7 +102,7 @@ if (typeof window !== "undefined") {
         const countSpan = document.getElementById("nav-log-count");
         const logCount = parseInt(countSpan?.innerText || "0", 10);
         localStorage.setItem("buzz_seen_logs", String(logCount));
-        this.el.classList.remove("nav-logs-new");
+        this._clearGlow();
       };
       this.el.addEventListener("click", this._onClick);
     },
@@ -112,19 +112,37 @@ if (typeof window !== "undefined") {
     destroyed() {
       this.el.removeEventListener("click", this._onClick);
     },
+    _clearGlow() {
+      this.el.classList.remove("nav-logs-new-warning", "nav-logs-new-error");
+    },
+    _setGlow(level) {
+      this._clearGlow();
+      if (level === "error") {
+        this.el.classList.add("nav-logs-new-error");
+      } else if (level === "warning") {
+        this.el.classList.add("nav-logs-new-warning");
+      }
+    },
     _updateGlow() {
       const countSpan = document.getElementById("nav-log-count");
       const logCount = parseInt(countSpan?.innerText || "0", 10);
+      const currentLevel = this.el.dataset.logLevel || "info";
       const isLogsPage = window.location.pathname === "/logs";
       if (isLogsPage) {
         localStorage.setItem("buzz_seen_logs", String(logCount));
-        this.el.classList.remove("nav-logs-new");
+        this._clearGlow();
         return;
       }
       const seenLogs = parseInt(
         localStorage.getItem("buzz_seen_logs") || "0", 10
       );
-      this.el.classList.toggle("nav-logs-new", logCount > seenLogs);
+      const priority = { error: 3, warning: 2, info: 1, debug: 0 };
+      const currentP = priority[currentLevel] || 0;
+      if (logCount > seenLogs && currentP >= 2) {
+        this._setGlow(currentLevel);
+      } else {
+        this._clearGlow();
+      }
     },
   };
 

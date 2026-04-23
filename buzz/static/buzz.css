@@ -74,13 +74,13 @@ main {
   text-shadow: 0 0 5px rgba(80, 250, 123, 0.5);
 }
 
-.nav-logs-new {
+.nav-logs-new-warning {
   color: var(--orange) !important;
   text-shadow: 0 0 10px rgba(255, 184, 108, 0.8) !important;
-  animation: log-glow 2s infinite ease-in-out;
+  animation: log-glow-warning 2s infinite ease-in-out;
 }
 
-@keyframes log-glow {
+@keyframes log-glow-warning {
 
   0%,
   100% {
@@ -89,6 +89,24 @@ main {
 
   50% {
     text-shadow: 0 0 15px rgba(255, 184, 108, 0.9);
+  }
+}
+
+.nav-logs-new-error {
+  color: var(--red) !important;
+  text-shadow: 0 0 10px rgba(255, 85, 85, 0.8) !important;
+  animation: log-glow-error 2s infinite ease-in-out;
+}
+
+@keyframes log-glow-error {
+
+  0%,
+  100% {
+    text-shadow: 0 0 5px rgba(255, 85, 85, 0.5);
+  }
+
+  50% {
+    text-shadow: 0 0 15px rgba(255, 85, 85, 0.9);
   }
 }
 

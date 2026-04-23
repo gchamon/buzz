@@ -66,7 +66,7 @@ class CuratorAppTests(unittest.TestCase):
             self.assertEqual(health.status_code, 200)
             self.assertEqual(health.json(), {"status": "ok"})
             self.assertEqual(rebuild.status_code, 200)
-            self.assertEqual(rebuild.json()["movies"], 0)
+            self.assertEqual(rebuild.json(), {"status": "rebuilding"})
 
     def test_curator_lifespan_runs_startup_build(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -164,7 +164,7 @@ class CuratorAppTests(unittest.TestCase):
             source_path = f"movies/{original_filename}/{filename}"
             self.assertTrue(_source_matches_torrent(source_path, original_filename))
 
-    def test_curator_rebuild_error_payload_is_preserved(self):
+    def test_curator_rebuild_returns_immediately(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / "raw" / "movies").mkdir(parents=True)
@@ -174,6 +174,20 @@ class CuratorAppTests(unittest.TestCase):
             app = CuratorApp(self._config(root))
             client = TestClient(app.app)
 
+            response = client.post("/rebuild")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"status": "rebuilding"})
+
+    def test_curator_rebuild_error_is_logged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "raw" / "movies").mkdir(parents=True)
+            (root / "raw" / "shows").mkdir(parents=True)
+            (root / "raw" / "anime").mkdir(parents=True)
+
+            app = CuratorApp(self._config(root))
+
             with patch.object(
                 app.curator,
                 "handle_rebuild",
@@ -182,12 +196,11 @@ class CuratorAppTests(unittest.TestCase):
                     {"jellyfin_scan_status": "failed", "jellyfin_scan_triggered": False},
                 ),
             ):
-                with patch("sys.stdout", io.StringIO()):
-                    response = client.post("/rebuild")
+                with patch("sys.stdout", io.StringIO()) as stdout:
+                    app._run_rebuild([])
 
-            self.assertEqual(response.status_code, 500)
-            self.assertEqual(response.json()["error"], "scan failed")
-            self.assertEqual(response.json()["jellyfin_scan_status"], "failed")
+            logged = stdout.getvalue()
+            self.assertIn("curator rebuild failed: scan failed", logged)
 
     def test_rebuild_and_trigger_skips_scan_when_configured(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -376,8 +389,8 @@ class CuratorAppTests(unittest.TestCase):
                 with patch("sys.stdout", stdout):
                     response = client.post("/rebuild")
 
-            self.assertEqual(response.status_code, 500)
-            self.assertEqual(response.json()["error"], "boom")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"status": "rebuilding"})
             logged = stdout.getvalue()
             self.assertIn("curator rebuild failed: boom", logged)
 

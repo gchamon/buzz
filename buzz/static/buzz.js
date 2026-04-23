@@ -315,8 +315,6 @@ document.addEventListener("click", async (event) => {
 });
 
 async function pollStatus() {
-  const navLogs = getBuzzElement(buzzPageConfig.navLogsId);
-
   try {
     const res = await fetch("/healthz");
     if (!res.ok) {
@@ -331,28 +329,6 @@ async function pollStatus() {
       syncInProgress: Boolean(data.sync_in_progress),
     });
     zookeeper.apply(uiState);
-    if (navLogs) {
-      const logCount = uiState.logCount || 0;
-      
-      const isLogsPage = window.location.pathname === "/logs";
-      
-      if (isLogsPage) {
-        localStorage.setItem("buzz_seen_logs", logCount.toString());
-        localStorage.setItem("buzz_logs_glow", "false");
-        navLogs.classList.remove("nav-logs-new");
-      } else {
-        const seenLogs = parseInt(localStorage.getItem("buzz_seen_logs") || "0");
-        if (logCount > seenLogs) {
-          localStorage.setItem("buzz_logs_glow", "true");
-        }
-        
-        if (localStorage.getItem("buzz_logs_glow") === "true") {
-          navLogs.classList.add("nav-logs-new");
-        } else {
-          navLogs.classList.remove("nav-logs-new");
-        }
-      }
-    }
     setReadyLabel(data.snapshot_loaded, false);
   } catch (err) {
     setReadyLabel(false, true);

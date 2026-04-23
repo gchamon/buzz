@@ -9,7 +9,7 @@
         archive(<span id="nav-archive-count">{{ nav.archive_count }}</span>)
       </a>
       <span class="nav-sep">◈</span>
-      <a href="/logs" class="nav-link" id="nav-logs" phx-hook="BuzzLogGlow">
+      <a href="/logs" class="nav-link" id="nav-logs" phx-hook="BuzzLogGlow" data-log-level="{{ nav.log_level }}">
         📜 logs(<span id="nav-log-count">{{ nav.log_count }}</span>)
       </a>
       <span class="nav-sep">◈</span>
