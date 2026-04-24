@@ -161,23 +161,20 @@ For a deep dive into how Buzz works, components, and data flow, see the [Archite
 
 ## Development
 
-- DAV service code lives in [buzz/dav_app.py](./buzz/dav_app.py).
-- Curator service code lives in [buzz/curator_app.py](./buzz/curator_app.py).
-- The container image is built from [buzz/Dockerfile](./buzz/Dockerfile).
-- **Local Development:** Use the development override to mount your local code directly into the containers (`- ./:/app`):
-  ```sh
-  docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
-  ```
-  Source changes take effect immediately after a service restart (`docker compose restart buzz-dav`) without rebuilding the image.
-- **Isolated Development VM:** You can also deploy an isolated development environment using [Incus](./docs/incus-dev-vm.md).
-- **Production (Default):** Running `docker compose up -d` uses the stable, immutable code baked into the container image. To rebuild the production image after code changes, use `docker compose up -d --build`.
-- **Tests:** Run tests locally with:
-  ```sh
-  uv run python -m unittest discover -s tests
-  ```
-- **Linting:** We use `htmlhint` to enforce clean HTML templates and forbid inline styles. A `.htmlhintrc` is provided in the root directory.
-  ```sh
-  # Run linting on all templates
-  npx htmlhint "buzz/pyview_templates/*.html"
-  ```
-- **Config Migration:** Config migration helper lives in [scripts/migrate_config.py](./scripts/migrate_config.py).
+The DAV service lives in [`buzz/dav_app.py`](./buzz/dav_app.py) and the curator service in [`buzz/curator_app.py`](./buzz/curator_app.py); the container image is built from [`buzz/Dockerfile`](./buzz/Dockerfile).
+
+For everyday hacking, use the development override [`docker-compose.dev.yml`](./docker-compose.dev.yml) to mount your local code directly into the containers (`- ./:/app`):
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+```
+
+Source changes take effect immediately after restarting the service (`docker compose restart buzz-dav`) without rebuilding the image. If you prefer an isolated environment, you can spin up a full development VM with [Incus](./docs/incus-dev-vm.md). In production, `docker compose up -d` runs the stable, immutable code baked into the image; rebuild it after changes with `docker compose up -d --build`.
+
+Run the test suite locally with `uv run python -m unittest discover -s tests`. We also keep templates clean with `htmlhint` (configured via `.htmlhintrc` in the root):
+
+```sh
+npx htmlhint "buzz/pyview_templates/*.html"
+```
+
+If you are migrating from an older configuration format, the helper in [`scripts/migrate_config.py`](./scripts/migrate_config.py) can assist with the conversion.
