@@ -26,11 +26,7 @@
       </div>
       {% endfor %}
       <div class="meta-item">
-        {% if is_ready %}
-        <b id="status-ready-label" class="service-status-green">[ready]</b>
-        {% else %}
-        <b id="status-ready-label" class="service-status-orange">[starting]</b>
-        {% endif %}
+        <b id="status-ready-label" class="{{ status_class }}">{{ status_label }}</b>
       </div>
     </div>
     <div class="meta-row meta-console">
@@ -47,24 +43,6 @@
     <div class="logs-header">
       <h1 class="logs-title" id="logs-title">System Logs</h1>
       <div class="logs-header-btns">
-        {% if confirm_restart %}
-        <button
-          type="button"
-          class="secondary btn-sm btn-restart"
-          phx-click="restart"
-        >CONFIRM RESTART</button>
-        <button
-          type="button"
-          class="secondary btn-sm"
-          phx-click="cancel_restart"
-        >CANCEL</button>
-        {% else %}
-        <button
-          type="button"
-          class="secondary btn-sm btn-restart"
-          phx-click="prompt_restart"
-        >RESTART STACK</button>
-        {% endif %}
         <button
           type="button"
           class="secondary btn-sm"

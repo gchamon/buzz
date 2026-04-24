@@ -12,7 +12,7 @@ RUN apk add --no-cache \
   libxml2-utils
 
 # Install dependencies first to improve Docker layer caching
-COPY pyproject.toml README.md /app/
+COPY pyproject.toml README.md buzz.dist.yml /app/
 RUN mkdir -p /app/buzz/core && touch /app/buzz/__init__.py /app/buzz/core/__init__.py
 RUN uv pip install --system .
 

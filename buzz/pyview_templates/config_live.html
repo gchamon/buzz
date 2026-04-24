@@ -26,11 +26,7 @@
       </div>
       {% endfor %}
       <div class="meta-item">
-        {% if is_ready %}
-        <b id="status-ready-label" class="service-status-green">[ready]</b>
-        {% else %}
-        <b id="status-ready-label" class="service-status-orange">[starting]</b>
-        {% endif %}
+        <b id="status-ready-label" class="{{ status_class }}">{{ status_label }}</b>
       </div>
     </div>
     <div class="meta-row meta-console">
@@ -47,24 +43,27 @@
   <section class="config-page-container" id="edit-overrides-section">
     <div class="config-header">
       <h1 class="config-title">Edit Overrides</h1>
-      <button type="button" class="secondary" phx-click="cancel">CANCEL</button>
+      <div class="logs-header-btns">
+        <button type="button" class="secondary" phx-click="cancel">CANCEL</button>
+        {% if has_overrides %}
+        <button type="button" class="secondary" phx-click="restore_defaults">RESTORE DEFAULTS</button>
+        {% endif %}
+      </div>
     </div>
 
     <div id="edit-overrides-panel" class="config-panel-body">
       <div class="config-scrollable">
-        {% if restart_required %}
-        <div id="restart-banner" class="restart-banner">
-          <span>
-            Configuration saved. Restart required for changes to take effect.
-          </span>
+        <div class="config-legend">
+          <span class="config-pill config-pill-dirty">unsaved change</span>
+          <span class="config-pill config-pill-overridden">overridden via UI</span>
         </div>
-        {% endif %}
 
-        <form id="config-form" class="config-form" phx-submit="save">
+        <form id="config-form" class="config-form" phx-submit="save" phx-change="preview">
           <fieldset class="config-section">
             <legend>Polling</legend>
-            <div class="config-field">
+            <div class="config-field {{ field_states.poll_interval_secs.css_class }}">
               <label for="poll_interval_secs">poll_interval_secs</label>
+              <span class="config-reload-mode">{{ field_states.poll_interval_secs.reload_mode }}</span>
               <input
                 type="number"
                 id="poll_interval_secs"
@@ -76,8 +75,9 @@
 
           <fieldset class="config-section">
             <legend>Server</legend>
-            <div class="config-field">
+            <div class="config-field {{ field_states.server_bind.css_class }}">
               <label for="server.bind">bind</label>
+              <span class="config-reload-mode">{{ field_states.server_bind.reload_mode }}</span>
               <input
                 type="text"
                 id="server.bind"
@@ -85,8 +85,9 @@
                 value="{{ values.bind }}"
               >
             </div>
-            <div class="config-field">
+            <div class="config-field {{ field_states.server_port.css_class }}">
               <label for="server.port">port</label>
+              <span class="config-reload-mode">{{ field_states.server_port.reload_mode }}</span>
               <input
                 type="number"
                 id="server.port"
@@ -94,8 +95,9 @@
                 value="{{ values.port }}"
               >
             </div>
-            <div class="config-field">
+            <div class="config-field {{ field_states.server_stream_buffer_size.css_class }}">
               <label for="server.stream_buffer_size">stream_buffer_size</label>
+              <span class="config-reload-mode">{{ field_states.server_stream_buffer_size.reload_mode }}</span>
               <input
                 type="number"
                 id="server.stream_buffer_size"
@@ -107,8 +109,9 @@
 
           <fieldset class="config-section">
             <legend>Hooks</legend>
-            <div class="config-field">
+            <div class="config-field {{ field_states.hooks_on_library_change.css_class }}">
               <label for="hooks.on_library_change">on_library_change</label>
+              <span class="config-reload-mode">{{ field_states.hooks_on_library_change.reload_mode }}</span>
               <input
                 type="text"
                 id="hooks.on_library_change"
@@ -116,8 +119,9 @@
                 value="{{ values.on_library_change }}"
               >
             </div>
-            <div class="config-field">
+            <div class="config-field {{ field_states.hooks_curator_url.css_class }}">
               <label for="hooks.curator_url">curator_url</label>
+              <span class="config-reload-mode">{{ field_states.hooks_curator_url.reload_mode }}</span>
               <input
                 type="text"
                 id="hooks.curator_url"
@@ -125,8 +129,9 @@
                 value="{{ values.curator_url }}"
               >
             </div>
-            <div class="config-field">
+            <div class="config-field {{ field_states.hooks_rd_update_delay_secs.css_class }}">
               <label for="hooks.rd_update_delay_secs">rd_update_delay_secs</label>
+              <span class="config-reload-mode">{{ field_states.hooks_rd_update_delay_secs.reload_mode }}</span>
               <input
                 type="number"
                 id="hooks.rd_update_delay_secs"
@@ -138,7 +143,7 @@
 
           <fieldset class="config-section">
             <legend>Compatibility</legend>
-            <div class="config-field checkbox-field">
+            <div class="config-field checkbox-field {{ field_states.compat_enable_all_dir.css_class }}">
               <input
                 type="checkbox"
                 id="compat.enable_all_dir"
@@ -146,8 +151,9 @@
                 {% if values.enable_all_dir %}checked{% endif %}
               >
               <label for="compat.enable_all_dir">enable_all_dir</label>
+              <span class="config-reload-mode">{{ field_states.compat_enable_all_dir.reload_mode }}</span>
             </div>
-            <div class="config-field checkbox-field">
+            <div class="config-field checkbox-field {{ field_states.compat_enable_unplayable_dir.css_class }}">
               <input
                 type="checkbox"
                 id="compat.enable_unplayable_dir"
@@ -155,13 +161,15 @@
                 {% if values.enable_unplayable_dir %}checked{% endif %}
               >
               <label for="compat.enable_unplayable_dir">enable_unplayable_dir</label>
+              <span class="config-reload-mode">{{ field_states.compat_enable_unplayable_dir.reload_mode }}</span>
             </div>
           </fieldset>
 
           <fieldset class="config-section">
             <legend>Directories / Anime</legend>
-            <div class="config-field">
+            <div class="config-field {{ field_states.directories_anime_patterns.css_class }}">
               <label for="directories.anime.patterns">patterns (one per line)</label>
+              <span class="config-reload-mode">{{ field_states.directories_anime_patterns.reload_mode }}</span>
               <textarea
                 id="directories.anime.patterns"
                 name="directories.anime.patterns"
@@ -172,8 +180,9 @@
 
           <fieldset class="config-section">
             <legend>Request</legend>
-            <div class="config-field">
+            <div class="config-field {{ field_states.request_timeout_secs.css_class }}">
               <label for="request_timeout_secs">request_timeout_secs</label>
+              <span class="config-reload-mode">{{ field_states.request_timeout_secs.reload_mode }}</span>
               <input
                 type="number"
                 id="request_timeout_secs"
@@ -181,17 +190,9 @@
                 value="{{ values.request_timeout_secs }}"
               >
             </div>
-            <div class="config-field">
-              <label for="user_agent">user_agent</label>
-              <input
-                type="text"
-                id="user_agent"
-                name="user_agent"
-                value="{{ values.user_agent }}"
-              >
-            </div>
-            <div class="config-field">
+            <div class="config-field {{ field_states.version_label.css_class }}">
               <label for="version_label">version_label</label>
+              <span class="config-reload-mode">{{ field_states.version_label.reload_mode }}</span>
               <input
                 type="text"
                 id="version_label"
@@ -202,21 +203,8 @@
           </fieldset>
 
           <fieldset class="config-section">
-            <legend>UI</legend>
-            <div class="config-field">
-              <label for="ui.poll_interval_secs">poll_interval_secs</label>
-              <input
-                type="number"
-                id="ui.poll_interval_secs"
-                name="ui.poll_interval_secs"
-                value="{{ values.ui_poll_interval_secs }}"
-              >
-            </div>
-          </fieldset>
-
-          <fieldset class="config-section">
             <legend>Logging</legend>
-            <div class="config-field checkbox-field">
+            <div class="config-field checkbox-field {{ field_states.logging_verbose.css_class }}">
               <input
                 type="checkbox"
                 id="logging.verbose"
@@ -224,12 +212,13 @@
                 {% if values.verbose %}checked{% endif %}
               >
               <label for="logging.verbose">verbose</label>
+              <span class="config-reload-mode">{{ field_states.logging_verbose.reload_mode }}</span>
             </div>
           </fieldset>
 
           <fieldset class="config-section">
             <legend>Subtitles</legend>
-            <div class="config-field checkbox-field">
+            <div class="config-field checkbox-field {{ field_states.subtitles_enabled.css_class }}">
               <input
                 type="checkbox"
                 id="subtitles.enabled"
@@ -237,8 +226,9 @@
                 {% if values.subtitles_enabled %}checked{% endif %}
               >
               <label for="subtitles.enabled">enabled</label>
+              <span class="config-reload-mode">{{ field_states.subtitles_enabled.reload_mode }}</span>
             </div>
-            <div class="config-field checkbox-field">
+            <div class="config-field checkbox-field {{ field_states.subtitles_fetch_on_resync.css_class }}">
               <input
                 type="checkbox"
                 id="subtitles.fetch_on_resync"
@@ -246,9 +236,11 @@
                 {% if values.fetch_on_resync %}checked{% endif %}
               >
               <label for="subtitles.fetch_on_resync">fetch_on_resync</label>
+              <span class="config-reload-mode">{{ field_states.subtitles_fetch_on_resync.reload_mode }}</span>
             </div>
-            <div class="config-field">
+            <div class="config-field {{ field_states.subtitles_languages.css_class }}">
               <label for="lang-list">languages</label>
+              <span class="config-reload-mode">{{ field_states.subtitles_languages.reload_mode }}</span>
               <input
                 type="text"
                 id="language_query"
@@ -272,8 +264,9 @@
                 {% endfor %}
               </div>
             </div>
-            <div class="config-field">
+            <div class="config-field {{ field_states.subtitles_strategy.css_class }}">
               <label for="subtitles.strategy">strategy</label>
+              <span class="config-reload-mode">{{ field_states.subtitles_strategy.reload_mode }}</span>
               <select
                 id="subtitles.strategy"
                 name="subtitles.strategy"
@@ -300,10 +293,11 @@
                 >latest</option>
               </select>
             </div>
-            <div class="config-field">
+            <div class="config-field {{ field_states.subtitles_filters_hearing_impaired.css_class }}">
               <label for="subtitles.filters.hearing_impaired">
                 hearing_impaired
               </label>
+              <span class="config-reload-mode">{{ field_states.subtitles_filters_hearing_impaired.reload_mode }}</span>
               <select
                 id="subtitles.filters.hearing_impaired"
                 name="subtitles.filters.hearing_impaired"
@@ -322,7 +316,7 @@
                 >prefer</option>
               </select>
             </div>
-            <div class="config-field checkbox-field">
+            <div class="config-field checkbox-field {{ field_states.subtitles_filters_exclude_ai.css_class }}">
               <input
                 type="checkbox"
                 id="subtitles.filters.exclude_ai"
@@ -330,8 +324,9 @@
                 {% if values.exclude_ai %}checked{% endif %}
               >
               <label for="subtitles.filters.exclude_ai">exclude_ai</label>
+              <span class="config-reload-mode">{{ field_states.subtitles_filters_exclude_ai.reload_mode }}</span>
             </div>
-            <div class="config-field checkbox-field">
+            <div class="config-field checkbox-field {{ field_states.subtitles_filters_exclude_machine.css_class }}">
               <input
                 type="checkbox"
                 id="subtitles.filters.exclude_machine"
@@ -339,9 +334,11 @@
                 {% if values.exclude_machine %}checked{% endif %}
               >
               <label for="subtitles.filters.exclude_machine">exclude_machine</label>
+              <span class="config-reload-mode">{{ field_states.subtitles_filters_exclude_machine.reload_mode }}</span>
             </div>
-            <div class="config-field">
+            <div class="config-field {{ field_states.subtitles_search_delay_secs.css_class }}">
               <label for="subtitles.search_delay_secs">search_delay_secs</label>
+              <span class="config-reload-mode">{{ field_states.subtitles_search_delay_secs.reload_mode }}</span>
               <input
                 type="number"
                 id="subtitles.search_delay_secs"
@@ -349,10 +346,11 @@
                 value="{{ values.search_delay_secs }}"
               >
             </div>
-            <div class="config-field">
+            <div class="config-field {{ field_states.subtitles_download_delay_secs.css_class }}">
               <label for="subtitles.download_delay_secs">
                 download_delay_secs
               </label>
+              <span class="config-reload-mode">{{ field_states.subtitles_download_delay_secs.reload_mode }}</span>
               <input
                 type="number"
                 id="subtitles.download_delay_secs"

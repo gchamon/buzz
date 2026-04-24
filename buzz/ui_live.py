@@ -18,7 +18,18 @@ from pyview.events import InfoEvent, info
 from pyview.template import LiveRender, RenderedContent, template_file
 
 from .core.utils import format_bytes
-from .models import mask_secrets, save_overrides, to_nested_dict
+from .models import (
+    HOT_RELOADABLE_FIELDS,
+    RESTART_REQUIRED_FIELDS,
+    UI_MANAGED_CONFIG_FIELDS,
+    deep_merge,
+    diff_fields,
+    effective_override_field_paths,
+    load_base_and_overrides,
+    mask_secrets,
+    override_field_paths,
+    to_nested_dict,
+)
 
 _TEMPLATE_DIR = Path(__file__).with_name("pyview_templates")
 
@@ -37,7 +48,30 @@ _CONFIG_NUMBER_FIELDS = (
     "server.stream_buffer_size",
     "hooks.rd_update_delay_secs",
     "request_timeout_secs",
-    "ui.poll_interval_secs",
+    "subtitles.search_delay_secs",
+    "subtitles.download_delay_secs",
+)
+_CONFIG_TRACKED_FIELDS = (
+    "poll_interval_secs",
+    "server.bind",
+    "server.port",
+    "server.stream_buffer_size",
+    "hooks.on_library_change",
+    "hooks.curator_url",
+    "hooks.rd_update_delay_secs",
+    "compat.enable_all_dir",
+    "compat.enable_unplayable_dir",
+    "directories.anime.patterns",
+    "request_timeout_secs",
+    "logging.verbose",
+    "version_label",
+    "subtitles.enabled",
+    "subtitles.fetch_on_resync",
+    "subtitles.languages",
+    "subtitles.strategy",
+    "subtitles.filters.hearing_impaired",
+    "subtitles.filters.exclude_ai",
+    "subtitles.filters.exclude_machine",
     "subtitles.search_delay_secs",
     "subtitles.download_delay_secs",
 )
@@ -66,6 +100,8 @@ class PageContext(TypedDict):
     last_error: str
     meta_items: list[PageItem]
     nav: PageNav
+    status_class: str
+    status_label: str
 
 
 class CacheFileItem(TypedDict):
@@ -140,7 +176,6 @@ class LogItem(TypedDict):
 
 class LogsContext(PageContext):
     auto_refresh: bool
-    confirm_restart: bool
     log_items: list[LogItem]
     logs_loaded: bool
 
@@ -168,21 +203,31 @@ class ConfigValues(TypedDict):
     request_timeout_secs: int
     rd_update_delay_secs: int
     search_delay_secs: int
+    selected_languages: list[str]
     stream_buffer_size: int
     strategy: str
     subtitles_enabled: bool
-    ui_poll_interval_secs: int
-    user_agent: str
     verbose: bool
     version_label: str
 
 
+class ConfigFieldState(TypedDict):
+    css_class: str
+    is_dirty: bool
+    is_overridden: bool
+    reload_mode: str
+
+
 class ConfigContext(PageContext):
+    draft_payload: dict[str, Any]
     effective_yaml: str
+    field_states: dict[str, ConfigFieldState]
+    has_overrides: bool
     is_editing: bool
     language_query: str
     languages: list[ConfigLanguage]
     restart_required: bool
+    restart_required_fields: list[str]
     values: ConfigValues
 
 
@@ -323,14 +368,25 @@ class _BaseBuzzLiveView(LiveView[PageContext]):
         console_class: str = "",
     ) -> PageContext:
         status = self.owner.state.status()
+        restart_required = bool(getattr(self.owner, "restart_required", False))
+        status_label = "[ready]"
+        status_class = "service-status-green"
+        if restart_required:
+            status_label = "[restart required]"
+            status_class = "service-status-yellow"
+        elif not self.owner.is_ready():
+            status_label = "[starting]"
+            status_class = "service-status-orange"
         context: PageContext = {
             "console_class": console_class,
             "console_msg": console_msg,
             "has_error": bool(status.get("last_error")),
-            "is_ready": self.owner.state.is_ready(),
+            "is_ready": self.owner.is_ready(),
             "last_error": status.get("last_error") or "",
             "meta_items": self._meta_items(),
             "nav": self._nav(),
+            "status_class": status_class,
+            "status_label": status_label,
         }
         return context
 
@@ -792,16 +848,6 @@ class LogsLiveView(_BaseBuzzLiveView):
             else:
                 await socket.pub_sub.unsubscribe_topic_async("buzz:logs")
             return
-        if event == "prompt_restart":
-            socket.context["confirm_restart"] = True
-            return
-        if event == "cancel_restart":
-            socket.context["confirm_restart"] = False
-            return
-        if event == "restart":
-            socket.context["console_msg"] = "restarting service..."
-            socket.context["console_class"] = "service-status-orange"
-            self.owner.restart_service()
 
     async def handle_info(
         self,
@@ -820,7 +866,6 @@ class LogsLiveView(_BaseBuzzLiveView):
                 {
                     **base,
                     "auto_refresh": socket.context["auto_refresh"],
-                    "confirm_restart": socket.context["confirm_restart"],
                     "log_items": socket.context["log_items"],
                     "logs_loaded": socket.context["logs_loaded"],
                 },
@@ -828,7 +873,6 @@ class LogsLiveView(_BaseBuzzLiveView):
             return
         socket.context = self._context(
             auto_refresh=socket.context["auto_refresh"],
-            confirm_restart=socket.context["confirm_restart"],
         )
 
     async def render(
@@ -841,7 +885,6 @@ class LogsLiveView(_BaseBuzzLiveView):
     def _context(
         self,
         auto_refresh: bool = True,
-        confirm_restart: bool = False,
     ) -> LogsContext:
         base = self._base_context()
         return cast(
@@ -849,7 +892,6 @@ class LogsLiveView(_BaseBuzzLiveView):
             {
                 **base,
                 "auto_refresh": auto_refresh,
-                "confirm_restart": confirm_restart,
                 "log_items": self.owner.formatted_logs(limit=100),
                 "logs_loaded": True,
             },
@@ -875,7 +917,7 @@ class ConfigLiveView(_BaseBuzzLiveView):
         self,
         event: str,
         socket: ConnectedLiveViewSocket[ConfigContext],
-        payload: dict[str, Any],
+        payload: dict[str, Any] | None = None,
         to: str = "",
         language_query: str = "",
     ) -> None:
@@ -883,35 +925,58 @@ class ConfigLiveView(_BaseBuzzLiveView):
             await socket.push_navigate(to)
             return
         if event == "edit":
-            socket.context["is_editing"] = True
-            return
-        if event == "cancel":
-            socket.context["is_editing"] = False
-            socket.context["restart_required"] = False
-            socket.context["console_msg"] = ""
-            socket.context["console_class"] = ""
-            return
-        if event == "filter_languages":
             socket.context = self._context(
                 is_editing=True,
-                language_query=language_query,
-                restart_required=socket.context["restart_required"],
+                draft_payload=socket.context["draft_payload"],
+                language_query=socket.context["language_query"],
                 console_msg=socket.context["console_msg"],
                 console_class=socket.context["console_class"],
             )
             return
+        if event == "cancel":
+            socket.context = self._context()
+            return
+        if event in {"filter_languages", "preview"}:
+            form_payload = payload or {}
+            socket.context = self._context(
+                is_editing=True,
+                draft_payload=form_payload,
+                language_query=form_payload.get("language_query", language_query),
+                console_msg=socket.context["console_msg"],
+                console_class=socket.context["console_class"],
+            )
+            return
+        if event == "restore_defaults":
+            result = self.owner.persist_overrides({})
+            socket.context = self._context(
+                is_editing=False,
+                console_msg="defaults restored.",
+                console_class="service-status-green",
+            )
+            if result["restart_required"]:
+                socket.context["console_msg"] = (
+                    "defaults restored. restart still required for "
+                    + ", ".join(result["restart_required_fields"])
+                )
+                socket.context["console_class"] = "service-status-yellow"
+            return
         if event != "save":
             return
 
-        overrides = _config_overrides_from_payload(payload)
-        save_overrides(overrides, self.owner.config._overrides_path)
-        self.owner._notify_ui_change("config")
+        overrides = _config_overrides_from_payload(payload or {})
+        result = self.owner.persist_overrides(overrides)
+        console_msg = "saved."
+        console_class = "service-status-green"
+        if result["restart_required"]:
+            console_msg = (
+                "saved. restart required for "
+                + ", ".join(result["restart_required_fields"])
+            )
+            console_class = "service-status-yellow"
         socket.context = self._context(
-            is_editing=True,
-            language_query=socket.context["language_query"],
-            restart_required=True,
-            console_msg="saved.",
-            console_class="service-status-green",
+            is_editing=False,
+            console_msg=console_msg,
+            console_class=console_class,
         )
 
     async def handle_info(
@@ -923,8 +988,8 @@ class ConfigLiveView(_BaseBuzzLiveView):
             return
         socket.context = self._context(
             is_editing=socket.context["is_editing"],
+            draft_payload=socket.context["draft_payload"],
             language_query=socket.context["language_query"],
-            restart_required=socket.context["restart_required"],
             console_msg=socket.context["console_msg"],
             console_class=socket.context["console_class"],
         )
@@ -940,33 +1005,54 @@ class ConfigLiveView(_BaseBuzzLiveView):
         self,
         is_editing: bool = False,
         language_query: str = "",
-        restart_required: bool = False,
+        draft_payload: dict[str, Any] | None = None,
         console_msg: str = "",
         console_class: str = "",
     ) -> ConfigContext:
         base = self._base_context(console_msg, console_class)
-        effective = to_nested_dict(self.owner.config)
+        effective_config = getattr(self.owner, "saved_config", self.owner.config)
+        effective = to_nested_dict(effective_config)
         masked = mask_secrets(effective)
-        effective_yaml = yaml.safe_dump(
+        config_path = Path(effective_config._config_path)
+        baseline_config = effective_config._base_raw
+        if config_path.exists():
+            _, baseline_config, _, _, _ = load_base_and_overrides(
+                str(config_path)
+            )
+        effective_yaml = _render_effective_yaml(
             masked,
-            default_flow_style=False,
-            sort_keys=False,
+            set(
+                effective_override_field_paths(
+                    baseline_config,
+                    effective_config._raw_overrides,
+                )
+            ),
         )
-        values = _config_values(self.owner.config)
+        values = _config_values(effective_config, draft_payload)
+        current_overrides = effective_config._raw_overrides
+        field_states = _field_states(
+            effective,
+            current_overrides,
+            _config_overrides_from_payload(draft_payload or {}) if is_editing else {},
+        )
         languages = _language_rows(
             self.owner.opensubtitles_languages,
-            self.owner.config.subtitles.languages,
+            tuple(values["selected_languages"]),
             language_query,
         )
         return cast(
             ConfigContext,
             {
                 **base,
+                "draft_payload": draft_payload or {},
                 "effective_yaml": effective_yaml,
+                "field_states": field_states,
+                "has_overrides": bool(current_overrides),
                 "is_editing": is_editing,
                 "language_query": language_query,
                 "languages": languages,
-                "restart_required": restart_required,
+                "restart_required": self.owner.restart_required,
+                "restart_required_fields": self.owner.restart_required_fields(),
                 "values": values,
             },
         )
@@ -995,31 +1081,39 @@ def _language_rows(
     return rows
 
 
-def _config_values(config: Any) -> ConfigValues:
+def _config_values(
+    config: Any,
+    payload: dict[str, Any] | None = None,
+) -> ConfigValues:
+    draft = _config_overrides_from_payload(payload or {})
+    effective = deep_merge(to_nested_dict(config), draft)
+    subtitles = effective["subtitles"]
+    subtitle_filters = subtitles["filters"]
     return {
-        "anime_patterns": "\n".join(config.anime_patterns),
-        "bind": config.bind,
-        "curator_url": config.curator_url,
-        "download_delay_secs": config.subtitles.download_delay_secs,
-        "enable_all_dir": config.enable_all_dir,
-        "enable_unplayable_dir": config.enable_unplayable_dir,
-        "exclude_ai": config.subtitles.filters.exclude_ai,
-        "exclude_machine": config.subtitles.filters.exclude_machine,
-        "fetch_on_resync": config.subtitles.fetch_on_resync,
-        "hearing_impaired": config.subtitles.filters.hearing_impaired,
-        "on_library_change": config.hook_command,
-        "poll_interval_secs": config.poll_interval_secs,
-        "port": config.port,
-        "request_timeout_secs": config.request_timeout_secs,
-        "rd_update_delay_secs": config.rd_update_delay_secs,
-        "search_delay_secs": config.subtitles.search_delay_secs,
-        "stream_buffer_size": config.stream_buffer_size,
-        "strategy": config.subtitles.strategy,
-        "subtitles_enabled": config.subtitles.enabled,
-        "ui_poll_interval_secs": config.ui_poll_interval_secs,
-        "user_agent": config.user_agent,
-        "verbose": config.verbose,
-        "version_label": config.version_label,
+        "anime_patterns": "\n".join(
+            effective["directories"]["anime"]["patterns"]
+        ),
+        "bind": effective["server"]["bind"],
+        "curator_url": effective["hooks"]["curator_url"],
+        "download_delay_secs": subtitles["download_delay_secs"],
+        "enable_all_dir": effective["compat"]["enable_all_dir"],
+        "enable_unplayable_dir": effective["compat"]["enable_unplayable_dir"],
+        "exclude_ai": subtitle_filters["exclude_ai"],
+        "exclude_machine": subtitle_filters["exclude_machine"],
+        "fetch_on_resync": subtitles["fetch_on_resync"],
+        "hearing_impaired": subtitle_filters["hearing_impaired"],
+        "on_library_change": effective["hooks"]["on_library_change"],
+        "poll_interval_secs": effective["poll_interval_secs"],
+        "port": effective["server"]["port"],
+        "request_timeout_secs": effective["request_timeout_secs"],
+        "rd_update_delay_secs": effective["hooks"]["rd_update_delay_secs"],
+        "search_delay_secs": subtitles["search_delay_secs"],
+        "selected_languages": subtitles["languages"],
+        "stream_buffer_size": effective["server"]["stream_buffer_size"],
+        "strategy": subtitles["strategy"],
+        "subtitles_enabled": subtitles["enabled"],
+        "verbose": effective["logging"]["verbose"],
+        "version_label": effective["version_label"],
     }
 
 
@@ -1050,7 +1144,6 @@ def _config_overrides_from_payload(
         "server.bind",
         "hooks.on_library_change",
         "hooks.curator_url",
-        "user_agent",
         "version_label",
         "subtitles.strategy",
         "subtitles.filters.hearing_impaired",
@@ -1075,8 +1168,7 @@ def _config_overrides_from_payload(
         for value in normalized.get("subtitles.languages", [])
         if str(value).strip()
     ]
-    if languages:
-        _set_nested_value(overrides, "subtitles.languages", languages)
+    _set_nested_value(overrides, "subtitles.languages", languages)
 
     return overrides
 
@@ -1087,3 +1179,124 @@ def _set_nested_value(target: dict[str, Any], path: str, value: Any) -> None:
     for key in keys[:-1]:
         cursor = cast(dict[str, Any], cursor.setdefault(key, {}))
     cursor[keys[-1]] = value
+
+
+def _field_states(
+    effective: dict[str, Any],
+    current_overrides: dict[str, Any],
+    draft_overrides: dict[str, Any],
+) -> dict[str, ConfigFieldState]:
+    current_override_paths = set(override_field_paths(current_overrides))
+    dirty_paths = set(
+        diff_fields(effective, deep_merge(effective, draft_overrides), _CONFIG_TRACKED_FIELDS)
+    )
+    states: dict[str, ConfigFieldState] = {}
+    for path in _CONFIG_TRACKED_FIELDS:
+        alias = _field_alias(path)
+        is_dirty = path in dirty_paths
+        is_overridden = path in current_override_paths
+        css_class = ""
+        if is_dirty:
+            css_class = "config-field-dirty"
+        elif is_overridden:
+            css_class = "config-field-overridden"
+        reload_mode = (
+            "needs restart"
+            if path in RESTART_REQUIRED_FIELDS
+            else "hot reload"
+        )
+        states[alias] = {
+            "css_class": css_class,
+            "is_dirty": is_dirty,
+            "is_overridden": is_overridden,
+            "reload_mode": reload_mode,
+        }
+    return states
+
+
+def _field_alias(path: str) -> str:
+    return path.replace(".", "_")
+
+
+def _render_effective_yaml(
+    effective: dict[str, Any],
+    override_paths: set[str],
+) -> str:
+    lines = _yaml_lines(effective, override_paths=override_paths)
+    return "\n".join(lines) + "\n"
+
+
+def _yaml_lines(
+    value: Any,
+    *,
+    indent: int = 0,
+    path: str = "",
+    override_paths: set[str],
+) -> list[str]:
+    prefix = " " * indent
+    if isinstance(value, dict):
+        lines: list[str] = []
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else key
+            if child_path in override_paths:
+                lines.append(f"{prefix}# Overriden via UI")
+            if isinstance(child, dict):
+                lines.append(f"{prefix}{key}:")
+                lines.extend(
+                    _yaml_lines(
+                        child,
+                        indent=indent + 2,
+                        path=child_path,
+                        override_paths=override_paths,
+                    )
+                )
+            elif isinstance(child, list):
+                lines.append(f"{prefix}{key}:")
+                if not child:
+                    lines.append(f"{prefix}  []")
+                else:
+                    for item in child:
+                        if isinstance(item, (dict, list)):
+                            lines.append(f"{prefix}  -")
+                            lines.extend(
+                                _yaml_lines(
+                                    item,
+                                    indent=indent + 4,
+                                    path=child_path,
+                                    override_paths=override_paths,
+                                )
+                            )
+                        else:
+                            rendered = _render_yaml_scalar(item)
+                            lines.append(f"{prefix}  - {rendered}")
+            else:
+                rendered = _render_yaml_scalar(child)
+                lines.append(f"{prefix}{key}: {rendered}")
+        return lines
+    if isinstance(value, list):
+        if not value:
+            return [f"{prefix}[]"]
+        lines = []
+        for item in value:
+            rendered = _render_yaml_scalar(item)
+            lines.append(f"{prefix}- {rendered}")
+        return lines
+    return [f"{prefix}{_render_yaml_scalar(value)}"]
+
+
+def _render_yaml_scalar(value: Any) -> str:
+    """Render a scalar value for inline YAML display without document markers."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value)
+    dumped = yaml.safe_dump(
+        text,
+        default_flow_style=True,
+        explicit_end=False,
+        explicit_start=False,
+    ).strip()
+    return dumped.replace("\n...", "")

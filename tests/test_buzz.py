@@ -1040,8 +1040,14 @@ class DavAppTests(unittest.TestCase):
             rd_update_delay_secs=0,
         )
         rd_patcher = patch("buzz.dav_app.RD", return_value=self.FakeRD())
+        languages_patcher = patch(
+            "buzz.dav_app._fetch_opensubtitles_languages",
+            return_value=[],
+        )
         self.addCleanup(rd_patcher.stop)
+        self.addCleanup(languages_patcher.stop)
         rd_patcher.start()
+        languages_patcher.start()
         self.dav_app = DavApp(config)
         self.state = self.dav_app.state
         self.client_cm = TestClient(self.dav_app.app)
@@ -1174,7 +1180,7 @@ class DavAppTests(unittest.TestCase):
         self.assertIn("buzz: system logs", body)
         self.assertIn('src="/pyview/assets/app.js"', body)
         self.assertIn("System Logs", body)
-        self.assertIn("RESTART STACK", body)
+        self.assertNotIn("RESTART STACK", body)
         self.assertIn("COPY", body)
 
     def test_config_page_renders_pyview_content(self):
@@ -1186,7 +1192,231 @@ class DavAppTests(unittest.TestCase):
         self.assertIn('src="/pyview/assets/app.js"', body)
         self.assertIn("Effective Configuration", body)
         self.assertIn("EDIT", body)
-        self.assertIn('id="effective-config-code"', body)
+
+    def test_config_page_marks_ui_overrides_in_yaml(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            overrides_path = Path(tmpdir) / "buzz.overrides.yml"
+            base_path.write_text(
+                f"provider:\n  token: testtoken\nstate_dir: {tmpdir}\n",
+                encoding="utf-8",
+            )
+            overrides_path.write_text(
+                "logging:\n  verbose: true\n",
+                encoding="utf-8",
+            )
+            config = Config.load(str(base_path))
+            rd_patcher = patch("buzz.dav_app.RD", return_value=DavAppTests.FakeRD())
+            languages_patcher = patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                return_value=[],
+            )
+            rd_patcher.start()
+            languages_patcher.start()
+            self.addCleanup(rd_patcher.stop)
+            self.addCleanup(languages_patcher.stop)
+            app = DavApp(config)
+            client = TestClient(app.app)
+
+            response = client.get("/config")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("# Overriden via UI", response.text)
+
+    def test_config_page_ignores_redundant_override_values_in_yaml(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            overrides_path = Path(tmpdir) / "buzz.overrides.yml"
+            base_path.write_text(
+                "provider:\n  token: testtoken\n"
+                f"state_dir: {tmpdir}\n"
+                "poll_interval_secs: 60\n",
+                encoding="utf-8",
+            )
+            overrides_path.write_text(
+                "poll_interval_secs: 60\n",
+                encoding="utf-8",
+            )
+            config = Config.load(str(base_path))
+            rd_patcher = patch(
+                "buzz.dav_app.RD",
+                return_value=DavAppTests.FakeRD(),
+            )
+            languages_patcher = patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                return_value=[],
+            )
+            rd_patcher.start()
+            languages_patcher.start()
+            self.addCleanup(rd_patcher.stop)
+            self.addCleanup(languages_patcher.stop)
+            app = DavApp(config)
+            client = TestClient(app.app)
+
+            response = client.get("/config")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn("# Overriden via UI\npoll_interval_secs: 60", response.text)
+
+    def test_config_page_ignores_override_matching_dist_defaults(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dist_path = root / "buzz.dist.yml"
+            base_path = root / "buzz.yml"
+            overrides_path = root / "buzz.overrides.yml"
+            dist_path.write_text(
+                "provider:\n  token: yourtoken\n"
+                "hooks:\n  curator_url: http://buzz-curator:8400/rebuild\n",
+                encoding="utf-8",
+            )
+            base_path.write_text(
+                f"provider:\n  token: testtoken\nstate_dir: {tmpdir}\n",
+                encoding="utf-8",
+            )
+            overrides_path.write_text(
+                "hooks:\n  curator_url: http://buzz-curator:8400/rebuild\n",
+                encoding="utf-8",
+            )
+            config = Config.load(str(base_path))
+            rd_patcher = patch(
+                "buzz.dav_app.RD",
+                return_value=DavAppTests.FakeRD(),
+            )
+            languages_patcher = patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                return_value=[],
+            )
+            rd_patcher.start()
+            languages_patcher.start()
+            self.addCleanup(rd_patcher.stop)
+            self.addCleanup(languages_patcher.stop)
+            app = DavApp(config)
+            client = TestClient(app.app)
+
+            response = client.get("/config")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn(
+                "# Overriden via UI\n  curator_url: http://buzz-curator:8400/rebuild",
+                response.text,
+            )
+
+    def test_config_page_ignores_default_valued_override_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dist_path = root / "buzz.dist.yml"
+            base_path = root / "buzz.yml"
+            data_dir = root / "data"
+            data_dir.mkdir()
+            overrides_path = data_dir / "buzz.overrides.yml"
+            dist_path.write_text(
+                "provider:\n  token: yourtoken\n"
+                "hooks:\n"
+                "  curator_url: http://buzz-curator:8400/rebuild\n"
+                "  rd_update_delay_secs: 15\n"
+                "logging:\n  verbose: false\n"
+                "subtitles:\n"
+                "  enabled: false\n"
+                "  fetch_on_resync: false\n"
+                "  filters:\n"
+                "    hearing_impaired: exclude\n"
+                "    exclude_ai: true\n"
+                "    exclude_machine: true\n"
+                "  search_delay_secs: 0.5\n"
+                "  download_delay_secs: 1.0\n",
+                encoding="utf-8",
+            )
+            base_path.write_text(
+                "provider:\n  token: testtoken\n"
+                f"state_dir: {data_dir}\n"
+                "subtitles:\n"
+                "  enabled: true\n"
+                "  languages:\n"
+                "    - en\n"
+                "    - pt-br\n"
+                "  strategy: best-rated\n",
+                encoding="utf-8",
+            )
+            overrides_path.write_text(
+                "hooks:\n"
+                "  curator_url: http://buzz-curator:8400/rebuild\n"
+                "  rd_update_delay_secs: 15\n"
+                "logging:\n  verbose: false\n"
+                "subtitles:\n"
+                "  enabled: true\n"
+                "  fetch_on_resync: false\n"
+                "  filters:\n"
+                "    hearing_impaired: exclude\n"
+                "    exclude_ai: true\n"
+                "    exclude_machine: true\n"
+                "  search_delay_secs: 0.5\n"
+                "  download_delay_secs: 1.0\n"
+                "  languages:\n"
+                "    - en\n"
+                "    - pt-br\n"
+                "  strategy: best-rated\n",
+                encoding="utf-8",
+            )
+            config = Config.load(str(base_path))
+            rd_patcher = patch(
+                "buzz.dav_app.RD",
+                return_value=DavAppTests.FakeRD(),
+            )
+            languages_patcher = patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                return_value=[],
+            )
+            rd_patcher.start()
+            languages_patcher.start()
+            self.addCleanup(rd_patcher.stop)
+            self.addCleanup(languages_patcher.stop)
+            app = DavApp(config)
+            client = TestClient(app.app)
+
+            response = client.get("/config")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn(
+                "# Overriden via UI\n  curator_url: http://buzz-curator:8400/rebuild",
+                response.text,
+            )
+            self.assertNotIn(
+                "# Overriden via UI\n  rd_update_delay_secs: 15",
+                response.text,
+            )
+            self.assertNotIn(
+                "# Overriden via UI\n  verbose: false",
+                response.text,
+            )
+            self.assertNotIn(
+                "# Overriden via UI\n  fetch_on_resync: false",
+                response.text,
+            )
+            self.assertNotIn(
+                "# Overriden via UI\n    hearing_impaired: exclude",
+                response.text,
+            )
+            self.assertNotIn(
+                "# Overriden via UI\n    exclude_ai: true",
+                response.text,
+            )
+            self.assertNotIn(
+                "# Overriden via UI\n    exclude_machine: true",
+                response.text,
+            )
+            self.assertNotIn(
+                "# Overriden via UI\n  search_delay_secs: 0.5",
+                response.text,
+            )
+            self.assertNotIn(
+                "# Overriden via UI\n  download_delay_secs: 1.0",
+                response.text,
+            )
+
+    def test_dockerfile_copies_buzz_dist_config(self):
+        dockerfile = Path("buzz/Dockerfile").read_text(encoding="utf-8")
+
+        self.assertIn("COPY pyproject.toml README.md buzz.dist.yml /app/", dockerfile)
 
     def test_static_assets_are_served(self):
         response = self.client.get("/static/buzz.js")
@@ -1194,6 +1424,15 @@ class DavAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("markTruncatedCells", response.text)
         self.assertIn("initTruncCells", response.text)
+        self.assertIn("createBuzzSocketStatusMonitor", response.text)
+        self.assertIn("window.liveSocket", response.text)
+        self.assertIn("socket.onOpen", response.text)
+        self.assertIn("socket.onClose", response.text)
+        self.assertIn("socket.onError", response.text)
+        self.assertIn("setBuzzStatus(\"[offline]\"", response.text)
+        self.assertNotIn("heartbeatIntervalMs", response.text)
+        self.assertNotIn("socket.onMessage", response.text)
+        self.assertNotIn("/readyz", response.text)
 
     def test_pyview_assets_are_served(self):
         response = self.client.get("/pyview/assets/app.js")
@@ -1216,6 +1455,77 @@ class DavAppTests(unittest.TestCase):
         ready = self.client.get("/readyz")
         self.assertEqual(ready.status_code, 200)
         self.assertEqual(ready.json()["status"], "ready")
+        self.assertEqual(ready.json()["ui_status"], "starting")
+
+    def test_readyz_waits_for_curator_ready_signal(self):
+        self.dav_app.config.curator_url = "http://buzz-curator:8400/rebuild"
+        self.dav_app.curator_ready = False
+        self.state.snapshot_loaded = True
+
+        response = self.client.get("/readyz")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ready")
+        self.assertEqual(response.json()["ui_status"], "starting")
+        self.assertFalse(response.json()["curator_ready"])
+
+        notify = self.client.post(
+            "/api/ui/notify",
+            json={
+                "topics": ["status"],
+                "message": {
+                    "source": "curator",
+                    "event": "curator_ready",
+                    "level": "info",
+                    "message": "curator startup complete",
+                },
+            },
+        )
+        self.assertEqual(notify.status_code, 200)
+
+        response = self.client.get("/readyz")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ready")
+        self.assertEqual(response.json()["ui_status"], "ready")
+        self.assertTrue(response.json()["curator_ready"])
+
+    def test_cache_page_shows_starting_until_curator_ready(self):
+        self.dav_app.config.curator_url = "http://buzz-curator:8400/rebuild"
+        self.dav_app.curator_ready = False
+        self.state.snapshot_loaded = True
+
+        response = self.client.get("/cache")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('[starting]</b>', response.text)
+
+    def test_dav_app_init_does_not_fetch_languages_synchronously(self):
+        config = Config(
+            token="token",
+            poll_interval_secs=10,
+            bind="127.0.0.1",
+            port=9999,
+            state_dir=self.tmpdir.name,
+            hook_command="",
+            anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+            enable_all_dir=True,
+            enable_unplayable_dir=True,
+            request_timeout_secs=30,
+            user_agent="buzz-tests",
+            version_label="buzz/test",
+            rd_update_delay_secs=0,
+        )
+        with (
+            patch("buzz.dav_app.RD", return_value=self.FakeRD()),
+            patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                side_effect=AssertionError("should not run in __init__"),
+            ),
+        ):
+            app = DavApp(config)
+
+        self.assertEqual(app.opensubtitles_languages, [])
 
     def test_options_and_propfind_use_asgi_routes(self):
         options = self.client.options("/dav/movies")
@@ -1346,6 +1656,7 @@ class DavAppTests(unittest.TestCase):
             side_effect=[
                 FakeResponse(b"<!DOCTYPE html>bad", "text/html"),
                 FakeResponse(b"<!DOCTYPE html>worse", "text/html"),
+                FakeResponse(b"<!DOCTYPE html>worst", "text/html"),
             ],
         ), self.assertRaisesRegex(ValueError, "non-media content type|markup"):
             open_remote_media(self.state, node, None)
@@ -1428,6 +1739,7 @@ class DavAppTests(unittest.TestCase):
             side_effect=[
                 FakeResponse(b"<!DOCTYPE html>bad", "application/force-download"),
                 FakeResponse(b"<!DOCTYPE html>worse", "application/force-download"),
+                FakeResponse(b"<!DOCTYPE html>worst", "application/force-download"),
             ],
         ):
             with self.assertRaisesRegex(ValueError, "markup instead of media bytes"):
@@ -1503,8 +1815,14 @@ class DavBufferedStreamingTests(unittest.TestCase):
             stream_buffer_size=self.BUFFER_SIZE,
         )
         rd_patcher = patch("buzz.dav_app.RD", return_value=DavAppTests.FakeRD())
+        languages_patcher = patch(
+            "buzz.dav_app._fetch_opensubtitles_languages",
+            return_value=[],
+        )
         self.addCleanup(rd_patcher.stop)
+        self.addCleanup(languages_patcher.stop)
         rd_patcher.start()
+        languages_patcher.start()
         return DavApp(config)
 
     def _get_serve_dav(self, dav_app):
@@ -1723,8 +2041,14 @@ class ConfigUITests(unittest.TestCase):
             )
             config = Config.load(str(base_path))
             rd_patcher = patch("buzz.dav_app.RD", return_value=DavAppTests.FakeRD())
+            languages_patcher = patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                return_value=[],
+            )
             rd_patcher.start()
+            languages_patcher.start()
             self.addCleanup(rd_patcher.stop)
+            self.addCleanup(languages_patcher.stop)
             app = DavApp(config)
             client = TestClient(app.app)
             resp = client.get("/api/config")
@@ -1742,8 +2066,14 @@ class ConfigUITests(unittest.TestCase):
             )
             config = Config.load(str(base_path))
             rd_patcher = patch("buzz.dav_app.RD", return_value=DavAppTests.FakeRD())
+            languages_patcher = patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                return_value=[],
+            )
             rd_patcher.start()
+            languages_patcher.start()
             self.addCleanup(rd_patcher.stop)
+            self.addCleanup(languages_patcher.stop)
             app = DavApp(config)
             client = TestClient(app.app)
             resp = client.post(
@@ -1753,8 +2083,72 @@ class ConfigUITests(unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.json()["status"], "saved")
             self.assertTrue(resp.json()["restart_required"])
+            self.assertEqual(resp.json()["restart_required_fields"], ["server.port"])
             written = yaml.safe_load(overrides_path.read_text(encoding="utf-8"))
             self.assertEqual(written["server"]["port"], 7777)
+
+    def test_post_api_config_hot_reloads_verbose(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            overrides_path = Path(tmpdir) / "buzz.overrides.yml"
+            base_path.write_text(
+                f"provider:\n  token: testtoken\nstate_dir: {tmpdir}\n",
+                encoding="utf-8",
+            )
+            config = Config.load(str(base_path))
+            rd_patcher = patch("buzz.dav_app.RD", return_value=DavAppTests.FakeRD())
+            languages_patcher = patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                return_value=[],
+            )
+            rd_patcher.start()
+            languages_patcher.start()
+            self.addCleanup(rd_patcher.stop)
+            self.addCleanup(languages_patcher.stop)
+            app = DavApp(config)
+            client = TestClient(app.app)
+            resp = client.post(
+                "/api/config",
+                json={"overrides": {"logging": {"verbose": True}}},
+            )
+
+            self.assertEqual(resp.status_code, 200)
+            self.assertFalse(resp.json()["restart_required"])
+            self.assertEqual(resp.json()["hot_reloaded_fields"], ["logging.verbose"])
+            self.assertTrue(app.config.verbose)
+            written = yaml.safe_load(overrides_path.read_text(encoding="utf-8"))
+            self.assertTrue(written["logging"]["verbose"])
+
+    def test_restore_defaults_removes_overrides(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            overrides_path = Path(tmpdir) / "buzz.overrides.yml"
+            base_path.write_text(
+                f"provider:\n  token: testtoken\nstate_dir: {tmpdir}\n",
+                encoding="utf-8",
+            )
+            overrides_path.write_text(
+                "logging:\n  verbose: true\n",
+                encoding="utf-8",
+            )
+            config = Config.load(str(base_path))
+            rd_patcher = patch("buzz.dav_app.RD", return_value=DavAppTests.FakeRD())
+            languages_patcher = patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                return_value=[],
+            )
+            rd_patcher.start()
+            languages_patcher.start()
+            self.addCleanup(rd_patcher.stop)
+            self.addCleanup(languages_patcher.stop)
+            app = DavApp(config)
+            client = TestClient(app.app)
+
+            resp = client.post("/api/config/restore-defaults")
+
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json()["status"], "saved")
+            self.assertFalse(overrides_path.exists())
 
     def test_post_api_config_strips_secrets(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1765,8 +2159,14 @@ class ConfigUITests(unittest.TestCase):
             )
             config = Config.load(str(base_path))
             rd_patcher = patch("buzz.dav_app.RD", return_value=DavAppTests.FakeRD())
+            languages_patcher = patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                return_value=[],
+            )
             rd_patcher.start()
+            languages_patcher.start()
             self.addCleanup(rd_patcher.stop)
+            self.addCleanup(languages_patcher.stop)
             app = DavApp(config)
             client = TestClient(app.app)
             resp = client.post(

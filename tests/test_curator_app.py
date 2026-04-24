@@ -90,6 +90,40 @@ class CuratorAppTests(unittest.TestCase):
                 conn.close()
             self.assertIsNotNone(report)
 
+    def test_curator_lifespan_notifies_dav_when_startup_is_complete(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "raw" / "movies").mkdir(parents=True)
+            (root / "raw" / "shows").mkdir(parents=True)
+            (root / "raw" / "anime").mkdir(parents=True)
+
+            response = MagicMock()
+            response.status = 200
+            response.__enter__.return_value = response
+            response.__exit__.return_value = False
+            config = self._config(
+                root,
+                dav_ui_notify_url="http://buzz-dav:9999/api/ui/notify",
+            )
+
+            with patch("urllib.request.urlopen", return_value=response) as mock_urlopen:
+                with TestClient(CuratorApp(config).app) as client:
+                    self.assertEqual(client.get("/healthz").status_code, 200)
+
+            payloads = []
+            for call in mock_urlopen.call_args_list:
+                request_obj = call.args[0]
+                if getattr(request_obj, "method", "") != "POST":
+                    continue
+                payloads.append(json.loads(request_obj.data.decode("utf-8")))
+
+            self.assertTrue(
+                any(
+                    payload["message"].get("event") == "curator_ready"
+                    for payload in payloads
+                )
+            )
+
     def test_curator_subtitle_fetch_uses_consistent_torrent_name(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -178,6 +212,55 @@ class CuratorAppTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json(), {"status": "rebuilding"})
+
+    def test_curator_config_load_merges_overrides(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            base_path = root / "buzz.yml"
+            overrides_path = root / "state" / "buzz.overrides.yml"
+            overrides_path.parent.mkdir(parents=True)
+            base_path.write_text(
+                "provider:\n  token: testtoken\n"
+                f"state_dir: {overrides_path.parent}\n"
+                "subtitles:\n  enabled: false\n  strategy: most-downloaded\n",
+                encoding="utf-8",
+            )
+            overrides_path.write_text(
+                "subtitles:\n  enabled: true\n  strategy: trusted\n",
+                encoding="utf-8",
+            )
+
+            config = CuratorConfig.load(str(base_path))
+
+            self.assertTrue(config.subtitles.enabled)
+            self.assertEqual(config.subtitles.strategy, "trusted")
+
+    def test_curator_reload_endpoint_refreshes_subtitle_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            base_path = root / "buzz.yml"
+            overrides_path = root / "state" / "buzz.overrides.yml"
+            overrides_path.parent.mkdir(parents=True)
+            base_path.write_text(
+                "provider:\n  token: testtoken\n"
+                f"state_dir: {overrides_path.parent}\n"
+                "subtitles:\n  enabled: false\n",
+                encoding="utf-8",
+            )
+            overrides_path.write_text(
+                "subtitles:\n  enabled: true\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict("os.environ", {"BUZZ_CONFIG": str(base_path)}):
+                app = CuratorApp(CuratorConfig.load(str(base_path)))
+                client = TestClient(app.app)
+                app.config.subtitles.enabled = False
+
+                response = client.post("/api/config/reload")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(app.config.subtitles.enabled)
 
     def test_curator_rebuild_error_is_logged(self):
         with tempfile.TemporaryDirectory() as tmpdir:

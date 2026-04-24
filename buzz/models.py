@@ -2,6 +2,7 @@
 
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
 
 import yaml
@@ -10,6 +11,39 @@ from pydantic import BaseModel, Field, PrivateAttr, field_validator
 from .core.constants import DEFAULT_ANIME_PATTERN
 
 DEFAULT_DAV_CONFIG_PATH = os.environ.get("BUZZ_CONFIG", "/app/buzz.yml")
+DEFAULT_DIST_CONFIG_NAME = "buzz.dist.yml"
+RESTART_REQUIRED_FIELDS = (
+    "server.bind",
+    "server.port",
+)
+UI_MANAGED_CONFIG_FIELDS = (
+    "poll_interval_secs",
+    "server.bind",
+    "server.port",
+    "server.stream_buffer_size",
+    "hooks.on_library_change",
+    "hooks.curator_url",
+    "hooks.rd_update_delay_secs",
+    "directories.anime.patterns",
+    "compat.enable_all_dir",
+    "compat.enable_unplayable_dir",
+    "request_timeout_secs",
+    "version_label",
+    "logging.verbose",
+    "subtitles.enabled",
+    "subtitles.fetch_on_resync",
+    "subtitles.languages",
+    "subtitles.strategy",
+    "subtitles.filters.hearing_impaired",
+    "subtitles.filters.exclude_ai",
+    "subtitles.filters.exclude_machine",
+    "subtitles.search_delay_secs",
+    "subtitles.download_delay_secs",
+)
+HOT_RELOADABLE_FIELDS = tuple(
+    field for field in UI_MANAGED_CONFIG_FIELDS
+    if field not in RESTART_REQUIRED_FIELDS
+)
 
 
 # ---------------------------------------------------------------------------
@@ -26,6 +60,111 @@ def deep_merge(base: dict, overrides: dict) -> dict:
         else:
             result[key] = value
     return result
+
+
+def delete_nested_key(target: dict, path: str) -> None:
+    """Delete *path* from *target* and prune empty parent dictionaries."""
+    keys = path.split(".")
+    cursor = target
+    parents: list[tuple[dict, str]] = []
+    for key in keys[:-1]:
+        child = cursor.get(key)
+        if not isinstance(child, dict):
+            return
+        parents.append((cursor, key))
+        cursor = child
+    cursor.pop(keys[-1], None)
+    for parent, key in reversed(parents):
+        child = parent.get(key)
+        if isinstance(child, dict) and not child:
+            del parent[key]
+        else:
+            break
+
+
+def get_nested_value(source: dict, path: str) -> object | None:
+    """Return the nested value at *path*, or ``None`` when missing."""
+    cursor: object = source
+    for key in path.split("."):
+        if not isinstance(cursor, dict) or key not in cursor:
+            return None
+        cursor = cursor[key]
+    return deepcopy(cursor)
+
+
+def set_nested_value(target: dict, path: str, value: object) -> None:
+    """Assign *value* at *path* within *target*."""
+    cursor = target
+    keys = path.split(".")
+    for key in keys[:-1]:
+        child = cursor.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            cursor[key] = child
+        cursor = child
+    cursor[keys[-1]] = deepcopy(value)
+
+
+def _normalize_for_diff(value: object) -> object:
+    """Normalize nested config values so tuple/list mismatches diff cleanly."""
+    if isinstance(value, tuple):
+        return [_normalize_for_diff(item) for item in value]
+    if isinstance(value, list):
+        return [_normalize_for_diff(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _normalize_for_diff(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def diff_fields(source: dict, target: dict, fields: tuple[str, ...]) -> list[str]:
+    """Return configured field paths whose values differ between two dicts."""
+    changed = []
+    for field in fields:
+        source_value = _normalize_for_diff(get_nested_value(source, field))
+        target_value = _normalize_for_diff(get_nested_value(target, field))
+        if source_value != target_value:
+            changed.append(field)
+    return changed
+
+
+def override_field_paths(overrides: dict) -> list[str]:
+    """Return flattened dotted field paths present in *overrides*."""
+    results: list[str] = []
+
+    def visit(node: dict, prefix: str = "") -> None:
+        for key, value in node.items():
+            path = f"{prefix}.{key}" if prefix else key
+            if isinstance(value, dict):
+                visit(value, path)
+                continue
+            results.append(path)
+
+    visit(overrides)
+    return sorted(results)
+
+
+def effective_override_field_paths(base: dict, overrides: dict) -> list[str]:
+    """Return override field paths whose values differ from the base config."""
+    changed: list[str] = []
+    for path in override_field_paths(overrides):
+        base_value = _normalize_for_diff(get_nested_value(base, path))
+        override_value = _normalize_for_diff(get_nested_value(overrides, path))
+        if base_value != override_value:
+            changed.append(path)
+    return changed
+
+
+def filter_paths(source: dict, paths: tuple[str, ...]) -> dict:
+    """Return a nested dict containing only the selected field *paths*."""
+    filtered: dict = {}
+    for path in paths:
+        value = get_nested_value(source, path)
+        if value is not None:
+            set_nested_value(filtered, path, value)
+    return filtered
 
 
 _SECRET_PATHS = [
@@ -137,10 +276,48 @@ def save_overrides(overrides: dict, path: Path) -> None:
     if invalid:
         raise ValueError(f"Invalid override keys: {', '.join(invalid)}")
     path.parent.mkdir(parents=True, exist_ok=True)
+    if not overrides:
+        path.unlink(missing_ok=True)
+        return
     tmp_path = path.with_suffix(".tmp")
     with open(tmp_path, "w", encoding="utf-8") as handle:
         yaml.safe_dump(overrides, handle, default_flow_style=False, sort_keys=False)
     os.replace(tmp_path, path)
+
+
+def _load_default_dist_config(path: str) -> dict:
+    """Load the sibling ``buzz.dist.yml`` when present, else return an empty dict."""
+    dist_path = Path(path).with_name(DEFAULT_DIST_CONFIG_NAME)
+    if not dist_path.exists():
+        return {}
+    with open(dist_path, encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
+def load_base_and_overrides(
+    path: str = DEFAULT_DAV_CONFIG_PATH,
+) -> tuple[dict, dict, dict, dict, Path]:
+    """Load base YAML, overrides YAML, merged config, and overrides path."""
+    default_dist = _load_default_dist_config(path)
+    with open(path, encoding="utf-8") as handle:
+        file_base = yaml.safe_load(handle) or {}
+    base = deep_merge(default_dist, file_base)
+
+    state_dir = str(file_base.get("state_dir", base.get("state_dir", "/app/data")))
+    overrides_env = os.environ.get("BUZZ_OVERRIDES", "")
+    overrides_path = (
+        Path(overrides_env)
+        if overrides_env
+        else Path(state_dir) / "buzz.overrides.yml"
+    )
+
+    overrides = {}
+    if overrides_path.exists():
+        with open(overrides_path, encoding="utf-8") as handle:
+            overrides = yaml.safe_load(handle) or {}
+
+    merged = deep_merge(base, overrides)
+    return default_dist, base, overrides, merged, overrides_path.resolve()
 
 
 def to_nested_dict(config: DavConfig) -> dict:
@@ -301,6 +478,10 @@ class DavConfig(BaseModel):
     _overrides_path: Path = PrivateAttr(
         default=Path("/app/data/buzz.overrides.yml")
     )
+    _config_path: str = PrivateAttr(default=DEFAULT_DAV_CONFIG_PATH)
+    _default_raw: dict = PrivateAttr(default_factory=dict)
+    _base_raw: dict = PrivateAttr(default_factory=dict)
+    _raw_overrides: dict = PrivateAttr(default_factory=dict)
     _raw_merged: dict = PrivateAttr(default_factory=dict)
 
     @classmethod
@@ -355,26 +536,14 @@ class DavConfig(BaseModel):
     @classmethod
     def load(cls, path: str = DEFAULT_DAV_CONFIG_PATH) -> DavConfig:
         """Load and validate configuration from a YAML file."""
-        with open(path, encoding="utf-8") as handle:
-            base = yaml.safe_load(handle) or {}
-
-        state_dir = str(base.get("state_dir", "/app/data"))
-        overrides_env = os.environ.get("BUZZ_OVERRIDES", "")
-        overrides_path = (
-            Path(overrides_env)
-            if overrides_env
-            else Path(state_dir) / "buzz.overrides.yml"
-        )
-
-        overrides = {}
-        if overrides_path.exists():
-            with open(overrides_path, encoding="utf-8") as handle:
-                overrides = yaml.safe_load(handle) or {}
-
-        merged = deep_merge(base, overrides)
+        default_raw, base, overrides, merged, overrides_path = load_base_and_overrides(path)
         config = cls._from_merged_dict(merged)
-        config._overrides_path = overrides_path.resolve()
-        config._raw_merged = merged
+        config._config_path = path
+        config._overrides_path = overrides_path
+        config._default_raw = default_raw
+        config._base_raw = base
+        config._raw_overrides = overrides
+        config._raw_merged = to_nested_dict(config)
         return config
 
 
@@ -491,6 +660,14 @@ class CuratorConfig(BaseModel):
             os.environ.get("SUBTITLE_ROOT", "/mnt/buzz/subs")
         )
     )
+    _base_raw: dict = PrivateAttr(default_factory=dict)
+    _raw_overrides: dict = PrivateAttr(default_factory=dict)
+    _raw_merged: dict = PrivateAttr(default_factory=dict)
+    _overrides_path: Path = PrivateAttr(
+        default=Path("/app/data/buzz.overrides.yml")
+    )
+    _config_path: str = PrivateAttr(default=DEFAULT_DAV_CONFIG_PATH)
+    _default_raw: dict = PrivateAttr(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | None = None) -> CuratorConfig:
@@ -500,14 +677,23 @@ class CuratorConfig(BaseModel):
 
         if config_path and os.path.exists(config_path):
             try:
-                with open(config_path, encoding="utf-8") as handle:
-                    raw = yaml.safe_load(handle) or {}
-                if "state_dir" in raw:
-                    data["state_dir"] = Path(str(raw["state_dir"]))
-                if "subtitles" in raw:
+                default_raw, base, overrides, merged, overrides_path = load_base_and_overrides(
+                    config_path
+                )
+                if "state_dir" in merged:
+                    data["state_dir"] = Path(str(merged["state_dir"]))
+                if "subtitles" in merged:
                     data["subtitles"] = SubtitleConfig.from_raw(
-                        raw["subtitles"]
+                        merged["subtitles"]
                     )
+                config = cls(**data)
+                config._config_path = config_path
+                config._default_raw = default_raw
+                config._base_raw = base
+                config._raw_overrides = overrides
+                config._raw_merged = merged
+                config._overrides_path = overrides_path
+                return config
             except Exception as exc:
                 print(
                     f"Warning: Failed to load subtitles from {config_path}: "
@@ -516,8 +702,9 @@ class CuratorConfig(BaseModel):
 
         if "subtitles" not in data:
             data["subtitles"] = SubtitleConfig.from_env()
-
-        return cls(**data)
+        config = cls(**data)
+        config._config_path = config_path
+        return config
 
 
 PresentationConfig = CuratorConfig

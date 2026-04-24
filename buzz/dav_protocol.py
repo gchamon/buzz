@@ -1,8 +1,11 @@
 """WebDAV XML response generation and remote media validation."""
 
+import time
 from typing import Any
 from urllib import error, parse, request
 from xml.sax.saxutils import escape
+
+from .core.events import record_event
 
 from .core.media import is_probably_media_content_type, looks_like_markup
 from .core.state import BuzzState
@@ -69,47 +72,79 @@ def open_remote_media(
     if not source_url:
         raise ValueError("missing Real-Debrid source URL")
     last_error = "unable to resolve upstream media"
+    last_exception: Exception | None = None
     state.verbose_log(f"Opening remote media from {source_url!r}")
-    for attempt in range(2):
+    max_attempts = 3
+    for attempt in range(max_attempts):
         try:
             download_url = state.resolve_download_url(
-                source_url, force_refresh=attempt == 1
+                source_url, force_refresh=attempt > 0
             )
         except Exception as exc:
             last_error = str(exc)
+            last_exception = exc
             state.verbose_log(f"Failed to resolve download URL: {exc}")
-            if attempt == 0:
+            if attempt < max_attempts - 1:
+                record_event(
+                    f"Retrying Real-Debrid stream resolution after failure: {exc}",
+                    level="warning",
+                    event="rd_stream_retry",
+                    path=source_url,
+                    attempt=attempt + 1,
+                )
+                time.sleep(0.5 * (attempt + 1))
                 continue
             raise
 
         state.verbose_log(
-            f"Resolved to {download_url!r} (attempt {attempt + 1}/2)"
+            f"Resolved to {download_url!r} (attempt {attempt + 1}/{max_attempts})"
         )
         req = request.Request(download_url, method="GET")
         if range_header:
             start, end = range_header
             req.add_header("Range", f"bytes={start}-{end}")
         try:
-            response = request.urlopen(req, timeout=60)
+            response = request.urlopen(
+                req,
+                timeout=max(1, int(state.config.request_timeout_secs)),
+            )
         except error.HTTPError as exc:
             state.invalidate_download_url(source_url)
             last_error = (
                 f"upstream returned HTTP {exc.code} for {download_url}"
             )
+            last_exception = exc
             state.verbose_log(
                 f"HTTP Error {exc.code} on attempt {attempt + 1}: "
                 f"{exc.reason}"
             )
-            if attempt == 0:
+            if attempt < max_attempts - 1:
+                record_event(
+                    f"Retrying Real-Debrid stream after upstream HTTP {exc.code}",
+                    level="warning",
+                    event="rd_stream_retry",
+                    path=source_url,
+                    attempt=attempt + 1,
+                )
+                time.sleep(0.5 * (attempt + 1))
                 continue
             raise ValueError(last_error) from exc
         except Exception as exc:
             state.invalidate_download_url(source_url)
             last_error = f"failed to connect to upstream: {exc}"
+            last_exception = exc
             state.verbose_log(
                 f"Connection error on attempt {attempt + 1}: {exc}"
             )
-            if attempt == 0:
+            if attempt < max_attempts - 1:
+                record_event(
+                    f"Retrying Real-Debrid stream after connection error: {exc}",
+                    level="warning",
+                    event="rd_stream_retry",
+                    path=source_url,
+                    attempt=attempt + 1,
+                )
+                time.sleep(0.5 * (attempt + 1))
                 continue
             raise ValueError(last_error) from exc
 
@@ -122,13 +157,22 @@ def open_remote_media(
             response.close()
             state.invalidate_download_url(source_url)
             last_error = str(exc)
+            last_exception = exc
             state.verbose_log(
                 f"Validation failed on attempt {attempt + 1}: {exc}"
             )
-            if attempt == 0:
+            if attempt < max_attempts - 1:
+                record_event(
+                    f"Retrying Real-Debrid stream after validation error: {exc}",
+                    level="warning",
+                    event="rd_stream_retry",
+                    path=source_url,
+                    attempt=attempt + 1,
+                )
+                time.sleep(0.5 * (attempt + 1))
                 continue
             raise
-    raise ValueError(last_error)
+    raise ValueError(last_error) from last_exception
 
 
 def validate_remote_media_response(

@@ -3,14 +3,13 @@
 import json
 import os
 import queue
-import signal
 import threading
 import asyncio
 from contextlib import asynccontextmanager
 from http import HTTPStatus
 from urllib import error
+from typing import cast
 
-import yaml
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -35,24 +34,42 @@ from .dav_protocol import open_remote_media, propfind_body
 from .models import (
     AddTorrentRequest,
     DavConfig,
+    DEFAULT_DAV_CONFIG_PATH,
     DeleteTorrentRequest,
     DeleteTrashRequest,
+    HOT_RELOADABLE_FIELDS,
+    RESTART_REQUIRED_FIELDS,
     ErrorResponse,
     RestoreTrashRequest,
     SelectFilesRequest,
     UiNotifyRequest,
     _strip_secrets,
+    diff_fields,
+    deep_merge,
+    filter_paths,
+    get_nested_value,
     mask_secrets,
     save_overrides,
+    set_nested_value,
     to_nested_dict,
 )
 from .ui_live import build_ui
+
+SNAPSHOT_RELOAD_FIELDS = (
+    "directories.anime.patterns",
+    "compat.enable_all_dir",
+    "compat.enable_unplayable_dir",
+    "version_label",
+)
 
 
 def _fetch_opensubtitles_languages() -> list[tuple[str, str]]:
     try:
         import httpx
-        resp = httpx.get("https://api.opensubtitles.com/api/v1/infos/languages", timeout=10.0)
+
+        resp = httpx.get(
+            "https://api.opensubtitles.com/api/v1/infos/languages", timeout=10.0
+        )
         resp.raise_for_status()
         data = resp.json().get("data", [])
         return [(item["language_code"], item["language_name"]) for item in data]
@@ -70,11 +87,18 @@ class DavApp:
         registry.reconfigure(config.log_max_entries)
 
         self.config = config
+        self.saved_config = config
+        self.config_path = getattr(
+            config,
+            "_config_path",
+            os.environ.get("BUZZ_CONFIG", DEFAULT_DAV_CONFIG_PATH),
+        )
         os.environ["RD_APITOKEN"] = config.token
         self.client = RD()
         self.ui_loop: asyncio.AbstractEventLoop | None = None
         self.state = BuzzState(config, self.client, on_ui_change=self._notify_ui_change)
-        self.opensubtitles_languages = _fetch_opensubtitles_languages()
+        self.curator_ready = not bool(config.curator_url)
+        self.opensubtitles_languages: list[tuple[str, str]] = []
         self.ui = build_ui(self)
         self._curator_log_level: str = "info"
         registry.add_listener(self._handle_recorded_event)
@@ -82,6 +106,11 @@ class DavApp:
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             self.ui_loop = asyncio.get_running_loop()
+            threading.Thread(
+                target=self._load_opensubtitles_languages,
+                name="buzz-opensubtitles-languages",
+                daemon=True,
+            ).start()
             initial_sync = InitialSync(self.state)
             poller = Poller(self.state)
             initial_sync.start()
@@ -113,6 +142,17 @@ class DavApp:
             if route.__class__.__name__ == "WebSocketRoute"
         )
         self.app.router.routes.append(websocket_route)
+
+    def _load_opensubtitles_languages(self) -> None:
+        languages = _fetch_opensubtitles_languages()
+        self.opensubtitles_languages = languages
+        self._notify_ui_change("config")
+
+    def is_ready(self) -> bool:
+        return self.state.is_ready() and self.curator_ready
+
+    def is_service_ready(self) -> bool:
+        return self.state.is_ready()
 
     def _setup_routes(self):
         @self.app.get("/", response_class=HTMLResponse)
@@ -150,24 +190,21 @@ class DavApp:
 
         @self.app.get("/api/config")
         def get_config():
-            effective = to_nested_dict(self.config)
-            masked = mask_secrets(effective)
-            overrides = {}
-            if self.config._overrides_path.exists():
-                try:
-                    with open(self.config._overrides_path, encoding="utf-8") as handle:
-                        overrides = yaml.safe_load(handle) or {}
-                except Exception:  # noqa: BLE001
-                    pass
-            return {"effective": masked, "overrides": overrides}
+            return self.config_payload()
 
         @self.app.post("/api/config")
         def post_config(payload: dict):
             try:
                 overrides = payload.get("overrides", {})
                 overrides = _strip_secrets(overrides)
-                save_overrides(overrides, self.config._overrides_path)
-                return {"status": "saved", "restart_required": True}
+                return self.persist_overrides(overrides)
+            except Exception as exc:
+                return JSONResponse(status_code=400, content={"error": str(exc)})
+
+        @self.app.post("/api/config/restore-defaults")
+        def restore_defaults():
+            try:
+                return self.persist_overrides({})
             except Exception as exc:
                 return JSONResponse(status_code=400, content={"error": str(exc)})
 
@@ -177,6 +214,8 @@ class DavApp:
             level = str(payload.message.get("level", "info")).lower()
             source = str(payload.message.get("source", "dav"))
             event_name = str(payload.message.get("event", ""))
+            if source == "curator" and event_name == "curator_ready":
+                self.curator_ready = True
             priority = {"error": 3, "warning": 2, "info": 1, "debug": 0}
             if priority.get(level, 0) > priority.get(self._curator_log_level, 0):
                 self._curator_log_level = level
@@ -206,7 +245,7 @@ class DavApp:
         def readyz():
             from .core.events import registry
 
-            is_ready = self.state.is_ready()
+            is_ready = self.is_service_ready()
             status_code = HTTPStatus.OK if is_ready else HTTPStatus.SERVICE_UNAVAILABLE
             payload_status = "ready" if is_ready else "starting"
             return JSONResponse(
@@ -214,6 +253,8 @@ class DavApp:
                 content={
                     "status": payload_status,
                     "log_count": len(registry.events),
+                    "curator_ready": self.curator_ready,
+                    "ui_status": "ready" if self.is_ready() else "starting",
                     **self.state.status(),
                 },
             )
@@ -347,11 +388,6 @@ class DavApp:
         def get_logs(limit: int = 100):
             return self.get_logs(limit)
 
-        @self.app.post("/api/restart")
-        def restart_service():
-            self.restart_service()
-            return {"status": "restarting"}
-
         @self.app.options("/dav/{path:path}")
         def options_dav(path: str):
             return Response(
@@ -452,12 +488,11 @@ class DavApp:
                 return Response(status_code=status_code, headers=headers)
 
             try:
-                # We need a generator for StreamingResponse
-                def stream_generator():
-                    response, first_chunk = open_remote_media(
-                        self.state, node, range_header
-                    )
+                response, first_chunk = open_remote_media(
+                    self.state, node, range_header
+                )
 
+                def stream_generator():
                     chunk_size = 64 * 1024
                     buffer_size = self.config.stream_buffer_size
 
@@ -558,7 +593,7 @@ class DavApp:
             "/rebuild", "/api/subtitles/fetch"
         )
         try:
-            with httpx.Client(timeout=5.0) as client:
+            with httpx.Client(timeout=self.config.request_timeout_secs) as client:
                 resp = client.post(
                     subs_url, json={"torrent_name": torrent_name}
                 )
@@ -566,14 +601,112 @@ class DavApp:
         except Exception as exc:
             return {"error": f"Curator unreachable: {exc}"}
 
+    def config_payload(self) -> dict:
+        """Return effective and override config data for the UI/API."""
+        return {
+            "effective": mask_secrets(to_nested_dict(self.saved_config)),
+            "overrides": self.saved_config._raw_overrides,
+            "restart_required": self.restart_required,
+            "restart_required_fields": self.restart_required_fields(),
+            "hot_reloaded_fields": [],
+        }
+
+    @property
+    def restart_required(self) -> bool:
+        """Return whether saved config differs from the running process."""
+        return bool(self.restart_required_fields())
+
+    def restart_required_fields(self) -> list[str]:
+        """Return restart-bound fields that differ from current runtime config."""
+        return diff_fields(
+            to_nested_dict(self.config),
+            to_nested_dict(self.saved_config),
+            RESTART_REQUIRED_FIELDS,
+        )
+
+    def _curator_reload_url(self) -> str:
+        if not self.config.curator_url:
+            return ""
+        return self.config.curator_url.replace("/rebuild", "/api/config/reload")
+
+    def _notify_curator_config_reload(self) -> None:
+        import httpx
+
+        reload_url = self._curator_reload_url()
+        if not reload_url:
+            return
+        try:
+            with httpx.Client(timeout=self.config.request_timeout_secs) as client:
+                response = client.post(reload_url)
+                response.raise_for_status()
+        except Exception as exc:
+            record_event(
+                f"Curator config reload failed: {exc}",
+                level="warning",
+                event="curator_config_reload_failed",
+            )
+
+    def _apply_runtime_config(
+        self,
+        new_config: DavConfig,
+        hot_fields: list[str],
+    ) -> None:
+        from .core.events import registry
+
+        snapshot_changed = any(
+            field in SNAPSHOT_RELOAD_FIELDS for field in hot_fields
+        )
+        self.saved_config = new_config
+        runtime_effective = to_nested_dict(self.config)
+        saved_effective = to_nested_dict(new_config)
+        for field in hot_fields:
+            value = get_nested_value(saved_effective, field)
+            if value is not None:
+                set_nested_value(runtime_effective, field, value)
+        runtime_config = DavConfig._from_merged_dict(runtime_effective)
+        runtime_config._config_path = new_config._config_path
+        runtime_config._overrides_path = new_config._overrides_path
+        runtime_config._default_raw = new_config._default_raw
+        runtime_config._base_raw = new_config._base_raw
+        runtime_config._raw_overrides = new_config._raw_overrides
+        runtime_config._raw_merged = to_nested_dict(runtime_config)
+        self.config = runtime_config
+        registry.reconfigure(runtime_config.log_max_entries)
+        self.state.apply_config(runtime_config)
+        if snapshot_changed:
+            self.state.sync(trigger_hook=False)
+        self._notify_ui_change("config")
+        self._notify_ui_change("sync")
+
+    def persist_overrides(self, overrides: dict) -> dict:
+        """Save overrides, hot-apply live-safe fields, and report status."""
+        save_overrides(overrides, self.config._overrides_path)
+        previous_effective = to_nested_dict(self.config)
+        hot_override_subset = filter_paths(overrides, HOT_RELOADABLE_FIELDS)
+        hot_fields = diff_fields(
+            previous_effective,
+            deep_merge(previous_effective, hot_override_subset),
+            HOT_RELOADABLE_FIELDS,
+        )
+        new_config = DavConfig.load(self.config_path)
+        self._apply_runtime_config(new_config, hot_fields)
+        self._notify_curator_config_reload()
+        restart_fields = self.restart_required_fields()
+        return {
+            "status": "saved",
+            "restart_required": bool(restart_fields),
+            "restart_required_fields": restart_fields,
+            "hot_reloaded_fields": hot_fields,
+        }
+
     async def _handle_validation_error(
         self, request: Request, exc: Exception
     ) -> JSONResponse:
         first_error = {"msg": "Invalid request"}
         if isinstance(exc, RequestValidationError):
-            first_error = (
-                exc.errors()[0] if exc.errors() else {"msg": "Invalid request"}
-            )
+            validation_error = cast(RequestValidationError, exc)
+            errors = validation_error.errors()
+            first_error = errors[0] if errors else {"msg": "Invalid request"}
         return JSONResponse(
             status_code=400,
             content={"error": str(first_error.get("msg", "Invalid request"))},
@@ -618,10 +751,6 @@ class DavApp:
         from .core.events import registry
 
         return len(registry.events)
-
-    def restart_service(self) -> None:
-        record_event("Restart requested via API", level="warning")
-        os.kill(os.getpid(), signal.SIGTERM)
 
     def _handle_recorded_event(self, event: dict) -> None:
         self._notify_ui_topic("buzz:logs", event)

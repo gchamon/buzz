@@ -336,6 +336,12 @@ class BuzzState:
         self._closed = False
         self.on_ui_change = on_ui_change
 
+    def apply_config(self, config: DavConfig) -> None:
+        """Swap in a refreshed runtime config for future operations."""
+        with self.lock:
+            self.config = config
+            self.builder = LibraryBuilder(config)
+
     def _snapshot_exists_in_db(self) -> bool:
         row = self.conn.execute(
             "SELECT COUNT(*) FROM library_snapshot"
@@ -1110,7 +1116,9 @@ class Poller(threading.Thread):
 
     def run(self) -> None:
         """Poll Real-Debrid and emit events when the library changes."""
-        while not self._stop_event.wait(self.state.config.poll_interval_secs):
+        while True:
+            if self._stop_event.wait(self.state.config.poll_interval_secs):
+                return
             try:
                 report = self.state.sync()
                 if report.get("changed"):

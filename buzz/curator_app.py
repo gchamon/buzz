@@ -1,6 +1,7 @@
 """FastAPI application for the curator service."""
 
 import json
+import os
 import traceback
 from contextlib import asynccontextmanager
 from urllib import request
@@ -30,6 +31,11 @@ class CuratorApp:
         registry.reconfigure(config.log_max_entries)
 
         self.config = config
+        self.config_path = getattr(
+            config,
+            "_config_path",
+            os.environ.get("BUZZ_CONFIG", "/app/buzz.yml"),
+        )
         self.curator = Curator(config)
         registry.add_listener(self._notify_dav_ui)
 
@@ -49,6 +55,10 @@ class CuratorApp:
                         f"initial curator build failed: {exc}",
                         level="error",
                     )
+            record_event(
+                "curator startup complete",
+                event="curator_ready",
+            )
             yield
             self.curator.cleanup()
             record_event(
@@ -83,6 +93,11 @@ class CuratorApp:
             background_tasks.add_task(self._run_rebuild, changed_roots)
             return {"status": "rebuilding"}
 
+        @self.app.post("/api/config/reload")
+        def reload_config():
+            self.reload_config()
+            return {"status": "reloaded"}
+
         @self.app.get("/api/subtitles/status")
         def get_subtitles_status():
             if not self.config.subtitles.enabled:
@@ -111,6 +126,18 @@ class CuratorApp:
                 self.config, torrent_name=torrent_name
             )
             return {"status": "triggered"}
+
+    def reload_config(self) -> None:
+        """Reload curator config from disk for future operations."""
+        from .core.events import registry
+
+        self.config = CuratorConfig.load(self.config_path)
+        self.curator.config = self.config
+        registry.reconfigure(self.config.log_max_entries)
+        record_event(
+            "Curator config reloaded from disk",
+            event="curator_config_reloaded",
+        )
 
     def _run_rebuild(self, changed_roots: list[str]) -> None:
         try:

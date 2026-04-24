@@ -26,11 +26,7 @@
       </div>
       {% endfor %}
       <div class="meta-item">
-        {% if is_ready %}
-        <b id="status-ready-label" class="service-status-green">[ready]</b>
-        {% else %}
-        <b id="status-ready-label" class="service-status-orange">[starting]</b>
-        {% endif %}
+        <b id="status-ready-label" class="{{ status_class }}">{{ status_label }}</b>
       </div>
     </div>
     <div class="meta-row meta-console">
