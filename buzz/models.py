@@ -471,6 +471,12 @@ class CuratorConfig(BaseModel):
         default_factory=lambda: _env_flag("CURATOR_VERBOSE")
         or _env_flag("PRESENTATION_VERBOSE")
     )
+    dav_ui_notify_url: str = Field(
+        default_factory=lambda: os.environ.get(
+            "DAV_UI_NOTIFY_URL",
+            "http://buzz-dav:9999/api/ui/notify",
+        ).rstrip("/")
+    )
     log_max_entries: int = Field(
         default_factory=lambda: int(
             os.environ.get(
@@ -521,6 +527,22 @@ class ErrorResponse(BaseModel):
     """Standard error response payload."""
 
     error: str
+
+
+class UiNotifyRequest(BaseModel):
+    """Request body for backend-driven UI websocket notifications."""
+
+    topics: list[str]
+    message: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("topics")
+    @classmethod
+    def validate_topics(cls, value: list[str]) -> list[str]:
+        """Normalize topics and reject empty payloads."""
+        normalized = [topic.strip() for topic in value if topic.strip()]
+        if not normalized:
+            raise ValueError("Missing topics")
+        return normalized
 
 
 class AddTorrentRequest(BaseModel):

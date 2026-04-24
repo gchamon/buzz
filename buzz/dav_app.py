@@ -3,17 +3,20 @@
 import json
 import os
 import queue
+import signal
 import threading
+import asyncio
 from contextlib import asynccontextmanager
 from http import HTTPStatus
 from urllib import error
 
-import jinja2
 import yaml
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pyview.live_socket import pub_sub_hub
+from pyview.pyview import liveview_container
 from rdapi import RD
 
 from .core.events import record_event
@@ -37,11 +40,13 @@ from .models import (
     ErrorResponse,
     RestoreTrashRequest,
     SelectFilesRequest,
+    UiNotifyRequest,
     _strip_secrets,
     mask_secrets,
     save_overrides,
     to_nested_dict,
 )
+from .ui_live import build_ui
 
 
 def _fetch_opensubtitles_languages() -> list[tuple[str, str]]:
@@ -67,54 +72,81 @@ class DavApp:
         self.config = config
         os.environ["RD_APITOKEN"] = config.token
         self.client = RD()
-        self.state = BuzzState(config, self.client)
+        self.ui_loop: asyncio.AbstractEventLoop | None = None
+        self.state = BuzzState(config, self.client, on_ui_change=self._notify_ui_change)
         self.opensubtitles_languages = _fetch_opensubtitles_languages()
+        self.ui = build_ui(self)
+        self._curator_log_level: str = "info"
+        registry.add_listener(self._handle_recorded_event)
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
+            self.ui_loop = asyncio.get_running_loop()
             initial_sync = InitialSync(self.state)
             poller = Poller(self.state)
             initial_sync.start()
             poller.start()
             yield
             poller.stop()
+            self.ui_loop = None
             self.state.close()
 
         self.app = FastAPI(lifespan=lifespan)
         self.app.add_exception_handler(
             RequestValidationError, self._handle_validation_error
         )
-        self.templates = jinja2.Environment(
-            loader=jinja2.FileSystemLoader(
-                os.path.join(os.path.dirname(__file__), "templates")
-            ),
-            autoescape=jinja2.select_autoescape(["html", "xml"]),
-        )
         self.app.mount(
             "/static",
             StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
             name="static",
         )
+        self.app.mount(
+            "/pyview",
+            StaticFiles(packages=[("pyview", "static")]),
+            name="pyview",
+        )
 
         self._setup_routes()
+        websocket_route = next(
+            route
+            for route in self.ui.routes
+            if route.__class__.__name__ == "WebSocketRoute"
+        )
+        self.app.router.routes.append(websocket_route)
 
     def _setup_routes(self):
-        @self.app.get("/logs", response_class=HTMLResponse)
-        def logs_page(request: Request):
-            return self._logs_page()
-
         @self.app.get("/", response_class=HTMLResponse)
         @self.app.get("/cache", response_class=HTMLResponse)
-        def index():
-            return self._cache_page()
+        async def cache_page(request: Request):
+            return await liveview_container(
+                self.ui.rootTemplate,
+                self.ui.view_lookup,
+                request,
+            )
 
         @self.app.get("/archive", response_class=HTMLResponse)
-        def archive():
-            return self._archive_page()
+        async def archive_page(request: Request):
+            return await liveview_container(
+                self.ui.rootTemplate,
+                self.ui.view_lookup,
+                request,
+            )
+
+        @self.app.get("/logs", response_class=HTMLResponse)
+        async def logs_page(request: Request):
+            return await liveview_container(
+                self.ui.rootTemplate,
+                self.ui.view_lookup,
+                request,
+            )
 
         @self.app.get("/config", response_class=HTMLResponse)
-        def config_page():
-            return self._config_page()
+        async def config_page(request: Request):
+            return await liveview_container(
+                self.ui.rootTemplate,
+                self.ui.view_lookup,
+                request,
+            )
 
         @self.app.get("/api/config")
         def get_config():
@@ -139,27 +171,33 @@ class DavApp:
             except Exception as exc:
                 return JSONResponse(status_code=400, content={"error": str(exc)})
 
+        @self.app.post("/api/ui/notify")
+        def ui_notify(payload: UiNotifyRequest):
+            msg = str(payload.message.get("message", ""))
+            level = str(payload.message.get("level", "info")).lower()
+            source = str(payload.message.get("source", "dav"))
+            event_name = str(payload.message.get("event", ""))
+            priority = {"error": 3, "warning": 2, "info": 1, "debug": 0}
+            if priority.get(level, 0) > priority.get(self._curator_log_level, 0):
+                self._curator_log_level = level
+            record_event(
+                msg,
+                level=level,
+                source=source,
+                event=event_name or None,
+            )
+            for topic in payload.topics:
+                self._notify_ui_topic(
+                    f"buzz:{topic}",
+                    dict(payload.message),
+                )
+            return {"status": "ok"}
+
         @self.app.get("/healthz")
         def healthz():
-            import httpx
-
-            from .core.events import registry
-
-            dav_count = len(registry.events)
-            curator_count = 0
-            if self.config.curator_url:
-                try:
-                    count_url = self.config.curator_url.replace("/rebuild", "/api/logs/count")
-                    with httpx.Client(timeout=1.0) as client:
-                        resp = client.get(count_url)
-                        if resp.status_code == 200:
-                            curator_count = resp.json().get("count", 0)
-                except Exception:  # noqa: BLE001
-                    pass
-
             return {
                 "status": "ok",
-                "log_count": dav_count + curator_count,
+                "log_count": self.log_count(),
                 "archive_count": len(self.state.trashcan),
                 **self.state.status(),
             }
@@ -307,37 +345,11 @@ class DavApp:
 
         @self.app.get("/api/logs")
         def get_logs(limit: int = 100):
-            import httpx
-
-            from .core.events import registry
-
-            logs = registry.get_recent(limit)
-            for log in logs:
-                log.setdefault("source", "dav")
-
-            # Try to fetch from curator
-            if self.config.curator_url:
-                try:
-                    curator_logs_url = self.config.curator_url.replace("/rebuild", "/api/logs")
-                    with httpx.Client(timeout=2.0) as client:
-                        resp = client.get(f"{curator_logs_url}?limit={limit}")
-                        if resp.status_code == 200:
-                            curator_logs = resp.json()
-                            for log in curator_logs:
-                                log.setdefault("source", "curator")
-                            logs.extend(curator_logs)
-                except Exception:  # noqa: BLE001
-                    pass
-
-            logs.sort(key=lambda x: x.get("timestamp", ""))
-            return logs[-limit:]
+            return self.get_logs(limit)
 
         @self.app.post("/api/restart")
         def restart_service():
-            import signal
-
-            record_event("Restart requested via API", level="warning")
-            os.kill(os.getpid(), signal.SIGTERM)
+            self.restart_service()
             return {"status": "restarting"}
 
         @self.app.options("/dav/{path:path}")
@@ -535,122 +547,24 @@ class DavApp:
                 )
                 return Response(status_code=502, content=str(exc))
 
-    def _cache_page(self) -> str:
-        from .core.events import registry
+    def fetch_subtitles(self, torrent_name: str) -> dict:
+        """Request subtitle fetch for a torrent from the curator."""
+        import httpx
 
-        status = self.state.status()
-        torrents = self.state.torrents()
-        page_torrents = [
-            {
-                "id": torrent["id"],
-                "name": torrent["name"],
-                "status": torrent["status"],
-                "progress": torrent["progress"],
-                "bytes": torrent["bytes"],
-                "size": format_bytes(torrent["bytes"]),
-                "selected_files": torrent["selected_files"],
-                "links": torrent["links"],
-                "ended": torrent["ended"] or "-",
-                "short_id": torrent["id"][:8],
-            }
-            for torrent in torrents
-        ]
+        if not self.config.curator_url:
+            return {"error": "No curator configured"}
 
-        sync_state = "syncing" if status.get("sync_in_progress") else "idle"
-
-        template = self.templates.get_template("cache.html")
-        return template.render(
-            torrents_count=len(torrents),
-            last_sync_at=status.get("last_sync_at") or "never",
-            sync_state=sync_state,
-            snapshot_ready="true" if status.get("snapshot_loaded") else "false",
-            last_error=status.get("last_error"),
-            cache_items=page_torrents,
-            trash_count=len(self.state.trashcan),
-            log_count=len(registry.events),
-            subtitle_enabled=self.config.subtitles.enabled,
-            ui_poll_interval_secs=self.config.ui_poll_interval_secs,
+        subs_url = self.config.curator_url.replace(
+            "/rebuild", "/api/subtitles/fetch"
         )
-
-    def _archive_page(self) -> str:
-        from .core.events import registry
-
-        status = self.state.status()
-        torrents = self.state.archive_torrents()
-        archive_items = []
-        for torrent in torrents:
-            archive_items.append(
-                {
-                    "hash": torrent["hash"],
-                    "name": torrent["name"],
-                    "bytes": torrent["bytes"],
-                    "size": format_bytes(torrent["bytes"]),
-                    "file_count": torrent["file_count"],
-                    "deleted_at": torrent["deleted_at"] or "-",
-                }
-            )
-
-        sync_state = "syncing" if status.get("sync_in_progress") else "idle"
-
-        template = self.templates.get_template("archive.html")
-        return template.render(
-            torrents_count=len(self.state.torrents()),
-            last_sync_at=status.get("last_sync_at") or "never",
-            sync_state=sync_state,
-            snapshot_ready="true" if status.get("snapshot_loaded") else "false",
-            last_error=status.get("last_error"),
-            archive_items=archive_items,
-            trash_count=len(archive_items),
-            log_count=len(registry.events),
-            ui_poll_interval_secs=self.config.ui_poll_interval_secs,
-        )
-
-    def _logs_page(self) -> str:
-        from .core.events import registry
-
-        status = self.state.status()
-        sync_state = "syncing" if status.get("sync_in_progress") else "idle"
-
-        template = self.templates.get_template("logs.html")
-        return template.render(
-            torrents_count=len(self.state.torrents()),
-            last_sync_at=status.get("last_sync_at") or "never",
-            sync_state=sync_state,
-            snapshot_ready="true" if status.get("snapshot_loaded") else "false",
-            last_error=status.get("last_error"),
-            trash_count=len(self.state.trashcan),
-            log_count=len(registry.events),
-            ui_poll_interval_secs=self.config.ui_poll_interval_secs,
-        )
-    def _config_page(self) -> str:
-        from .core.events import registry
-
-        status = self.state.status()
-        sync_state = "syncing" if status.get("sync_in_progress") else "idle"
-        effective = to_nested_dict(self.config)
-        masked = mask_secrets(effective)
-        effective_yaml = yaml.safe_dump(masked, default_flow_style=False, sort_keys=False)
-
-        selected = set(self.config.subtitles.languages)
-        languages = sorted(
-            self.opensubtitles_languages or [],
-            key=lambda item: (item[0] not in selected, item[1].lower()),
-        )
-
-        template = self.templates.get_template("config.html")
-        return template.render(
-            torrents_count=len(self.state.torrents()),
-            last_sync_at=status.get("last_sync_at") or "never",
-            sync_state=sync_state,
-            snapshot_ready="true" if status.get("snapshot_loaded") else "false",
-            last_error=status.get("last_error"),
-            trash_count=len(self.state.trashcan),
-            log_count=len(registry.events),
-            ui_poll_interval_secs=self.config.ui_poll_interval_secs,
-            effective_yaml=effective_yaml,
-            config=self.config,
-            opensubtitles_languages=languages,
-        )
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                resp = client.post(
+                    subs_url, json={"torrent_name": torrent_name}
+                )
+                return {"status_code": resp.status_code, "data": resp.json()}
+        except Exception as exc:
+            return {"error": f"Curator unreachable: {exc}"}
 
     async def _handle_validation_error(
         self, request: Request, exc: Exception
@@ -664,6 +578,75 @@ class DavApp:
             status_code=400,
             content={"error": str(first_error.get("msg", "Invalid request"))},
         )
+
+    def get_logs(self, limit: int = 100) -> list[dict]:
+        from .core.events import registry
+
+        logs = registry.get_recent(limit)
+        for log in logs:
+            log.setdefault("source", "dav")
+
+        logs.sort(key=lambda item: item.get("timestamp", ""))
+        return logs[-limit:]
+
+    def formatted_logs(self, limit: int = 100) -> list[dict[str, str]]:
+        formatted = []
+        for log in self.get_logs(limit):
+            timestamp = log.get("timestamp", "")
+            display_timestamp = timestamp
+            if "T" in timestamp and len(timestamp) >= 19:
+                display_timestamp = timestamp[11:19]
+            level = str(log.get("level", "info")).lower()
+            level_label = f"[{level.upper()}]"
+            source = "buzz-curator" if log.get("source") == "curator" else "buzz-dav"
+            message = str(log.get("message", ""))
+            copy_text = f"{source} {display_timestamp} {level_label} {message}"
+            formatted.append(
+                {
+                    "copy_text": copy_text,
+                    "level": level,
+                    "level_class": f"log-level-{level}",
+                    "level_label": level_label,
+                    "message": message,
+                    "source": source,
+                    "timestamp": display_timestamp,
+                }
+            )
+        return formatted
+
+    def log_count(self) -> int:
+        from .core.events import registry
+
+        return len(registry.events)
+
+    def restart_service(self) -> None:
+        record_event("Restart requested via API", level="warning")
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    def _handle_recorded_event(self, event: dict) -> None:
+        self._notify_ui_topic("buzz:logs", event)
+        self._notify_ui_topic("buzz:status", event)
+
+    def _notify_ui_change(self, topic: str) -> None:
+        self._notify_ui_topic("buzz:status", {"topic": topic})
+        if topic == "archive":
+            self._notify_ui_topic("buzz:archive", {"topic": topic})
+        elif topic == "sync":
+            self._notify_ui_topic("buzz:archive", {"topic": topic})
+            self._notify_ui_topic("buzz:logs", {"topic": topic})
+        elif topic == "config":
+            self._notify_ui_topic("buzz:config", {"topic": topic})
+
+    def _notify_ui_topic(self, topic: str, message: dict) -> None:
+        if self.ui_loop is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                pub_sub_hub.send_all_on_topic_async(topic, message),
+                self.ui_loop,
+            )
+        except Exception:
+            pass
 
 
 def run_dav_server(config: DavConfig) -> None:

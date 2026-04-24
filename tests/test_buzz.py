@@ -1044,9 +1044,11 @@ class DavAppTests(unittest.TestCase):
         rd_patcher.start()
         self.dav_app = DavApp(config)
         self.state = self.dav_app.state
-        self.client = TestClient(self.dav_app.app)
+        self.client_cm = TestClient(self.dav_app.app)
+        self.client = self.client_cm.__enter__()
 
     def tearDown(self):
+        self.client_cm.__exit__(None, None, None)
         self.tmpdir.cleanup()
 
     def test_dav_rel_path_decodes_encoded_names(self):
@@ -1087,7 +1089,7 @@ class DavAppTests(unittest.TestCase):
         self.assertEqual(node["size"], 2)
         self.assertEqual(node["content"], "ok")
 
-    def test_cache_page_renders_cached_items(self):
+    def test_cache_page_renders_pyview_shell(self):
         self.dav_app.config.subtitles.enabled = True
         self.state.cache = {
             "torrent-1": {
@@ -1111,20 +1113,18 @@ class DavAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("buzz: cache", body)
+        self.assertIn('data-phx-main="true"', body)
+        self.assertIn('src="/pyview/assets/app.js"', body)
         self.assertIn("Movie &amp; Stuff", body)
         self.assertIn("1.5 MiB", body)
-        self.assertIn("2026-01-02T00:00:00Z", body)
-        self.assertIn("status-downloaded", body)
         self.assertIn('href="/static/buzz.css"', body)
-        self.assertIn('src="/static/buzz.js"', body)
-        self.assertIn('id="btn-s-torrent-1"', body)
-        self.assertIn('document.getElementById("btn-x-" + id).style.display', body)
-        self.assertIn('const subtitleButton = document.getElementById("btn-s-" + id);', body)
-        self.assertIn('subtitleButton.style.display = show ? "none" : "flex";', body)
+        self.assertIn('phx-click="prompt_delete"', body)
+        self.assertIn('phx-click="fetch_subs"', body)
 
-    def test_archive_page_renders_shared_assets(self):
+    def test_archive_page_renders_pyview_shell(self):
         self.state.trashcan = {
             "trash-1": {
+                "hash": "trash-1",
                 "name": "Old & Gone",
                 "bytes": 4096,
                 "file_count": 3,
@@ -1138,13 +1138,15 @@ class DavAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("buzz: archive", body)
+        self.assertIn('data-phx-main="true"', body)
+        self.assertIn('src="/pyview/assets/app.js"', body)
         self.assertIn("fa-box-archive", body)
         self.assertIn('id="nav-archive-count"', body)
         self.assertIn("archive(<span id=\"nav-archive-count\">1</span>)", body)
         self.assertIn('id="nav-log-count"', body)
         self.assertIn("Old &amp; Gone", body)
         self.assertIn('href="/static/buzz.css"', body)
-        self.assertIn('src="/static/buzz.js"', body)
+        self.assertIn('phx-click="prompt_restore"', body)
 
     def test_cache_page_renders_empty_state_and_error_banner(self):
         self.state.last_error = "Boom & stuff"
@@ -1153,6 +1155,7 @@ class DavAppTests(unittest.TestCase):
         body = response.text
 
         self.assertEqual(response.status_code, 200)
+        self.assertIn('data-phx-main="true"', body)
         self.assertIn("No cached items yet.", body)
         self.assertIn("Boom &amp; stuff", body)
 
@@ -1163,12 +1166,40 @@ class DavAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Archive is empty.", body)
 
+    def test_logs_page_renders_pyview_content(self):
+        response = self.client.get("/logs")
+        body = response.text
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("buzz: system logs", body)
+        self.assertIn('src="/pyview/assets/app.js"', body)
+        self.assertIn("System Logs", body)
+        self.assertIn("RESTART STACK", body)
+        self.assertIn("COPY", body)
+
+    def test_config_page_renders_pyview_content(self):
+        response = self.client.get("/config")
+        body = response.text
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("buzz: config", body)
+        self.assertIn('src="/pyview/assets/app.js"', body)
+        self.assertIn("Effective Configuration", body)
+        self.assertIn("EDIT", body)
+        self.assertIn('id="effective-config-code"', body)
+
     def test_static_assets_are_served(self):
         response = self.client.get("/static/buzz.js")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("initBuzzPage", response.text)
-        self.assertIn("const zookeeper", response.text)
+        self.assertIn("markTruncatedCells", response.text)
+        self.assertIn("initTruncCells", response.text)
+
+    def test_pyview_assets_are_served(self):
+        response = self.client.get("/pyview/assets/app.js")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("LiveSocket", response.text)
 
     def test_healthz_and_readyz_use_asgi_routes(self):
         self.state.snapshot_loaded = False

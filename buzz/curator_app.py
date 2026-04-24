@@ -1,9 +1,11 @@
 """FastAPI application for the curator service."""
 
+import json
 import traceback
 from contextlib import asynccontextmanager
+from urllib import request
 
-from fastapi import FastAPI
+from fastapi import BackgroundTasks, FastAPI
 from fastapi.responses import JSONResponse
 
 from .core.curator import Curator, RebuildError, build_library
@@ -29,6 +31,7 @@ class CuratorApp:
 
         self.config = config
         self.curator = Curator(config)
+        registry.add_listener(self._notify_dav_ui)
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
@@ -72,38 +75,13 @@ class CuratorApp:
                 return {"count": len(registry.events)}
 
         @self.app.post("/rebuild")
-        async def rebuild(payload: dict | None = None):
+        async def rebuild(
+            background_tasks: BackgroundTasks,
+            payload: dict | None = None,
+        ):
             changed_roots = (payload or {}).get("changed_roots", [])
-            try:
-                report = self.curator.handle_rebuild(changed_roots)
-                return report
-            except Exception as exc:
-                payload = {"error": str(exc)}
-                if isinstance(exc, RebuildError):
-                    payload.update(exc.payload)
-
-                from urllib.error import HTTPError
-
-                cause = exc.__cause__
-                if isinstance(cause, HTTPError) and cause.code in (401, 403):
-                    record_event(
-                        "curator rebuild failed: "
-                        "Jellyfin API Token is invalid or unauthorized",
-                        level="error",
-                    )
-                    payload["error"] = (
-                        "Jellyfin API Token is invalid or unauthorized"
-                    )
-                    return JSONResponse(
-                        status_code=403, content=payload
-                    )
-
-                record_event(
-                    f"curator rebuild failed: {exc}\n"
-                    f"{traceback.format_exc()}",
-                    level="error",
-                )
-                return JSONResponse(status_code=500, content=payload)
+            background_tasks.add_task(self._run_rebuild, changed_roots)
+            return {"status": "rebuilding"}
 
         @self.app.get("/api/subtitles/status")
         def get_subtitles_status():
@@ -133,6 +111,61 @@ class CuratorApp:
                 self.config, torrent_name=torrent_name
             )
             return {"status": "triggered"}
+
+    def _run_rebuild(self, changed_roots: list[str]) -> None:
+        try:
+            self.curator.handle_rebuild(changed_roots)
+        except Exception as exc:
+            if isinstance(exc, RebuildError):
+                cause = exc.__cause__
+                from urllib.error import HTTPError
+
+                if isinstance(cause, HTTPError) and cause.code in (401, 403):
+                    record_event(
+                        "curator rebuild failed: "
+                        "Jellyfin API Token is invalid or unauthorized",
+                        level="error",
+                    )
+                    return
+
+            record_event(
+                f"curator rebuild failed: {exc}\n"
+                f"{traceback.format_exc()}",
+                level="error",
+            )
+
+    def _notify_dav_ui(self, event: dict) -> None:
+        if not self.config.dav_ui_notify_url:
+            return
+
+        payload = {
+            "topics": ["logs", "status"],
+            "message": {
+                "source": "curator",
+                "event": event.get("event"),
+                "level": event.get("level"),
+                "message": event.get("message", ""),
+            },
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = request.Request(
+            self.config.dav_ui_notify_url,
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with request.urlopen(req, timeout=2) as response:
+                if response.status not in (200, 204):
+                    print(
+                        f"[WARN] DAV UI notify returned HTTP {response.status}",
+                        flush=True,
+                    )
+        except Exception as exc:
+            print(
+                f"[WARN] DAV UI notify failed: {exc}",
+                flush=True,
+            )
 
 
 def run_curator_server(config: CuratorConfig) -> None:

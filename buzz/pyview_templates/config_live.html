@@ -1,0 +1,395 @@
+<main>
+  <div class="prompt">
+    <b>buzz:</b>
+    <div class="menu-options">
+      <a phx-click="navigate" phx-value-to="/cache" class="nav-link">🪎 cache</a>
+      <span class="nav-sep">◈</span>
+      <a phx-click="navigate" phx-value-to="/archive" class="nav-link" id="nav-archive">
+        <i class="fa-solid fa-box-archive nav-icon" aria-hidden="true"></i>
+        archive(<span id="nav-archive-count">{{ nav.archive_count }}</span>)
+      </a>
+      <span class="nav-sep">◈</span>
+      <a phx-click="navigate" phx-value-to="/logs" class="nav-link" id="nav-logs" phx-hook="BuzzLogGlow" data-log-level="{{ nav.log_level }}">
+        📜 logs(<span id="nav-log-count">{{ nav.log_count }}</span>)
+      </a>
+      <span class="nav-sep">◈</span>
+      <a class="nav-link active">⚙️ config</a>
+    </div>
+  </div>
+
+  <div class="meta-bar">
+    <div class="meta-row">
+      {% for item in meta_items %}
+      <div class="meta-item">
+        <b class="meta-item-label">[{{ item.label }}]</b>
+        <span>{{ item.value }}</span>
+      </div>
+      {% endfor %}
+      <div class="meta-item">
+        {% if is_ready %}
+        <b id="status-ready-label" class="service-status-green">[ready]</b>
+        {% else %}
+        <b id="status-ready-label" class="service-status-orange">[starting]</b>
+        {% endif %}
+      </div>
+    </div>
+    <div class="meta-row meta-console">
+      <b class="meta-item-label">console:</b>
+      <span id="meta-console-msg" class="{{ console_class }}">{{ console_msg }}</span>
+    </div>
+  </div>
+
+  {% if has_error %}
+  <div class="error"><span class="label-red">[ERROR]</span> {{ last_error }}</div>
+  {% endif %}
+
+  {% if is_editing %}
+  <section class="config-page-container" id="edit-overrides-section">
+    <div class="config-header">
+      <h1 class="config-title">Edit Overrides</h1>
+      <button type="button" class="secondary" phx-click="cancel">CANCEL</button>
+    </div>
+
+    <div id="edit-overrides-panel" class="config-panel-body">
+      <div class="config-scrollable">
+        {% if restart_required %}
+        <div id="restart-banner" class="restart-banner">
+          <span>
+            Configuration saved. Restart required for changes to take effect.
+          </span>
+        </div>
+        {% endif %}
+
+        <form id="config-form" class="config-form" phx-submit="save">
+          <fieldset class="config-section">
+            <legend>Polling</legend>
+            <div class="config-field">
+              <label for="poll_interval_secs">poll_interval_secs</label>
+              <input
+                type="number"
+                id="poll_interval_secs"
+                name="poll_interval_secs"
+                value="{{ values.poll_interval_secs }}"
+              >
+            </div>
+          </fieldset>
+
+          <fieldset class="config-section">
+            <legend>Server</legend>
+            <div class="config-field">
+              <label for="server.bind">bind</label>
+              <input
+                type="text"
+                id="server.bind"
+                name="server.bind"
+                value="{{ values.bind }}"
+              >
+            </div>
+            <div class="config-field">
+              <label for="server.port">port</label>
+              <input
+                type="number"
+                id="server.port"
+                name="server.port"
+                value="{{ values.port }}"
+              >
+            </div>
+            <div class="config-field">
+              <label for="server.stream_buffer_size">stream_buffer_size</label>
+              <input
+                type="number"
+                id="server.stream_buffer_size"
+                name="server.stream_buffer_size"
+                value="{{ values.stream_buffer_size }}"
+              >
+            </div>
+          </fieldset>
+
+          <fieldset class="config-section">
+            <legend>Hooks</legend>
+            <div class="config-field">
+              <label for="hooks.on_library_change">on_library_change</label>
+              <input
+                type="text"
+                id="hooks.on_library_change"
+                name="hooks.on_library_change"
+                value="{{ values.on_library_change }}"
+              >
+            </div>
+            <div class="config-field">
+              <label for="hooks.curator_url">curator_url</label>
+              <input
+                type="text"
+                id="hooks.curator_url"
+                name="hooks.curator_url"
+                value="{{ values.curator_url }}"
+              >
+            </div>
+            <div class="config-field">
+              <label for="hooks.rd_update_delay_secs">rd_update_delay_secs</label>
+              <input
+                type="number"
+                id="hooks.rd_update_delay_secs"
+                name="hooks.rd_update_delay_secs"
+                value="{{ values.rd_update_delay_secs }}"
+              >
+            </div>
+          </fieldset>
+
+          <fieldset class="config-section">
+            <legend>Compatibility</legend>
+            <div class="config-field checkbox-field">
+              <input
+                type="checkbox"
+                id="compat.enable_all_dir"
+                name="compat.enable_all_dir"
+                {% if values.enable_all_dir %}checked{% endif %}
+              >
+              <label for="compat.enable_all_dir">enable_all_dir</label>
+            </div>
+            <div class="config-field checkbox-field">
+              <input
+                type="checkbox"
+                id="compat.enable_unplayable_dir"
+                name="compat.enable_unplayable_dir"
+                {% if values.enable_unplayable_dir %}checked{% endif %}
+              >
+              <label for="compat.enable_unplayable_dir">enable_unplayable_dir</label>
+            </div>
+          </fieldset>
+
+          <fieldset class="config-section">
+            <legend>Directories / Anime</legend>
+            <div class="config-field">
+              <label for="directories.anime.patterns">patterns (one per line)</label>
+              <textarea
+                id="directories.anime.patterns"
+                name="directories.anime.patterns"
+                rows="4"
+              >{{ values.anime_patterns }}</textarea>
+            </div>
+          </fieldset>
+
+          <fieldset class="config-section">
+            <legend>Request</legend>
+            <div class="config-field">
+              <label for="request_timeout_secs">request_timeout_secs</label>
+              <input
+                type="number"
+                id="request_timeout_secs"
+                name="request_timeout_secs"
+                value="{{ values.request_timeout_secs }}"
+              >
+            </div>
+            <div class="config-field">
+              <label for="user_agent">user_agent</label>
+              <input
+                type="text"
+                id="user_agent"
+                name="user_agent"
+                value="{{ values.user_agent }}"
+              >
+            </div>
+            <div class="config-field">
+              <label for="version_label">version_label</label>
+              <input
+                type="text"
+                id="version_label"
+                name="version_label"
+                value="{{ values.version_label }}"
+              >
+            </div>
+          </fieldset>
+
+          <fieldset class="config-section">
+            <legend>UI</legend>
+            <div class="config-field">
+              <label for="ui.poll_interval_secs">poll_interval_secs</label>
+              <input
+                type="number"
+                id="ui.poll_interval_secs"
+                name="ui.poll_interval_secs"
+                value="{{ values.ui_poll_interval_secs }}"
+              >
+            </div>
+          </fieldset>
+
+          <fieldset class="config-section">
+            <legend>Logging</legend>
+            <div class="config-field checkbox-field">
+              <input
+                type="checkbox"
+                id="logging.verbose"
+                name="logging.verbose"
+                {% if values.verbose %}checked{% endif %}
+              >
+              <label for="logging.verbose">verbose</label>
+            </div>
+          </fieldset>
+
+          <fieldset class="config-section">
+            <legend>Subtitles</legend>
+            <div class="config-field checkbox-field">
+              <input
+                type="checkbox"
+                id="subtitles.enabled"
+                name="subtitles.enabled"
+                {% if values.subtitles_enabled %}checked{% endif %}
+              >
+              <label for="subtitles.enabled">enabled</label>
+            </div>
+            <div class="config-field checkbox-field">
+              <input
+                type="checkbox"
+                id="subtitles.fetch_on_resync"
+                name="subtitles.fetch_on_resync"
+                {% if values.fetch_on_resync %}checked{% endif %}
+              >
+              <label for="subtitles.fetch_on_resync">fetch_on_resync</label>
+            </div>
+            <div class="config-field">
+              <label for="lang-list">languages</label>
+              <input
+                type="text"
+                id="language_query"
+                name="language_query"
+                value="{{ language_query }}"
+                placeholder="search languages..."
+                phx-change="filter_languages"
+              >
+              <div class="lang-list" id="lang-list">
+                {% for language in languages %}
+                <div class="lang-item">
+                  <input
+                    type="checkbox"
+                    id="lang-{{ language.code }}"
+                    name="subtitles.languages"
+                    value="{{ language.code }}"
+                    {% if language.checked %}checked{% endif %}
+                  >
+                  <label for="lang-{{ language.code }}">{{ language.name }}</label>
+                </div>
+                {% endfor %}
+              </div>
+            </div>
+            <div class="config-field">
+              <label for="subtitles.strategy">strategy</label>
+              <select
+                id="subtitles.strategy"
+                name="subtitles.strategy"
+              >
+                <option
+                  value="best-match"
+                  {% if values.strategy == "best-match" %}selected{% endif %}
+                >best-match</option>
+                <option
+                  value="most-downloaded"
+                  {% if values.strategy == "most-downloaded" %}selected{% endif %}
+                >most-downloaded</option>
+                <option
+                  value="best-rated"
+                  {% if values.strategy == "best-rated" %}selected{% endif %}
+                >best-rated</option>
+                <option
+                  value="trusted"
+                  {% if values.strategy == "trusted" %}selected{% endif %}
+                >trusted</option>
+                <option
+                  value="latest"
+                  {% if values.strategy == "latest" %}selected{% endif %}
+                >latest</option>
+              </select>
+            </div>
+            <div class="config-field">
+              <label for="subtitles.filters.hearing_impaired">
+                hearing_impaired
+              </label>
+              <select
+                id="subtitles.filters.hearing_impaired"
+                name="subtitles.filters.hearing_impaired"
+              >
+                <option
+                  value="exclude"
+                  {% if values.hearing_impaired == "exclude" %}selected{% endif %}
+                >exclude</option>
+                <option
+                  value="include"
+                  {% if values.hearing_impaired == "include" %}selected{% endif %}
+                >include</option>
+                <option
+                  value="prefer"
+                  {% if values.hearing_impaired == "prefer" %}selected{% endif %}
+                >prefer</option>
+              </select>
+            </div>
+            <div class="config-field checkbox-field">
+              <input
+                type="checkbox"
+                id="subtitles.filters.exclude_ai"
+                name="subtitles.filters.exclude_ai"
+                {% if values.exclude_ai %}checked{% endif %}
+              >
+              <label for="subtitles.filters.exclude_ai">exclude_ai</label>
+            </div>
+            <div class="config-field checkbox-field">
+              <input
+                type="checkbox"
+                id="subtitles.filters.exclude_machine"
+                name="subtitles.filters.exclude_machine"
+                {% if values.exclude_machine %}checked{% endif %}
+              >
+              <label for="subtitles.filters.exclude_machine">exclude_machine</label>
+            </div>
+            <div class="config-field">
+              <label for="subtitles.search_delay_secs">search_delay_secs</label>
+              <input
+                type="number"
+                id="subtitles.search_delay_secs"
+                name="subtitles.search_delay_secs"
+                value="{{ values.search_delay_secs }}"
+              >
+            </div>
+            <div class="config-field">
+              <label for="subtitles.download_delay_secs">
+                download_delay_secs
+              </label>
+              <input
+                type="number"
+                id="subtitles.download_delay_secs"
+                name="subtitles.download_delay_secs"
+                value="{{ values.download_delay_secs }}"
+              >
+            </div>
+          </fieldset>
+        </form>
+      </div>
+      <div class="config-panel-footer">
+        <button type="submit" form="config-form">Save Overrides</button>
+      </div>
+    </div>
+  </section>
+  {% else %}
+  <section class="config-page-container" id="effective-config-section">
+    <div class="config-header">
+      <h1 class="config-title">Effective Configuration</h1>
+      <button type="button" class="secondary" phx-click="edit">EDIT</button>
+    </div>
+    <div class="config-panel-body">
+      <div class="config-scrollable">
+        <pre
+          class="config-yaml language-yaml"
+          id="effective-config-code"
+          phx-hook="BuzzPrismYaml"
+        ><code class="language-yaml">{{ effective_yaml }}</code></pre>
+      </div>
+      <div class="config-panel-footer">
+        <button
+          type="button"
+          class="copy-to-clipboard-button"
+          onclick="buzzCopyTextById('effective-config-code', 'config copied to clipboard!')"
+        >COPY</button>
+      </div>
+    </div>
+  </section>
+  {% endif %}
+</main>
