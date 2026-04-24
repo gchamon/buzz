@@ -5,6 +5,7 @@ services:
       dockerfile: buzz/Dockerfile
     container_name: buzz-dav
     restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
     environment:
       - MEDIA_SERVER=${MEDIA_SERVER:-jellyfin}
       - PLEX_URL=${PLEX_URL:-}
