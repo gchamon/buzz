@@ -160,8 +160,8 @@ def trigger_jellyfin_selective_refresh(
             },
         )
         try:
-            with request.urlopen(req, timeout=30):
-                pass
+            with request.urlopen(req, timeout=30) as resp:
+                _ = resp.read()
         except Exception as exc:
             record_event(
                 f"Failed to refresh Jellyfin library '{name}': {exc}",

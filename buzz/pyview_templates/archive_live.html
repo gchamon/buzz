@@ -54,12 +54,7 @@
         {% if has_items %}
         {% for torrent in archive_items %}
         <tr>
-          <td class="name trunc-cell" data-value="{{ torrent.name }}">
-            <div class="trunc-idle">{{ torrent.name }}</div>
-            <div class="trunc-scroll-wrap">
-              <span class="trunc-scroll">{{ torrent.name }}</span>
-            </div>
-          </td>
+          <td class="name trunc-cell" data-value="{{ torrent.name }}">{{ torrent.name }}</td>
           <td data-value="{{ torrent.bytes }}">{{ torrent.size }}</td>
           <td>{{ torrent.file_count }}</td>
           <td class="comment timestamp" data-value="{{ torrent.deleted_at }}">

@@ -13,8 +13,8 @@ RUN apk add --no-cache \
 
 # Install dependencies first to improve Docker layer caching
 COPY pyproject.toml README.md buzz.dist.yml /app/
-RUN mkdir -p /app/buzz/core && touch /app/buzz/__init__.py /app/buzz/core/__init__.py
-RUN uv pip install --system .
+RUN mkdir -p /app/buzz/core && touch /app/buzz/__init__.py /app/buzz/core/__init__.py && \
+    uv pip install --system .
 
 # Copy application code and scripts
 COPY buzz /app/buzz

@@ -23,22 +23,18 @@ def propfind_body(state: BuzzState, paths: list[str]) -> str:
         if rel:
             href_path += "/" + parse.quote(rel)
         if node["type"] == "dir":
-            prop = (
-                "<D:resourcetype><D:collection/></D:resourcetype>"
-                "<D:getcontentlength>0</D:getcontentlength>"
-            )
+            prop = "<D:resourcetype><D:collection/></D:resourcetype>" \
+                   "<D:getcontentlength>0</D:getcontentlength>"
         else:
             size = str(int(node.get("size", 0)))
             mime = escape(node.get("mime_type", "application/octet-stream"))
             etag = escape(node.get("etag", ""))
             modified = escape(http_date(node.get("modified")))
-            prop = (
-                "<D:resourcetype/>"
-                f"<D:getcontentlength>{size}</D:getcontentlength>"
-                f"<D:getcontenttype>{mime}</D:getcontenttype>"
-                f"<D:getetag>{etag}</D:getetag>"
-                f"<D:getlastmodified>{modified}</D:getlastmodified>"
-            )
+            prop = "<D:resourcetype/>" \
+                   f"<D:getcontentlength>{size}</D:getcontentlength>" \
+                   f"<D:getcontenttype>{mime}</D:getcontenttype>" \
+                   f"<D:getetag>{etag}</D:getetag>" \
+                   f"<D:getlastmodified>{modified}</D:getlastmodified>"
         responses.append(
             "<D:response>"
             f"<D:href>{escape(href_path)}</D:href>"
@@ -48,12 +44,81 @@ def propfind_body(state: BuzzState, paths: list[str]) -> str:
             "</D:propstat>"
             "</D:response>"
         )
-    return (
-        '<?xml version="1.0" encoding="utf-8"?>'
-        '<D:multistatus xmlns:D="DAV:">'
-        + "".join(responses)
-        + "</D:multistatus>"
-    )
+    return '<?xml version="1.0" encoding="utf-8"?>' \
+           '<D:multistatus xmlns:D="DAV:">' \
+           + "".join(responses) \
+           + "</D:multistatus>"
+
+
+def _try_resolve_download_url(
+    state: BuzzState,
+    source_url: str,
+    attempt: int,
+    max_attempts: int,
+) -> str:
+    try:
+        return state.resolve_download_url(source_url, force_refresh=attempt > 0)
+    except Exception as exc:
+        state.verbose_log(f"Failed to resolve download URL: {exc}")
+        if attempt < max_attempts - 1:
+            record_event(
+                f"Retrying Real-Debrid stream resolution after failure: {exc}",
+                level="warning",
+                event="rd_stream_retry",
+                path=source_url,
+                attempt=attempt + 1,
+            )
+            time.sleep(0.5 * (attempt + 1))
+        raise
+
+
+def _try_open_stream(
+    state: BuzzState,
+    download_url: str,
+    source_url: str,
+    range_header: tuple[int, int] | None,
+    attempt: int,
+    max_attempts: int,
+) -> Any:
+    req = request.Request(download_url, method="GET")
+    if range_header:
+        start, end = range_header
+        req.add_header("Range", f"bytes={start}-{end}")
+    try:
+        return request.urlopen(
+            req,
+            timeout=max(1, int(state.config.request_timeout_secs)),
+        )
+    except error.HTTPError as exc:
+        state.invalidate_download_url(source_url)
+        state.verbose_log(
+            f"HTTP Error {exc.code} on attempt {attempt + 1}: {exc.reason}"
+        )
+        if attempt < max_attempts - 1:
+            record_event(
+                f"Retrying Real-Debrid stream after upstream HTTP {exc.code}",
+                level="warning",
+                event="rd_stream_retry",
+                path=source_url,
+                attempt=attempt + 1,
+            )
+            time.sleep(0.5 * (attempt + 1))
+        raise ValueError(
+            f"upstream returned HTTP {exc.code} for {download_url}"
+        ) from exc
+    except Exception as exc:
+        state.invalidate_download_url(source_url)
+        state.verbose_log(f"Connection error on attempt {attempt + 1}: {exc}")
+        if attempt < max_attempts - 1:
+            record_event(
+                f"Retrying Real-Debrid stream after connection error: {exc}",
+                level="warning",
+                event="rd_stream_retry",
+                path=source_url,
+                attempt=attempt + 1,
+            )
+            time.sleep(0.5 * (attempt + 1))
+        raise ValueError(f"failed to connect to upstream: {exc}") from exc
 
 
 def open_remote_media(
@@ -61,14 +126,8 @@ def open_remote_media(
     node: dict[str, Any],
     range_header: tuple[int, int] | None,
 ) -> tuple[Any, bytes]:
-    """Resolve and open a remote media stream with retry logic.
-
-    Attempts to resolve the download URL, then validates the response
-    headers and payload before returning the stream and first chunk.
-    """
-    source_url = str(
-        node.get("source_url") or node.get("url") or ""
-    ).strip()
+    """Resolve and open a remote media stream with retry logic."""
+    source_url = str(node.get("source_url") or node.get("url") or "").strip()
     if not source_url:
         raise ValueError("missing Real-Debrid source URL")
     last_error = "unable to resolve upstream media"
@@ -77,90 +136,39 @@ def open_remote_media(
     max_attempts = 3
     for attempt in range(max_attempts):
         try:
-            download_url = state.resolve_download_url(
-                source_url, force_refresh=attempt > 0
+            download_url = _try_resolve_download_url(
+                state, source_url, attempt, max_attempts
             )
         except Exception as exc:
             last_error = str(exc)
             last_exception = exc
-            state.verbose_log(f"Failed to resolve download URL: {exc}")
-            if attempt < max_attempts - 1:
-                record_event(
-                    f"Retrying Real-Debrid stream resolution after failure: {exc}",
-                    level="warning",
-                    event="rd_stream_retry",
-                    path=source_url,
-                    attempt=attempt + 1,
-                )
-                time.sleep(0.5 * (attempt + 1))
-                continue
-            raise
+            if attempt == max_attempts - 1:
+                raise
+            continue
 
         state.verbose_log(
             f"Resolved to {download_url!r} (attempt {attempt + 1}/{max_attempts})"
         )
-        req = request.Request(download_url, method="GET")
-        if range_header:
-            start, end = range_header
-            req.add_header("Range", f"bytes={start}-{end}")
         try:
-            response = request.urlopen(
-                req,
-                timeout=max(1, int(state.config.request_timeout_secs)),
+            response = _try_open_stream(
+                state, download_url, source_url, range_header, attempt, max_attempts
             )
-        except error.HTTPError as exc:
-            state.invalidate_download_url(source_url)
-            last_error = (
-                f"upstream returned HTTP {exc.code} for {download_url}"
-            )
+        except ValueError as exc:
+            last_error = str(exc)
             last_exception = exc
-            state.verbose_log(
-                f"HTTP Error {exc.code} on attempt {attempt + 1}: "
-                f"{exc.reason}"
-            )
-            if attempt < max_attempts - 1:
-                record_event(
-                    f"Retrying Real-Debrid stream after upstream HTTP {exc.code}",
-                    level="warning",
-                    event="rd_stream_retry",
-                    path=source_url,
-                    attempt=attempt + 1,
-                )
-                time.sleep(0.5 * (attempt + 1))
-                continue
-            raise ValueError(last_error) from exc
-        except Exception as exc:
-            state.invalidate_download_url(source_url)
-            last_error = f"failed to connect to upstream: {exc}"
-            last_exception = exc
-            state.verbose_log(
-                f"Connection error on attempt {attempt + 1}: {exc}"
-            )
-            if attempt < max_attempts - 1:
-                record_event(
-                    f"Retrying Real-Debrid stream after connection error: {exc}",
-                    level="warning",
-                    event="rd_stream_retry",
-                    path=source_url,
-                    attempt=attempt + 1,
-                )
-                time.sleep(0.5 * (attempt + 1))
-                continue
-            raise ValueError(last_error) from exc
+            if attempt == max_attempts - 1:
+                raise
+            continue
 
         try:
-            first_chunk = validate_remote_media_response(
-                response, range_header
-            )
+            first_chunk = validate_remote_media_response(response, range_header)
             return response, first_chunk
         except ValueError as exc:
             response.close()
             state.invalidate_download_url(source_url)
             last_error = str(exc)
             last_exception = exc
-            state.verbose_log(
-                f"Validation failed on attempt {attempt + 1}: {exc}"
-            )
+            state.verbose_log(f"Validation failed on attempt {attempt + 1}: {exc}")
             if attempt < max_attempts - 1:
                 record_event(
                     f"Retrying Real-Debrid stream after validation error: {exc}",

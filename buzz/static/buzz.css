@@ -317,55 +317,8 @@ td:last-of-type {
   position: relative;
   max-width: 0;
   overflow: hidden;
-}
-
-/* normal state: real ellipsis */
-.trunc-idle {
-  display: block;
-  width: 100%;
-  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* hover state: hidden by default */
-.trunc-scroll-wrap {
-  display: none;
-  width: 100%;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.trunc-scroll {
-  display: inline-block;
-  white-space: nowrap;
-}
-
-/* swap on hover */
-/* swap on hover — only when text is actually clipped */
-.trunc-cell.is-truncated:hover .trunc-idle {
-  display: none;
-}
-
-.trunc-cell.is-truncated:hover .trunc-scroll-wrap {
-  display: block;
-}
-
-.trunc-cell.is-truncated:hover .trunc-scroll {
-  animation: scroll-text 4s linear infinite;
-}
-
-@keyframes scroll-text {
-
-  0%,
-  10% {
-    transform: translateX(0);
-  }
-
-  90%,
-  100% {
-    transform: translateX(calc(-100% + 200px));
-  }
 }
 
 .name {

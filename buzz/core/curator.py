@@ -287,6 +287,63 @@ def build_library(config: CuratorConfig) -> dict:
     return report
 
 
+def _process_movie_file(
+    path: Path,
+    source_root: Path,
+    target_root: Path,
+    all_source_root: Path,
+    overrides: dict,
+    used_targets: set[str],
+    report: dict,
+    mapping: list[dict],
+) -> bool:
+    rel_path = source_relpath(all_source_root, path)
+    source_rel = path.relative_to(source_root)
+    folder = source_rel.parts[0] if len(source_rel.parts) > 1 else ""
+
+    parsed = parse_movie(path.stem, folder=folder)
+    override = overrides.get(rel_path, {})
+    if parsed is None and not override:
+        report["skipped_movies"].append(
+            {"source": rel_path, "reason": "unable to parse movie title/year"}
+        )
+        return False
+    if parsed is None:
+        parsed = {"title": "", "year": 0}
+    apply_movie_override(parsed, override)
+    if not parsed.get("title") or not parsed.get("year"):
+        report["skipped_movies"].append(
+            {"source": rel_path, "reason": "movie override missing title/year"}
+        )
+        return False
+
+    folder_name = movie_folder_name(parsed)
+    target_file = target_root / folder_name / f"{folder_name}{path.suffix.lower()}"
+    target_key = target_file.as_posix()
+    if target_key in used_targets:
+        report["skipped_movies"].append(
+            {"source": rel_path, "reason": "duplicate canonical movie target"}
+        )
+        return False
+
+    ensure_symlink(path, target_file)
+    used_targets.add(target_key)
+    mapping.append(
+        {
+            "source": rel_path,
+            "target": target_file.relative_to(target_root.parent).as_posix(),
+            "type": "movie",
+        }
+    )
+    report["movies"] += 1
+
+    for companion in find_companion_files(path):
+        extra = companion.name[len(path.stem) :]
+        companion_target = target_root / folder_name / f"{folder_name}{extra}"
+        ensure_symlink(companion, companion_target)
+    return True
+
+
 def build_movies(
     source_root: Path,
     target_root: Path,
@@ -299,70 +356,119 @@ def build_movies(
     target_root.mkdir(parents=True, exist_ok=True)
     if not source_root.exists():
         return
-    used_targets = set()
+    used_targets: set[str] = set()
     for path in iter_files(source_root):
         if not is_video_file(path):
             continue
+        _process_movie_file(
+            path, source_root, target_root, all_source_root,
+            overrides, used_targets, report, mapping,
+        )
+
+
+def _plan_show_group(
+    files: list[Path],
+    source_root: Path,
+    target_root: Path,
+    all_source_root: Path,
+    overrides: dict,
+    global_targets: set[str],
+) -> tuple[list[dict], list[dict]]:
+    planned = []
+    group_errors = []
+    group_series = None
+    used_targets: set[str] = set()
+    for path in sorted(files):
         rel_path = source_relpath(all_source_root, path)
-
-        # Determine torrent folder name if file is in a subdirectory
-        source_rel = path.relative_to(source_root)
-        folder = source_rel.parts[0] if len(source_rel.parts) > 1 else ""
-
-        parsed = parse_movie(path.stem, folder=folder)
+        parsed = parse_show(path.stem)
         override = overrides.get(rel_path, {})
         if parsed is None and not override:
-            report["skipped_movies"].append(
-                {
-                    "source": rel_path,
-                    "reason": "unable to parse movie title/year",
-                }
+            group_errors.append(
+                {"source": rel_path, "reason": "unable to parse show season/episode"}
             )
             continue
         if parsed is None:
-            parsed = {"title": "", "year": 0}
-        apply_movie_override(parsed, override)
-        if not parsed.get("title") or not parsed.get("year"):
-            report["skipped_movies"].append(
+            parsed = {"series": "", "season": 0, "episode": 0}
+        apply_show_override(parsed, override)
+        if (
+            not parsed.get("series")
+            or parsed.get("season") is None
+            or parsed.get("episode") is None
+        ):
+            group_errors.append(
                 {
                     "source": rel_path,
-                    "reason": "movie override missing title/year",
+                    "reason": "show override missing series/season/episode",
                 }
             )
             continue
-        folder_name = movie_folder_name(parsed)
+        series_name = show_series_name(parsed)
+        if group_series is None:
+            group_series = series_name
+        elif group_series != series_name:
+            group_errors.append(
+                {
+                    "source": rel_path,
+                    "reason": "inconsistent parsed show name within torrent",
+                }
+            )
+            continue
+        season_dir = f"Season {int(parsed['season']):02d}"
+        base_name = (
+            f"{series_name} S{int(parsed['season']):02d}"
+            f"E{int(parsed['episode']):02d}"
+        )
         target_file = (
             target_root
-            / folder_name
-            / f"{folder_name}{path.suffix.lower()}"
+            / series_name
+            / season_dir
+            / f"{base_name}{path.suffix.lower()}"
         )
         target_key = target_file.as_posix()
-        if target_key in used_targets:
-            report["skipped_movies"].append(
-                {
-                    "source": rel_path,
-                    "reason": "duplicate canonical movie target",
-                }
+        if target_key in used_targets or target_key in global_targets:
+            group_errors.append(
+                {"source": rel_path, "reason": "duplicate season/episode target"}
             )
             continue
-        ensure_symlink(path, target_file)
         used_targets.add(target_key)
+        planned.append(
+            {
+                "path": path,
+                "rel_path": rel_path,
+                "target_file": target_file,
+                "base_name": base_name,
+            }
+        )
+    return planned, group_errors
+
+
+def _apply_show_planned(
+    planned: list[dict],
+    target_root: Path,
+    global_targets: set[str],
+    mapping: list[dict],
+    report: dict,
+) -> None:
+    for item in planned:
+        path = item["path"]
+        rel_path = item["rel_path"]
+        target_file = item["target_file"]
+        base_name = item["base_name"]
+        ensure_symlink(path, target_file)
+        global_targets.add(target_file.as_posix())
         mapping.append(
             {
                 "source": rel_path,
                 "target": target_file.relative_to(
                     target_root.parent
                 ).as_posix(),
-                "type": "movie",
+                "type": "show",
             }
         )
-        report["movies"] += 1
-
+        report["show_files"] += 1
         for companion in find_companion_files(path):
             extra = companion.name[len(path.stem) :]
-            companion_target = (
-                target_root / folder_name / f"{folder_name}{extra}"
-            )
+            companion_target = target_file.parent / f"{base_name}{extra}"
             ensure_symlink(companion, companion_target)
 
 
@@ -378,8 +484,8 @@ def build_shows(
     target_root.mkdir(parents=True, exist_ok=True)
     if not source_root.exists():
         return
-    grouped = {}
-    global_targets = set()
+    grouped: dict[str, list[Path]] = {}
+    global_targets: set[str] = set()
     for path in iter_files(source_root):
         if not is_video_file(path):
             continue
@@ -388,99 +494,16 @@ def build_shows(
         grouped.setdefault(group_key, []).append(path)
 
     for group_name, files in sorted(grouped.items()):
-        planned = []
-        group_errors = []
-        group_series = None
-        used_targets = set()
-        for path in sorted(files):
-            rel_path = source_relpath(all_source_root, path)
-            parsed = parse_show(path.stem)
-            override = overrides.get(rel_path, {})
-            if parsed is None and not override:
-                group_errors.append(
-                    {
-                        "source": rel_path,
-                        "reason": "unable to parse show season/episode",
-                    }
-                )
-                continue
-            if parsed is None:
-                parsed = {"series": "", "season": 0, "episode": 0}
-            apply_show_override(parsed, override)
-            if (
-                not parsed.get("series")
-                or parsed.get("season") is None
-                or parsed.get("episode") is None
-            ):
-                group_errors.append(
-                    {
-                        "source": rel_path,
-                        "reason": (
-                            "show override missing series/season/episode"
-                        ),
-                    }
-                )
-                continue
-            if group_series is None:
-                group_series = show_series_name(parsed)
-            elif group_series != show_series_name(parsed):
-                group_errors.append(
-                    {
-                        "source": rel_path,
-                        "reason": (
-                            "inconsistent parsed show name within torrent"
-                        ),
-                    }
-                )
-                continue
-            season_dir = f"Season {int(parsed['season']):02d}"
-            base_name = (
-                f"{show_series_name(parsed)} "
-                f"S{int(parsed['season']):02d}"
-                f"E{int(parsed['episode']):02d}"
-            )
-            target_file = (
-                target_root
-                / show_series_name(parsed)
-                / season_dir
-                / f"{base_name}{path.suffix.lower()}"
-            )
-            target_key = target_file.as_posix()
-            if target_key in used_targets or target_key in global_targets:
-                group_errors.append(
-                    {
-                        "source": rel_path,
-                        "reason": "duplicate season/episode target",
-                    }
-                )
-                continue
-            used_targets.add(target_key)
-            planned.append((path, rel_path, target_file))
-
+        planned, group_errors = _plan_show_group(
+            files, source_root, target_root, all_source_root,
+            overrides, global_targets,
+        )
         if group_errors:
             report["skipped_shows"].append(
                 {"group": group_name, "errors": group_errors}
             )
             continue
-
-        for path, rel_path, target_file in planned:
-            ensure_symlink(path, target_file)
-            global_targets.add(target_file.as_posix())
-            mapping.append(
-                {
-                    "source": rel_path,
-                    "target": target_file.relative_to(
-                        target_root.parent
-                    ).as_posix(),
-                    "type": "show",
-                }
-            )
-            report["show_files"] += 1
-            base_name = target_file.stem
-            for companion in find_companion_files(path):
-                extra = companion.name[len(path.stem) :]
-                companion_target = target_file.parent / f"{base_name}{extra}"
-                ensure_symlink(companion, companion_target)
+        _apply_show_planned(planned, target_root, global_targets, mapping, report)
 
 
 def build_anime(

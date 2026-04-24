@@ -194,12 +194,7 @@
         {% if has_torrents %}
         {% for torrent in torrents %}
         <tr>
-          <td class="name trunc-cell" data-value="{{ torrent.name }}">
-            <div class="trunc-idle">{{ torrent.name }}</div>
-            <div class="trunc-scroll-wrap">
-              <span class="trunc-scroll">{{ torrent.name }}</span>
-            </div>
-          </td>
+          <td class="name trunc-cell" data-value="{{ torrent.name }}">{{ torrent.name }}</td>
           <td data-value="{{ torrent.status }}">
             <span class="status status-{{ torrent.status }}">[{{ torrent.status }}]</span>
           </td>

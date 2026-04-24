@@ -1873,7 +1873,7 @@ class DavAppTests(unittest.TestCase):
                     break
                 time.sleep(0.05)
             after = len(registry.events)
-            self.assertTrue(after > before)
+            self.assertGreater(after, before)
             messages = [e["message"] for e in registry.events]
             self.assertIn("OpenSubtitles language refresh started", messages)
             self.assertIn("OpenSubtitles language refresh finished", messages)

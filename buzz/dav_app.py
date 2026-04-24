@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from urllib import error
-from typing import cast
+from typing import Any, cast
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -39,6 +39,7 @@ from .models import (
     DEFAULT_DAV_CONFIG_PATH,
     DeleteTorrentRequest,
     DeleteTrashRequest,
+    FIELD_ANIME_PATTERNS,
     HOT_RELOADABLE_FIELDS,
     RESTART_REQUIRED_FIELDS,
     ErrorResponse,
@@ -57,8 +58,14 @@ from .models import (
 )
 from .ui_live import build_ui
 
+PATH_REBUILD = "/rebuild"
+MSG_NO_CURATOR = "No curator configured"
+MSG_INVALID_REQUEST = "Invalid request"
+TOPIC_LOGS = "buzz:logs"
+TOPIC_CONFIG = "buzz:config"
+
 SNAPSHOT_RELOAD_FIELDS = (
-    "directories.anime.patterns",
+    FIELD_ANIME_PATTERNS,
     "compat.enable_all_dir",
     "compat.enable_unplayable_dir",
     "version_label",
@@ -431,11 +438,11 @@ class DavApp:
             if not self.config.curator_url:
                 return JSONResponse(
                     status_code=400,
-                    content={"error": "No curator configured"},
+                    content={"error": MSG_NO_CURATOR},
                 )
 
             subs_url = self.config.curator_url.replace(
-                "/rebuild", "/api/subtitles/fetch"
+                PATH_REBUILD, "/api/subtitles/fetch"
             )
             try:
                 with httpx.Client(timeout=5.0) as client:
@@ -496,169 +503,183 @@ class DavApp:
                 return Response(status_code=404)
 
             if node["type"] == "dir":
-                return Response(
-                    status_code=200,
-                    headers={
-                        "Content-Type": "text/plain; charset=utf-8",
-                        "Content-Length": "0",
-                    },
-                )
+                return self._dav_dir_response()
 
             if node["type"] == "memory":
-                content = node["content"].encode("utf-8")
-                size = len(content)
-                range_header = read_range_header(request.headers.get("Range"), size)
-
-                headers = {
-                    "Accept-Ranges": "bytes",
-                    "Content-Type": node["mime_type"],
-                    "ETag": node["etag"],
-                    "Last-Modified": http_date(node.get("modified")),
-                }
-
-                if range_header:
-                    start, end = range_header
-                    payload = content[start : end + 1]
-                    headers["Content-Range"] = f"bytes {start}-{end}/{size}"
-                    status_code = 206
-                else:
-                    payload = content
-                    status_code = 200
-
-                headers["Content-Length"] = str(len(payload))
-                return Response(
-                    content=payload if send_body else None,
-                    status_code=status_code,
-                    headers=headers,
+                return self._dav_memory_response(
+                    node, send_body, request.headers.get("Range")
                 )
 
-            # Remote media
-            size = int(node["size"])
-            range_header = read_range_header(request.headers.get("Range"), size)
+            return self._dav_remote_response(
+                node, send_body, request.headers.get("Range"), rel
+            )
 
-            headers = {
-                "Accept-Ranges": "bytes",
-                "Content-Type": node["mime_type"],
-                "ETag": node["etag"],
-                "Last-Modified": http_date(node.get("modified")),
-            }
+    def _dav_dir_response(self) -> Response:
+        return Response(
+            status_code=200,
+            headers={
+                "Content-Type": "text/plain; charset=utf-8",
+                "Content-Length": "0",
+            },
+        )
 
-            if range_header:
-                start, end = range_header
-                headers["Content-Range"] = f"bytes {start}-{end}/{size}"
-                headers["Content-Length"] = str(end - start + 1)
-                status_code = 206
-            else:
-                headers["Content-Length"] = str(size)
-                status_code = 200
+    def _dav_memory_response(
+        self, node: dict, send_body: bool, range_str: str | None
+    ) -> Response:
+        content = node["content"].encode("utf-8")
+        size = len(content)
+        range_header = read_range_header(range_str, size)
 
-            if not send_body:
-                return Response(status_code=status_code, headers=headers)
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Type": node["mime_type"],
+            "ETag": node["etag"],
+            "Last-Modified": http_date(node.get("modified")),
+        }
 
+        if range_header:
+            start, end = range_header
+            payload = content[start : end + 1]
+            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+            status_code = 206
+        else:
+            payload = content
+            status_code = 200
+
+        headers["Content-Length"] = str(len(payload))
+        return Response(
+            content=payload if send_body else None,
+            status_code=status_code,
+            headers=headers,
+        )
+
+    def _dav_remote_response(
+        self, node: dict, send_body: bool, range_str: str | None, rel: str
+    ) -> Response:
+        size = int(node["size"])
+        range_header = read_range_header(range_str, size)
+
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Type": node["mime_type"],
+            "ETag": node["etag"],
+            "Last-Modified": http_date(node.get("modified")),
+        }
+
+        if range_header:
+            start, end = range_header
+            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+            headers["Content-Length"] = str(end - start + 1)
+            status_code = 206
+        else:
+            headers["Content-Length"] = str(size)
+            status_code = 200
+
+        if not send_body:
+            return Response(status_code=status_code, headers=headers)
+
+        try:
+            response, first_chunk = open_remote_media(
+                self.state, node, range_header
+            )
+            return StreamingResponse(
+                self._stream_remote(response, first_chunk, self.config.stream_buffer_size),
+                status_code=status_code,
+                headers=headers,
+            )
+        except error.HTTPError as exc:
+            return Response(status_code=exc.code, content=str(exc))
+        except ValueError as exc:
+            record_event(
+                f"Real-Debrid stream failed: {exc}",
+                event="rd_stream_failed",
+                path=rel,
+                level="error",
+            )
+            return Response(status_code=502, content=str(exc))
+
+    def _stream_remote(
+        self,
+        response: Any,
+        first_chunk: bytes,
+        buffer_size: int,
+    ):
+        chunk_size = 64 * 1024
+
+        if buffer_size < chunk_size:
             try:
-                response, first_chunk = open_remote_media(
-                    self.state, node, range_header
+                if first_chunk:
+                    yield first_chunk
+                while True:
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                response.close()
+            return
+
+        q = queue.Queue(maxsize=max(1, buffer_size // chunk_size))
+        stop_event = threading.Event()
+
+        def buffer_reader():
+            try:
+                while not stop_event.is_set():
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    while not stop_event.is_set():
+                        try:
+                            q.put(chunk, timeout=1)
+                            break
+                        except queue.Full:
+                            continue
+            except Exception as exc:
+                print(
+                    json.dumps(
+                        {"event": "buffer_reader_error", "error": str(exc)},
+                        sort_keys=True,
+                    ),
+                    flush=True,
                 )
-
-                def stream_generator():
-                    chunk_size = 64 * 1024
-                    buffer_size = self.config.stream_buffer_size
-
-                    if buffer_size < chunk_size:
-                        try:
-                            if first_chunk:
-                                yield first_chunk
-                            while True:
-                                chunk = response.read(chunk_size)
-                                if not chunk:
-                                    break
-                                yield chunk
-                        finally:
-                            response.close()
-                        return
-
-                    # Buffered path: background thread reads ahead into a bounded queue.
-                    q = queue.Queue(maxsize=max(1, buffer_size // chunk_size))
-                    stop_event = threading.Event()
-
-                    def buffer_reader():
-                        try:
-                            while not stop_event.is_set():
-                                chunk = response.read(chunk_size)
-                                if not chunk:
-                                    break
-                                while not stop_event.is_set():
-                                    try:
-                                        q.put(chunk, timeout=1)
-                                        break
-                                    except queue.Full:
-                                        continue
-                        except Exception as exc:
-                            print(
-                                json.dumps(
-                                    {
-                                        "event": "buffer_reader_error",
-                                        "error": str(exc),
-                                    },
-                                    sort_keys=True,
-                                ),
-                                flush=True,
-                            )
-                        finally:
-                            # Signal end-of-stream; use timeout to avoid hanging
-                            # if the queue is full and the consumer is gone.
-                            while not stop_event.is_set():
-                                try:
-                                    q.put(None, timeout=1)
-                                    break
-                                except queue.Full:
-                                    continue
-
-                    t = threading.Thread(target=buffer_reader, daemon=True)
-                    t.start()
-
+            finally:
+                while not stop_event.is_set():
                     try:
-                        if first_chunk:
-                            yield first_chunk
+                        q.put(None, timeout=1)
+                        break
+                    except queue.Full:
+                        continue
 
-                        while True:
-                            try:
-                                item = q.get(timeout=1)
-                            except queue.Empty:
-                                if not t.is_alive():
-                                    break
-                                continue
-                            if item is None:
-                                break
-                            yield item
-                    finally:
-                        stop_event.set()
-                        t.join(timeout=5)
-                        response.close()
+        t = threading.Thread(target=buffer_reader, daemon=True)
+        t.start()
 
-                return StreamingResponse(
-                    stream_generator(), status_code=status_code, headers=headers
-                )
-            except error.HTTPError as exc:
-                return Response(status_code=exc.code, content=str(exc))
-            except ValueError as exc:
-                record_event(
-                    f"Real-Debrid stream failed: {exc}",
-                    event="rd_stream_failed",
-                    path=rel,
-                    level="error",
-                )
-                return Response(status_code=502, content=str(exc))
+        try:
+            if first_chunk:
+                yield first_chunk
+            while True:
+                try:
+                    item = q.get(timeout=1)
+                except queue.Empty:
+                    if not t.is_alive():
+                        break
+                    continue
+                if item is None:
+                    break
+                yield item
+        finally:
+            stop_event.set()
+            t.join(timeout=5)
+            response.close()
 
     def fetch_subtitles(self, torrent_name: str) -> dict:
         """Request subtitle fetch for a torrent from the curator."""
         import httpx
 
         if not self.config.curator_url:
-            return {"error": "No curator configured"}
+            return {"error": MSG_NO_CURATOR}
 
         subs_url = self.config.curator_url.replace(
-            "/rebuild", "/api/subtitles/fetch"
+            PATH_REBUILD, "/api/subtitles/fetch"
         )
         try:
             with httpx.Client(timeout=self.config.request_timeout_secs) as client:
@@ -695,7 +716,7 @@ class DavApp:
     def _curator_reload_url(self) -> str:
         if not self.config.curator_url:
             return ""
-        return self.config.curator_url.replace("/rebuild", "/api/config/reload")
+        return self.config.curator_url.replace(PATH_REBUILD, "/api/config/reload")
 
     def _notify_curator_config_reload(self) -> None:
         import httpx
@@ -767,17 +788,17 @@ class DavApp:
             "hot_reloaded_fields": hot_fields,
         }
 
-    async def _handle_validation_error(
+    def _handle_validation_error(
         self, request: Request, exc: Exception
     ) -> JSONResponse:
-        first_error = {"msg": "Invalid request"}
+        first_error = {"msg": MSG_INVALID_REQUEST}
         if isinstance(exc, RequestValidationError):
             validation_error = cast(RequestValidationError, exc)
             errors = validation_error.errors()
-            first_error = errors[0] if errors else {"msg": "Invalid request"}
+            first_error = errors[0] if errors else {"msg": MSG_INVALID_REQUEST}
         return JSONResponse(
             status_code=400,
-            content={"error": str(first_error.get("msg", "Invalid request"))},
+            content={"error": str(first_error.get("msg", MSG_INVALID_REQUEST))},
         )
 
     def get_logs(self, limit: int = 100) -> list[dict]:
@@ -821,7 +842,7 @@ class DavApp:
         return len(registry.events)
 
     def _handle_recorded_event(self, event: dict) -> None:
-        self._notify_ui_topic("buzz:logs", event)
+        self._notify_ui_topic(TOPIC_LOGS, event)
         self._notify_ui_topic("buzz:status", event)
 
     def _notify_ui_change(
@@ -835,9 +856,9 @@ class DavApp:
             self._notify_ui_topic("buzz:archive", message)
         elif topic == "sync":
             self._notify_ui_topic("buzz:archive", message)
-            self._notify_ui_topic("buzz:logs", message)
+            self._notify_ui_topic(TOPIC_LOGS, message)
         elif topic == "config":
-            self._notify_ui_topic("buzz:config", message)
+            self._notify_ui_topic(TOPIC_CONFIG, message)
 
     def _notify_ui_topic(self, topic: str, message: dict) -> None:
         if self.ui_loop is None:
