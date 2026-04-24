@@ -241,10 +241,6 @@ button.secondary {
   min-height: 0;
 }
 
-.table-container table {
-  border-collapse: collapse;
-}
-
 .table-container td:first-of-type {
   min-width: 200px;
 }
@@ -317,59 +313,43 @@ td:last-of-type {
   position: relative;
   max-width: 0;
   overflow: hidden;
-}
-
-/* normal state: real ellipsis */
-.trunc-idle {
-  display: block;
-  width: 100%;
-  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* hover state: hidden by default */
-.trunc-scroll-wrap {
-  display: none;
-  width: 100%;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.trunc-scroll {
-  display: inline-block;
-  white-space: nowrap;
-}
-
-/* swap on hover */
-/* swap on hover — only when text is actually clipped */
-.trunc-cell.is-truncated:hover .trunc-idle {
-  display: none;
-}
-
-.trunc-cell.is-truncated:hover .trunc-scroll-wrap {
-  display: block;
-}
-
-.trunc-cell.is-truncated:hover .trunc-scroll {
-  animation: scroll-text 4s linear infinite;
-}
-
-@keyframes scroll-text {
-
-  0%,
-  10% {
-    transform: translateX(0);
-  }
-
-  90%,
-  100% {
-    transform: translateX(calc(-100% + 200px));
-  }
-}
-
 .name {
   color: var(--fg);
+}
+
+.marquee-clip {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  width: 100%;
+}
+
+.marquee-label {
+  display: inline-block;
+  white-space: nowrap;
+  will-change: transform;
+}
+
+tr:hover .marquee-clip[data-overflowing] .marquee-label,
+tr:focus-within .marquee-clip[data-overflowing] .marquee-label {
+  animation: buzz-marquee var(--marquee-duration, 6s) linear infinite;
+}
+
+@keyframes buzz-marquee {
+  0%, 15%   { transform: translateX(0); }
+  85%, 100% { transform: translateX(calc(var(--marquee-distance, 0px) * -1)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  tr:hover .marquee-clip[data-overflowing] .marquee-label,
+  tr:focus-within .marquee-clip[data-overflowing] .marquee-label {
+    animation: none;
+  }
 }
 
 .comment {
@@ -605,11 +585,6 @@ code {
   border-radius: 4px;
 }
 
-.logs-header-btns {
-  display: flex;
-  gap: 10px;
-}
-
 .bulk-magnet-remove {
   padding: 0 10px;
   font-size: 1rem;
@@ -668,13 +643,6 @@ input[type="text"] {
 
 input[type="text"]:focus {
   border-color: var(--purple);
-}
-
-#file-selection-area {
-  margin-top: 15px;
-  border-top: 1px solid var(--comment);
-  padding-top: 15px;
-  display: none;
 }
 
 .file-list {

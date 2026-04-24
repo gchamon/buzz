@@ -18,7 +18,18 @@ from pyview.events import InfoEvent, info
 from pyview.template import LiveRender, RenderedContent, template_file
 
 from .core.utils import format_bytes
+
+CSS_STATUS_GREEN = "service-status-green"
+CSS_STATUS_RED = "service-status-red"
+CSS_STATUS_YELLOW = "service-status-yellow"
+TOPIC_STATUS = "buzz:status"
+TOPIC_ARCHIVE = "buzz:archive"
+TOPIC_LOGS = "buzz:logs"
+TOPIC_CONFIG = "buzz:config"
+EVENT_NAVIGATE = "navigate"
 from .models import (
+    FIELD_ANIME_PATTERNS,
+    FIELD_SUBTITLES_LANGUAGES,
     HOT_RELOADABLE_FIELDS,
     RESTART_REQUIRED_FIELDS,
     UI_MANAGED_CONFIG_FIELDS,
@@ -60,13 +71,13 @@ _CONFIG_TRACKED_FIELDS = (
     "hooks.rd_update_delay_secs",
     "compat.enable_all_dir",
     "compat.enable_unplayable_dir",
-    "directories.anime.patterns",
+    FIELD_ANIME_PATTERNS,
     "request_timeout_secs",
     "logging.verbose",
     "version_label",
     "subtitles.enabled",
     "subtitles.fetch_on_resync",
-    "subtitles.languages",
+    FIELD_SUBTITLES_LANGUAGES,
     "subtitles.strategy",
     "subtitles.filters.hearing_impaired",
     "subtitles.filters.exclude_ai",
@@ -374,10 +385,10 @@ class _BaseBuzzLiveView(LiveView[_TContext]):
         status = self.owner.state.status()
         restart_required = bool(getattr(self.owner, "restart_required", False))
         status_label = "[ready]"
-        status_class = "service-status-green"
+        status_class = CSS_STATUS_GREEN
         if restart_required:
             status_label = "[restart required]"
-            status_class = "service-status-yellow"
+            status_class = CSS_STATUS_YELLOW
         elif not self.owner.is_ready():
             status_label = "[starting]"
             status_class = "service-status-orange"
@@ -401,9 +412,9 @@ class _BaseBuzzLiveView(LiveView[_TContext]):
     ) -> None:
         socket.live_title = self.page_title
         if is_connected(socket):
-            await socket.subscribe("buzz:status")
+            await socket.subscribe(TOPIC_STATUS)
 
-    @info("buzz:status")
+    @info(TOPIC_STATUS)
     async def handle_status(self, _event: InfoEvent, _socket: LiveViewSocket[PageContext]) -> None:
         """Re-render nav when curator sends a status update."""
         pass
@@ -421,8 +432,8 @@ class CacheLiveView(_BaseBuzzLiveView):
         await super().mount(socket, session)  # pyright: ignore[reportArgumentType]
         socket.context = self._context()
         if is_connected(socket):
-            await socket.subscribe("buzz:status")
-            await socket.subscribe("buzz:archive")
+            await socket.subscribe(TOPIC_STATUS)
+            await socket.subscribe(TOPIC_ARCHIVE)
 
     async def handle_event(
         self,
@@ -438,7 +449,7 @@ class CacheLiveView(_BaseBuzzLiveView):
         mode: str = "",
         col: str = "",
     ) -> None:
-        if event == "navigate":
+        if event == EVENT_NAVIGATE:
             await socket.push_navigate(to)
             return
         if event == "prompt_delete":
@@ -448,47 +459,13 @@ class CacheLiveView(_BaseBuzzLiveView):
             socket.context["confirm_delete_id"] = None
             return
         if event == "delete":
-            try:
-                self.owner.state.delete_torrent(hash)
-                socket.context = self._context(
-                    console_msg="item moved to archive",
-                    console_class="service-status-green",
-                    confirm_delete_id=None,
-                    magnet_inputs=socket.context["magnet_inputs"],
-                    analysis_results=socket.context["analysis_results"],
-                    analysis_error=socket.context["analysis_error"],
-                    analyzing=socket.context["analyzing"],
-                    caching=socket.context["caching"],
-                    sort_col=socket.context["sort_col"],
-                    sort_dir=socket.context["sort_dir"],
-                )
-            except Exception as exc:
-                socket.context["console_msg"] = f"delete failed: {exc}"
-                socket.context["console_class"] = "service-status-red"
+            self._handle_delete(socket, hash)
             return
         if event == "fetch_subs":
-            result = self.owner.fetch_subtitles(torrent_name)
-            if result.get("error"):
-                socket.context["console_msg"] = (
-                    f"subs fetch failed: {result['error']}"
-                )
-                socket.context["console_class"] = "service-status-red"
-            else:
-                socket.context["console_msg"] = (
-                    f"subs fetch triggered for: {torrent_name}"
-                )
-                socket.context["console_class"] = "service-status-green"
+            self._handle_fetch_subs(socket, torrent_name)
             return
         if event == "resync":
-            socket.context["console_msg"] = "resyncing library..."
-            socket.context["console_class"] = "service-status-orange"
-            try:
-                self.owner.state.manual_rebuild()
-                socket.context["console_msg"] = "library resynced!"
-                socket.context["console_class"] = "service-status-green"
-            except Exception as exc:
-                socket.context["console_msg"] = f"resync failed: {exc}"
-                socket.context["console_class"] = "service-status-red"
+            self._handle_resync(socket)
             return
         if event == "add_magnet_input":
             socket.context["magnet_inputs"].append("")
@@ -508,62 +485,7 @@ class CacheLiveView(_BaseBuzzLiveView):
             socket.context["magnet_inputs"] = [str(v) for v in raw]
             return
         if event == "analyze":
-            raw = (payload or {}).get("magnet", [])
-            if isinstance(raw, str):
-                raw = [raw]
-            magnets = [str(m).strip() for m in raw if str(m).strip()]
-            if not magnets:
-                return
-            socket.context["analyzing"] = True
-            socket.context["analysis_error"] = ""
-            results: list[CacheAnalysisResult] = []
-            errors: list[str] = []
-            import re
-
-            for magnet in magnets:
-                try:
-                    info = self.owner.state.add_magnet(magnet)
-                    files: list[CacheFileItem] = []
-                    for f in info.get("files", []):
-                        path = str(f.get("path", ""))
-                        is_video = bool(
-                            re.search(r"\.(mkv|mp4|avi|m4v|mov)$", path, re.I)
-                        )
-                        b = int(f.get("bytes", 0))
-                        files.append(
-                            {
-                                "id": str(f.get("id", "")),
-                                "path": path,
-                                "bytes": b,
-                                "size": format_bytes(b),
-                                "is_video": is_video,
-                                "selected": is_video,
-                            }
-                        )
-                    results.append(
-                        {
-                            "torrent_id": str(info["id"]),
-                            "filename": str(info.get("filename") or "Torrent Files"),
-                            "files": files,
-                        }
-                    )
-                except Exception as exc:
-                    errors.append(str(exc))
-            socket.context["analyzing"] = False
-            socket.context["analysis_results"] = results
-            if errors:
-                socket.context["analysis_error"] = f"Failed: {', '.join(errors)}"
-                socket.context["console_msg"] = (
-                    f"Resolved {len(results)} magnets, {len(errors)} failed."
-                )
-                socket.context["console_class"] = "ready-label-orange"
-            else:
-                socket.context["console_msg"] = (
-                    f"Resolved {len(results)} magnet(s)."
-                    if len(results) != 1
-                    else "Ready to cache."
-                )
-                socket.context["console_class"] = "ready-label-green"
+            self._handle_analyze(socket, payload)
             return
         if event == "select_files":
             for result in socket.context["analysis_results"]:
@@ -584,28 +506,7 @@ class CacheLiveView(_BaseBuzzLiveView):
                             break
             return
         if event == "confirm_cache":
-            socket.context["caching"] = True
-            try:
-                for result in socket.context["analysis_results"]:
-                    selected = [
-                        f["id"] for f in result["files"] if f["selected"]
-                    ]
-                    if selected:
-                        self.owner.state.select_files(
-                            result["torrent_id"], selected
-                        )
-                self.owner.state.sync()
-                socket.context = self._context(
-                    console_msg="Items added and synced.",
-                    console_class="service-status-green",
-                    confirm_delete_id=socket.context["confirm_delete_id"],
-                    sort_col=socket.context["sort_col"],
-                    sort_dir=socket.context["sort_dir"],
-                )
-            except Exception as exc:
-                socket.context["caching"] = False
-                socket.context["console_msg"] = f"Error: {exc}"
-                socket.context["console_class"] = "service-status-red"
+            self._handle_confirm_cache(socket)
             return
         if event == "cancel_cache":
             socket.context = self._context(
@@ -618,25 +519,158 @@ class CacheLiveView(_BaseBuzzLiveView):
             )
             return
         if event == "sort":
-            try:
-                new_col = int(col)
-            except ValueError:
-                return
-            if socket.context["sort_col"] == new_col:
-                socket.context["sort_dir"] = (
-                    "desc" if socket.context["sort_dir"] == "asc" else "asc"
-                )
-            else:
-                socket.context["sort_col"] = new_col
-                socket.context["sort_dir"] = "asc"
+            self._handle_sort(socket, col)
+
+    def _handle_delete(
+        self, socket: ConnectedLiveViewSocket[CacheContext], hash: str
+    ) -> None:
+        try:
+            self.owner.state.delete_torrent(hash)
+            socket.context = self._context(
+                console_msg="item moved to archive",
+                console_class=CSS_STATUS_GREEN,
+                confirm_delete_id=None,
+                magnet_inputs=socket.context["magnet_inputs"],
+                analysis_results=socket.context["analysis_results"],
+                analysis_error=socket.context["analysis_error"],
+                analyzing=socket.context["analyzing"],
+                caching=socket.context["caching"],
+                sort_col=socket.context["sort_col"],
+                sort_dir=socket.context["sort_dir"],
+            )
+        except Exception as exc:
+            socket.context["console_msg"] = f"delete failed: {exc}"
+            socket.context["console_class"] = CSS_STATUS_RED
+
+    def _handle_fetch_subs(
+        self, socket: ConnectedLiveViewSocket[CacheContext], torrent_name: str
+    ) -> None:
+        result = self.owner.fetch_subtitles(torrent_name)
+        if result.get("error"):
+            socket.context["console_msg"] = f"subs fetch failed: {result['error']}"
+            socket.context["console_class"] = CSS_STATUS_RED
+        else:
+            socket.context["console_msg"] = f"subs fetch triggered for: {torrent_name}"
+            socket.context["console_class"] = CSS_STATUS_GREEN
+
+    def _handle_resync(
+        self, socket: ConnectedLiveViewSocket[CacheContext]
+    ) -> None:
+        socket.context["console_msg"] = "resyncing library..."
+        socket.context["console_class"] = "service-status-orange"
+        try:
+            self.owner.state.manual_rebuild()
+            socket.context["console_msg"] = "library resynced!"
+            socket.context["console_class"] = CSS_STATUS_GREEN
+        except Exception as exc:
+            socket.context["console_msg"] = f"resync failed: {exc}"
+            socket.context["console_class"] = CSS_STATUS_RED
+
+    def _handle_analyze(
+        self,
+        socket: ConnectedLiveViewSocket[CacheContext],
+        payload: dict[str, Any] | None,
+    ) -> None:
+        raw = (payload or {}).get("magnet", [])
+        if isinstance(raw, str):
+            raw = [raw]
+        magnets = [str(m).strip() for m in raw if str(m).strip()]
+        if not magnets:
             return
+        socket.context["analyzing"] = True
+        socket.context["analysis_error"] = ""
+        results: list[CacheAnalysisResult] = []
+        errors: list[str] = []
+        import re
+
+        for magnet in magnets:
+            try:
+                info = self.owner.state.add_magnet(magnet)
+                files: list[CacheFileItem] = []
+                for f in info.get("files", []):
+                    path = str(f.get("path", ""))
+                    is_video = bool(
+                        re.search(r"\.(mkv|mp4|avi|m4v|mov)$", path, re.I)
+                    )
+                    b = int(f.get("bytes", 0))
+                    files.append(
+                        {
+                            "id": str(f.get("id", "")),
+                            "path": path,
+                            "bytes": b,
+                            "size": format_bytes(b),
+                            "is_video": is_video,
+                            "selected": is_video,
+                        }
+                    )
+                results.append(
+                    {
+                        "torrent_id": str(info["id"]),
+                        "filename": str(info.get("filename") or "Torrent Files"),
+                        "files": files,
+                    }
+                )
+            except Exception as exc:
+                errors.append(str(exc))
+        socket.context["analyzing"] = False
+        socket.context["analysis_results"] = results
+        if errors:
+            socket.context["analysis_error"] = f"Failed: {', '.join(errors)}"
+            socket.context["console_msg"] = (
+                f"Resolved {len(results)} magnets, {len(errors)} failed."
+            )
+            socket.context["console_class"] = "service-status-orange"
+        else:
+            socket.context["console_msg"] = (
+                f"Resolved {len(results)} magnet(s)."
+                if len(results) != 1
+                else "Ready to cache."
+            )
+            socket.context["console_class"] = "service-status-green"
+
+    def _handle_confirm_cache(
+        self, socket: ConnectedLiveViewSocket[CacheContext]
+    ) -> None:
+        socket.context["caching"] = True
+        try:
+            for result in socket.context["analysis_results"]:
+                selected = [f["id"] for f in result["files"] if f["selected"]]
+                if selected:
+                    self.owner.state.select_files(result["torrent_id"], selected)
+            self.owner.state.sync()
+            socket.context = self._context(
+                console_msg="Items added and synced.",
+                console_class=CSS_STATUS_GREEN,
+                confirm_delete_id=socket.context["confirm_delete_id"],
+                sort_col=socket.context["sort_col"],
+                sort_dir=socket.context["sort_dir"],
+            )
+        except Exception as exc:
+            socket.context["caching"] = False
+            socket.context["console_msg"] = f"Error: {exc}"
+            socket.context["console_class"] = CSS_STATUS_RED
+
+    def _handle_sort(
+        self, socket: ConnectedLiveViewSocket[CacheContext], col: str
+    ) -> None:
+        try:
+            new_col = int(col)
+        except ValueError:
+            return
+        if socket.context["sort_col"] == new_col:
+            socket.context["sort_dir"] = (
+                "desc" if socket.context["sort_dir"] == "asc" else "asc"
+            )
+        else:
+            socket.context["sort_col"] = new_col
+            socket.context["sort_dir"] = "asc"
 
     async def handle_info(
         self,
         event: InfoEvent,
         socket: ConnectedLiveViewSocket[CacheContext],
     ) -> None:
-        if event.name not in {"buzz:status", "buzz:archive"}:
+        if event.name not in {TOPIC_STATUS, TOPIC_ARCHIVE}:
             return
         socket.context = self._context(
             console_msg=socket.context["console_msg"],
@@ -723,8 +757,8 @@ class ArchiveLiveView(_BaseBuzzLiveView):
         await super().mount(socket, session)  # pyright: ignore[reportArgumentType]
         socket.context = self._context()
         if is_connected(socket):
-            await socket.subscribe("buzz:archive")
-            await socket.subscribe("buzz:status")
+            await socket.subscribe(TOPIC_ARCHIVE)
+            await socket.subscribe(TOPIC_STATUS)
 
     async def handle_event(
         self,
@@ -733,7 +767,7 @@ class ArchiveLiveView(_BaseBuzzLiveView):
         to: str = "",
         hash: str = "",
     ) -> None:
-        if event == "navigate":
+        if event == EVENT_NAVIGATE:
             await socket.push_navigate(to)
             return
         if event == "prompt_restore":
@@ -770,7 +804,7 @@ class ArchiveLiveView(_BaseBuzzLiveView):
         event: InfoEvent,
         socket: ConnectedLiveViewSocket[ArchiveContext],
     ) -> None:
-        if event.name not in {"buzz:archive", "buzz:status"}:
+        if event.name not in {TOPIC_ARCHIVE, TOPIC_STATUS}:
             return
         socket.context = self._context(
             console_msg=socket.context["console_msg"],
@@ -832,9 +866,9 @@ class LogsLiveView(_BaseBuzzLiveView):
         self.owner._curator_log_level = "info"
         socket.context = self._context()
         if is_connected(socket):
-            await socket.subscribe("buzz:status")
+            await socket.subscribe(TOPIC_STATUS)
             if socket.context["auto_refresh"]:
-                await socket.subscribe("buzz:logs")
+                await socket.subscribe(TOPIC_LOGS)
 
     async def handle_event(
         self,
@@ -842,25 +876,24 @@ class LogsLiveView(_BaseBuzzLiveView):
         socket: ConnectedLiveViewSocket[LogsContext],
         to: str = "",
     ) -> None:
-        if event == "navigate":
+        if event == EVENT_NAVIGATE:
             await socket.push_navigate(to)
             return
         if event == "toggle_auto_refresh":
             socket.context["auto_refresh"] = not socket.context["auto_refresh"]
             if socket.context["auto_refresh"]:
-                await socket.subscribe("buzz:logs")
+                await socket.subscribe(TOPIC_LOGS)
             else:
-                await socket.pub_sub.unsubscribe_topic_async("buzz:logs")
-            return
+                await socket.pub_sub.unsubscribe_topic_async(TOPIC_LOGS)
 
     async def handle_info(
         self,
         event: InfoEvent,
         socket: ConnectedLiveViewSocket[LogsContext],
     ) -> None:
-        if event.name not in {"buzz:logs", "buzz:status"}:
+        if event.name not in {TOPIC_LOGS, TOPIC_STATUS}:
             return
-        if event.name == "buzz:status" and not socket.context["auto_refresh"]:
+        if event.name == TOPIC_STATUS and not socket.context["auto_refresh"]:
             base = self._base_context(
                 socket.context["console_msg"],
                 socket.context["console_class"],
@@ -914,8 +947,8 @@ class ConfigLiveView(_BaseBuzzLiveView):
         await super().mount(socket, session)  # pyright: ignore[reportArgumentType]
         socket.context = self._context()
         if is_connected(socket):
-            await socket.subscribe("buzz:status")
-            await socket.subscribe("buzz:config")
+            await socket.subscribe(TOPIC_STATUS)
+            await socket.subscribe(TOPIC_CONFIG)
 
     async def handle_event(
         self,
@@ -925,7 +958,7 @@ class ConfigLiveView(_BaseBuzzLiveView):
         to: str = "",
         language_query: str = "",
     ) -> None:
-        if event == "navigate":
+        if event == EVENT_NAVIGATE:
             await socket.push_navigate(to)
             return
         if event == "edit":
@@ -956,13 +989,13 @@ class ConfigLiveView(_BaseBuzzLiveView):
                     "cannot refresh languages: set subtitles.opensubtitles"
                     " api_key, username, and password in buzz.yml"
                 )
-                console_class = "service-status-red"
+                console_class = CSS_STATUS_RED
             elif not self.owner.trigger_language_refresh(force=True):
                 console_msg = "language refresh already in progress"
-                console_class = "service-status-yellow"
+                console_class = CSS_STATUS_YELLOW
             else:
                 console_msg = "refreshing languages from opensubtitles..."
-                console_class = "service-status-green"
+                console_class = CSS_STATUS_GREEN
             socket.context = self._context(
                 is_editing=socket.context["is_editing"],
                 draft_payload=socket.context["draft_payload"],
@@ -991,13 +1024,13 @@ class ConfigLiveView(_BaseBuzzLiveView):
         overrides = _config_overrides_from_payload(payload or {})
         result = self.owner.persist_overrides(overrides)
         console_msg = "saved."
-        console_class = "service-status-green"
+        console_class = CSS_STATUS_GREEN
         if result["restart_required"]:
             console_msg = (
                 "saved. restart required for "
                 + ", ".join(result["restart_required_fields"])
             )
-            console_class = "service-status-yellow"
+            console_class = CSS_STATUS_YELLOW
         socket.context = self._context(
             is_editing=False,
             console_msg=console_msg,
@@ -1009,17 +1042,17 @@ class ConfigLiveView(_BaseBuzzLiveView):
         event: InfoEvent,
         socket: ConnectedLiveViewSocket[ConfigContext],
     ) -> None:
-        if event.name not in {"buzz:status", "buzz:config"}:
+        if event.name not in {TOPIC_STATUS, TOPIC_CONFIG}:
             return
         console_msg = socket.context["console_msg"]
         console_class = socket.context["console_class"]
         if (
-            event.name == "buzz:config"
+            event.name == TOPIC_CONFIG
             and isinstance(event.payload, dict)
             and event.payload.get("languages_refresh_complete")
         ):
             console_msg = "languages updated"
-            console_class = "service-status-green"
+            console_class = CSS_STATUS_GREEN
         socket.context = self._context(
             is_editing=socket.context["is_editing"],
             draft_payload=socket.context["draft_payload"],
@@ -1158,6 +1191,25 @@ def _config_values(
     }
 
 
+def _parse_number_value(raw_value: Any) -> int | float:
+    value = str(raw_value).strip()
+    if "." in value:
+        return float(value)
+    return int(value)
+
+
+def _extract_pattern_lines(patterns: list[Any]) -> list[str]:
+    return [
+        line.strip()
+        for line in str(patterns[0]).splitlines()
+        if line.strip()
+    ]
+
+
+def _extract_language_values(values: list[Any]) -> list[str]:
+    return [str(v) for v in values if str(v).strip()]
+
+
 def _config_overrides_from_payload(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1171,14 +1223,9 @@ def _config_overrides_from_payload(
 
     for field in _CONFIG_NUMBER_FIELDS:
         if field in normalized and normalized[field]:
-            raw_value = normalized[field][0]
-            value = str(raw_value).strip()
-            parsed: int | float
-            if "." in value:
-                parsed = float(value)
-            else:
-                parsed = int(value)
-            _set_nested_value(overrides, field, parsed)
+            _set_nested_value(
+                overrides, field, _parse_number_value(normalized[field][0])
+            )
 
     for field in _CONFIG_BOOL_FIELDS:
         _set_nested_value(overrides, field, field in normalized)
@@ -1195,23 +1242,13 @@ def _config_overrides_from_payload(
         if field in normalized and normalized[field]:
             _set_nested_value(overrides, field, str(normalized[field][0]))
 
-    patterns = normalized.get("directories.anime.patterns", [""])
-    _set_nested_value(
-        overrides,
-        "directories.anime.patterns",
-        [
-            line.strip()
-            for line in str(patterns[0]).splitlines()
-            if line.strip()
-        ],
-    )
+    patterns = normalized.get(FIELD_ANIME_PATTERNS, [""])
+    _set_nested_value(overrides, FIELD_ANIME_PATTERNS, _extract_pattern_lines(patterns))
 
-    languages = [
-        str(value)
-        for value in normalized.get("subtitles.languages", [])
-        if str(value).strip()
-    ]
-    _set_nested_value(overrides, "subtitles.languages", languages)
+    languages = _extract_language_values(
+        normalized.get(FIELD_SUBTITLES_LANGUAGES, [])
+    )
+    _set_nested_value(overrides, FIELD_SUBTITLES_LANGUAGES, languages)
 
     return overrides
 
@@ -1272,6 +1309,61 @@ def _render_effective_yaml(
     return "\n".join(lines) + "\n"
 
 
+def _yaml_dict_lines(
+    value: dict,
+    *,
+    indent: int,
+    path: str,
+    override_paths: set[str],
+) -> list[str]:
+    prefix = " " * indent
+    lines: list[str] = []
+    for key, child in value.items():
+        child_path = f"{path}.{key}" if path else key
+        if child_path in override_paths:
+            lines.append(f"{prefix}# Overriden via UI")
+        if isinstance(child, dict):
+            lines.append(f"{prefix}{key}:")
+            lines.extend(
+                _yaml_lines(
+                    child,
+                    indent=indent + 2,
+                    path=child_path,
+                    override_paths=override_paths,
+                )
+            )
+        elif isinstance(child, list):
+            lines.append(f"{prefix}{key}:")
+            if not child:
+                lines.append(f"{prefix}  []")
+            else:
+                for item in child:
+                    if isinstance(item, (dict, list)):
+                        lines.append(f"{prefix}  -")
+                        lines.extend(
+                            _yaml_lines(
+                                item,
+                                indent=indent + 4,
+                                path=child_path,
+                                override_paths=override_paths,
+                            )
+                        )
+                    else:
+                        rendered = _render_yaml_scalar(item)
+                        lines.append(f"{prefix}  - {rendered}")
+        else:
+            rendered = _render_yaml_scalar(child)
+            lines.append(f"{prefix}{key}: {rendered}")
+    return lines
+
+
+def _yaml_list_lines(value: list, *, indent: int) -> list[str]:
+    prefix = " " * indent
+    if not value:
+        return [f"{prefix}[]"]
+    return [f"{prefix}- {_render_yaml_scalar(item)}" for item in value]
+
+
 def _yaml_lines(
     value: Any,
     *,
@@ -1279,54 +1371,13 @@ def _yaml_lines(
     path: str = "",
     override_paths: set[str],
 ) -> list[str]:
-    prefix = " " * indent
     if isinstance(value, dict):
-        lines: list[str] = []
-        for key, child in value.items():
-            child_path = f"{path}.{key}" if path else key
-            if child_path in override_paths:
-                lines.append(f"{prefix}# Overriden via UI")
-            if isinstance(child, dict):
-                lines.append(f"{prefix}{key}:")
-                lines.extend(
-                    _yaml_lines(
-                        child,
-                        indent=indent + 2,
-                        path=child_path,
-                        override_paths=override_paths,
-                    )
-                )
-            elif isinstance(child, list):
-                lines.append(f"{prefix}{key}:")
-                if not child:
-                    lines.append(f"{prefix}  []")
-                else:
-                    for item in child:
-                        if isinstance(item, (dict, list)):
-                            lines.append(f"{prefix}  -")
-                            lines.extend(
-                                _yaml_lines(
-                                    item,
-                                    indent=indent + 4,
-                                    path=child_path,
-                                    override_paths=override_paths,
-                                )
-                            )
-                        else:
-                            rendered = _render_yaml_scalar(item)
-                            lines.append(f"{prefix}  - {rendered}")
-            else:
-                rendered = _render_yaml_scalar(child)
-                lines.append(f"{prefix}{key}: {rendered}")
-        return lines
+        return _yaml_dict_lines(
+            value, indent=indent, path=path, override_paths=override_paths
+        )
     if isinstance(value, list):
-        if not value:
-            return [f"{prefix}[]"]
-        lines = []
-        for item in value:
-            rendered = _render_yaml_scalar(item)
-            lines.append(f"{prefix}- {rendered}")
-        return lines
+        return _yaml_list_lines(value, indent=indent)
+    prefix = " " * indent
     return [f"{prefix}{_render_yaml_scalar(value)}"]
 
 

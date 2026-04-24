@@ -127,27 +127,13 @@ class LibraryBuilder:
                 if item.get("url") and info.get("status") == "downloaded"
             ]
             if linked_playable:
-                category = self._category_for(linked_playable)
-                self._add_tree(files, dirs, category, torrent_name, linked_playable)
-                if self.config.enable_all_dir:
-                    self._add_tree(
-                        files, dirs, "__all__", torrent_name, linked_playable
-                    )
-                current_roots.add(f"{category}/{torrent_name}")
-                if category == "movies":
-                    report["movies"] += len(linked_playable)
-                elif category == "shows":
-                    report["show_files"] += len(linked_playable)
-                else:
-                    report["anime_files"] += len(linked_playable)
-            elif self.config.enable_unplayable_dir:
-                reason = self._unplayable_reason(info, selected)
-                count = self._add_unplayable_tree(
-                    files, dirs, torrent_name, selected, reason
+                self._add_playable_tree(
+                    files, dirs, torrent_name, linked_playable, report, current_roots
                 )
-                if count:
-                    current_roots.add(f"__unplayable__/{torrent_name}")
-                    report["unplayable_files"] += count
+            elif self.config.enable_unplayable_dir:
+                self._add_unplayable_entry(
+                    files, dirs, torrent_name, selected, info, report, current_roots
+                )
 
         snapshot = {
             "generated_at": report["generated_at"],
@@ -156,6 +142,45 @@ class LibraryBuilder:
             "report": report,
         }
         return snapshot, sorted(current_roots)
+
+    def _add_playable_tree(
+        self,
+        files: dict[str, SnapshotNode],
+        dirs: set[str],
+        torrent_name: str,
+        linked_playable: list[dict],
+        report: dict,
+        current_roots: set[str],
+    ) -> None:
+        category = self._category_for(linked_playable)
+        self._add_tree(files, dirs, category, torrent_name, linked_playable)
+        if self.config.enable_all_dir:
+            self._add_tree(files, dirs, "__all__", torrent_name, linked_playable)
+        current_roots.add(f"{category}/{torrent_name}")
+        if category == "movies":
+            report["movies"] += len(linked_playable)
+        elif category == "shows":
+            report["show_files"] += len(linked_playable)
+        else:
+            report["anime_files"] += len(linked_playable)
+
+    def _add_unplayable_entry(
+        self,
+        files: dict[str, SnapshotNode],
+        dirs: set[str],
+        torrent_name: str,
+        selected: list[dict],
+        info: TorrentInfo,
+        report: dict,
+        current_roots: set[str],
+    ) -> None:
+        reason = self._unplayable_reason(info, selected)
+        count = self._add_unplayable_tree(
+            files, dirs, torrent_name, selected, reason
+        )
+        if count:
+            current_roots.add(f"__unplayable__/{torrent_name}")
+            report["unplayable_files"] += count
 
     def _selected_files(self, info: TorrentInfo) -> list[TorrentInfo]:
         selected = [item for item in info.get("files", []) if item.get("selected")]
@@ -503,44 +528,12 @@ class BuzzState:
             self.sync_in_progress = True
         try:
             summaries = self.client.torrents.get().json()
-            new_cache: dict[str, TorrentInfo] = {}
-            infos: list[TorrentInfo] = []
-            for summary in summaries:
-                torrent_id = str(summary.get("id", "")).strip()
-                if not torrent_id:
-                    continue
-                signature = self._summary_signature(summary)
-                with self.lock:
-                    cached = self.cache.get(torrent_id)
-                if (
-                    cached
-                    and cached.get("signature") == signature
-                    and isinstance(cached.get("info"), dict)
-                ):
-                    info = cached["info"]
-                else:
-                    info = self.client.torrents.info(torrent_id).json()
-                cached_magnet = cached.get("magnet") if cached else None
-                new_cache[torrent_id] = {
-                    "signature": signature,
-                    "info": info,
-                    "magnet": cached_magnet,
-                }
-                infos.append(info)
-
+            new_cache, infos = self._build_torrent_cache(summaries)
             snapshot, _current_roots = self.builder.build(infos)
             digest = stable_json(canonical_snapshot(snapshot))
 
             with self.lock:
-                removed_torrent_ids = set(self.cache) - set(new_cache)
-                for torrent_id in removed_torrent_ids:
-                    cached = self.cache.get(torrent_id)
-                    if not isinstance(cached, dict):
-                        continue
-                    info = cached.get("info")
-                    if isinstance(info, dict) and info.get("hash"):
-                        self._add_to_archive(info, magnet=cached.get("magnet"))
-
+                self._archive_removed_torrents(new_cache)
                 changed = digest != self.snapshot_digest
                 classified_changes = (
                     self._classified_changed_roots(self.snapshot, snapshot)
@@ -594,6 +587,47 @@ class BuzzState:
         finally:
             with self.lock:
                 self.sync_in_progress = False
+
+    def _build_torrent_cache(
+        self, summaries: list[dict]
+    ) -> tuple[dict[str, TorrentInfo], list[TorrentInfo]]:
+        new_cache: dict[str, TorrentInfo] = {}
+        infos: list[TorrentInfo] = []
+        for summary in summaries:
+            torrent_id = str(summary.get("id", "")).strip()
+            if not torrent_id:
+                continue
+            signature = self._summary_signature(summary)
+            with self.lock:
+                cached = self.cache.get(torrent_id)
+            if (
+                cached
+                and cached.get("signature") == signature
+                and isinstance(cached.get("info"), dict)
+            ):
+                info = cached["info"]
+            else:
+                info = self.client.torrents.info(torrent_id).json()
+            cached_magnet = cached.get("magnet") if cached else None
+            new_cache[torrent_id] = {
+                "signature": signature,
+                "info": info,
+                "magnet": cached_magnet,
+            }
+            infos.append(info)
+        return new_cache, infos
+
+    def _archive_removed_torrents(
+        self, new_cache: dict[str, TorrentInfo]
+    ) -> None:
+        removed_torrent_ids = set(self.cache) - set(new_cache)
+        for torrent_id in removed_torrent_ids:
+            cached = self.cache.get(torrent_id)
+            if not isinstance(cached, dict):
+                continue
+            info = cached.get("info")
+            if isinstance(info, dict) and info.get("hash"):
+                self._add_to_archive(info, magnet=cached.get("magnet"))
 
     def _enqueue_hook(self, changed_roots: list[str]) -> None:
         pending = set(changed_roots)
@@ -681,7 +715,6 @@ class BuzzState:
         timeout = self.config.vfs_wait_timeout_secs
         start_time = time.time()
 
-        # Determine current state of each root in our internal snapshot
         with self.lock:
             snapshot_roots = set()
             for path in self.snapshot.get("files", {}):
@@ -689,14 +722,11 @@ class BuzzState:
                 if root:
                     snapshot_roots.add(root)
 
-        to_check = []
-        for root in roots:
-            # We only care about visibility of media roots
-            if not any(root.startswith(p) for p in ["movies/", "shows/", "anime/"]):
-                continue
-            expected = root in snapshot_roots
-            to_check.append((root, expected))
-
+        to_check = [
+            (root, root in snapshot_roots)
+            for root in roots
+            if any(root.startswith(p) for p in ("movies/", "shows/", "anime/"))
+        ]
         if not to_check:
             return
 
@@ -705,36 +735,34 @@ class BuzzState:
         )
 
         while time.time() - start_time < timeout:
-            all_visible = True
-            missing = []
-            stale = []
-
-            for root, expected in to_check:
-                path = os.path.join(mount, root)
-                exists = os.path.exists(path)
-                if expected and not exists:
-                    all_visible = False
-                    missing.append(root)
-                elif not expected and exists:
-                    all_visible = False
-                    stale.append(root)
-
+            all_visible, missing, stale = self._check_vfs_roots(mount, to_check)
             if all_visible:
                 elapsed = int(time.time() - start_time)
                 self.verbose_log(f"VFS visibility confirmed after {elapsed}s")
                 return
-
-            # Periodically log progress if there are many items or we've waited a bit
             if int(time.time() - start_time) % 30 == 0:
                 self.verbose_log(
                     f"VFS still syncing... (missing: {len(missing)}, stale: {len(stale)})"
                 )
-
             time.sleep(2)
 
         self.verbose_log(
             f"VFS visibility timeout reached after {timeout}s. Proceeding with sync."
         )
+
+    def _check_vfs_roots(
+        self, mount: str, to_check: list[tuple[str, bool]]
+    ) -> tuple[bool, list[str], list[str]]:
+        missing: list[str] = []
+        stale: list[str] = []
+        for root, expected in to_check:
+            path = os.path.join(mount, root)
+            exists = os.path.exists(path)
+            if expected and not exists:
+                missing.append(root)
+            elif not expected and exists:
+                stale.append(root)
+        return not (missing or stale), missing, stale
 
     def _trigger_curator(self, changed_roots: list[str]) -> None:
         if not self.config.curator_url:
@@ -759,7 +787,6 @@ class BuzzState:
     def _run_hook(self, changed_roots: list[str]) -> None:
         if not self.config.hook_command:
             return
-        # Filter out internal/virtual categories like __unplayable__ and __all__.
         filtered_roots = [
             r for r in changed_roots if not is_internal_category(r.split("/", 1)[0])
         ]
@@ -779,27 +806,31 @@ class BuzzState:
             )
             self.verbose_log("Library update hook completed successfully")
         except subprocess.TimeoutExpired as exc:
-            details = [f"Library update hook timed out after {exc.timeout}s: {exc.cmd}"]
-            stdout = (exc.stdout or "").strip()
-            stderr = (exc.stderr or "").strip()
-            if stdout:
-                details.append(f"stdout:\n{stdout}")
-            if stderr:
-                details.append(f"stderr:\n{stderr}")
-            record_event("\n".join(details), level="error")
+            self._log_hook_error(
+                f"Library update hook timed out after {exc.timeout}s: {exc.cmd}",
+                exc.stdout,
+                exc.stderr,
+            )
         except subprocess.CalledProcessError as exc:
-            details = [
-                f"Library update hook failed with exit code {exc.returncode}: {exc.cmd}"
-            ]
-            stdout = (exc.stdout or "").strip()
-            stderr = (exc.stderr or "").strip()
-            if stdout:
-                details.append(f"stdout:\n{stdout}")
-            if stderr:
-                details.append(f"stderr:\n{stderr}")
-            record_event("\n".join(details), level="error")
+            self._log_hook_error(
+                f"Library update hook failed with exit code {exc.returncode}: {exc.cmd}",
+                exc.stdout,
+                exc.stderr,
+            )
         except Exception as exc:
             record_event(f"Library update hook failed: {exc}", level="error")
+
+    def _log_hook_error(
+        self, message: str, stdout: str | bytes | None, stderr: str | bytes | None
+    ) -> None:
+        details = [message]
+        out = stdout.strip() if stdout else ""
+        err = stderr.strip() if stderr else ""
+        if out:
+            details.append(f"stdout:\n{out}")
+        if err:
+            details.append(f"stderr:\n{err}")
+        record_event("\n".join(details), level="error")
 
     def mark_startup_sync_complete(self) -> None:
         """Flag that the initial startup sync has finished."""

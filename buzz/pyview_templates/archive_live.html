@@ -39,7 +39,7 @@
   <div class="error"><span class="label-red">[ERROR]</span> {{ last_error }}</div>
   {% endif %}
 
-  <div class="table-container">
+  <div class="table-container" id="archive-table-container" phx-hook="BuzzOverflowMarquee">
     <table id="trash-table">
       <thead>
         <tr>
@@ -55,10 +55,9 @@
         {% for torrent in archive_items %}
         <tr>
           <td class="name trunc-cell" data-value="{{ torrent.name }}">
-            <div class="trunc-idle">{{ torrent.name }}</div>
-            <div class="trunc-scroll-wrap">
-              <span class="trunc-scroll">{{ torrent.name }}</span>
-            </div>
+            <span class="marquee-clip" data-marquee-clip>
+              <span class="marquee-label" data-marquee-label title="{{ torrent.name }}">{{ torrent.name }}</span>
+            </span>
           </td>
           <td data-value="{{ torrent.bytes }}">{{ torrent.size }}</td>
           <td>{{ torrent.file_count }}</td>

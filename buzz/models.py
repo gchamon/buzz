@@ -12,6 +12,10 @@ from .core.constants import DEFAULT_ANIME_PATTERN
 
 DEFAULT_DAV_CONFIG_PATH = os.environ.get("BUZZ_CONFIG", "/app/buzz.yml")
 DEFAULT_DIST_CONFIG_NAME = "buzz.dist.yml"
+DEFAULT_STATE_DIR = "/app/data"
+DEFAULT_APP_VERSION = "buzz/0.1"
+FIELD_ANIME_PATTERNS = "directories.anime.patterns"
+FIELD_SUBTITLES_LANGUAGES = "subtitles.languages"
 RESTART_REQUIRED_FIELDS = (
     "server.bind",
     "server.port",
@@ -24,7 +28,7 @@ UI_MANAGED_CONFIG_FIELDS = (
     "hooks.on_library_change",
     "hooks.curator_url",
     "hooks.rd_update_delay_secs",
-    "directories.anime.patterns",
+    FIELD_ANIME_PATTERNS,
     "compat.enable_all_dir",
     "compat.enable_unplayable_dir",
     "request_timeout_secs",
@@ -32,7 +36,7 @@ UI_MANAGED_CONFIG_FIELDS = (
     "logging.verbose",
     "subtitles.enabled",
     "subtitles.fetch_on_resync",
-    "subtitles.languages",
+    FIELD_SUBTITLES_LANGUAGES,
     "subtitles.strategy",
     "subtitles.filters.hearing_impaired",
     "subtitles.filters.exclude_ai",
@@ -195,6 +199,28 @@ def mask_secrets(d: dict) -> dict:
     return result
 
 
+def _strip_provider_token(d: dict) -> None:
+    provider = d.get("provider")
+    if isinstance(provider, dict):
+        provider.pop("token", None)
+        if not provider:
+            del d["provider"]
+
+
+def _strip_opensubtitles_secrets(d: dict) -> None:
+    subtitles = d.get("subtitles")
+    if not isinstance(subtitles, dict):
+        return
+    opensubs = subtitles.get("opensubtitles")
+    if isinstance(opensubs, dict):
+        for k in ("api_key", "username", "password"):
+            opensubs.pop(k, None)
+        if not opensubs:
+            subtitles.pop("opensubtitles", None)
+    if not subtitles:
+        del d["subtitles"]
+
+
 def _strip_secrets(d: dict) -> dict:
     result = {}
     for key, value in d.items():
@@ -204,19 +230,8 @@ def _strip_secrets(d: dict) -> dict:
                 result[key] = nested
         else:
             result[key] = value
-    if "provider" in result and isinstance(result["provider"], dict):
-        result["provider"].pop("token", None)
-        if not result["provider"]:
-            del result["provider"]
-    if "subtitles" in result and isinstance(result["subtitles"], dict):
-        opensubs = result["subtitles"].get("opensubtitles")
-        if isinstance(opensubs, dict):
-            for k in ("api_key", "username", "password"):
-                opensubs.pop(k, None)
-            if not opensubs:
-                result["subtitles"].pop("opensubtitles", None)
-        if not result["subtitles"]:
-            del result["subtitles"]
+    _strip_provider_token(result)
+    _strip_opensubtitles_secrets(result)
     return result
 
 
@@ -303,7 +318,7 @@ def load_base_and_overrides(
         file_base = yaml.safe_load(handle) or {}
     base = deep_merge(default_dist, file_base)
 
-    state_dir = str(file_base.get("state_dir", base.get("state_dir", "/app/data")))
+    state_dir = str(file_base.get("state_dir", base.get("state_dir", DEFAULT_STATE_DIR)))
     overrides_env = os.environ.get("BUZZ_OVERRIDES", "")
     overrides_path = (
         Path(overrides_env)
@@ -458,14 +473,14 @@ class DavConfig(BaseModel):
     bind: str = "0.0.0.0"
     port: int = 9999
     stream_buffer_size: int = 0
-    state_dir: str = "/app/data"
+    state_dir: str = DEFAULT_STATE_DIR
     hook_command: str = ""
     anime_patterns: tuple[str, ...] = (DEFAULT_ANIME_PATTERN,)
     enable_all_dir: bool = True
     enable_unplayable_dir: bool = True
     request_timeout_secs: int = 30
-    user_agent: str = "buzz/0.1"
-    version_label: str = "buzz/0.1"
+    user_agent: str = DEFAULT_APP_VERSION
+    version_label: str = DEFAULT_APP_VERSION
     curator_url: str = "http://buzz-curator:8400/rebuild"
     rd_update_delay_secs: int = 15
     vfs_wait_timeout_secs: int = 300
@@ -505,7 +520,7 @@ class DavConfig(BaseModel):
             bind=str(server.get("bind", "0.0.0.0")),
             port=int(server.get("port", 9999)),
             stream_buffer_size=int(server.get("stream_buffer_size", 0)),
-            state_dir=str(raw.get("state_dir", "/app/data")),
+            state_dir=str(raw.get("state_dir", DEFAULT_STATE_DIR)),
             hook_command=str(hooks.get("on_library_change", "")).strip(),
             curator_url=str(
                 hooks.get("curator_url", "http://buzz-curator:8400/rebuild")
@@ -523,8 +538,8 @@ class DavConfig(BaseModel):
                 compat.get("enable_unplayable_dir", True)
             ),
             request_timeout_secs=int(raw.get("request_timeout_secs", 30)),
-            user_agent=str(raw.get("user_agent", "buzz/0.1")),
-            version_label=str(raw.get("version_label", "buzz/0.1")),
+            user_agent=str(raw.get("user_agent", DEFAULT_APP_VERSION)),
+            version_label=str(raw.get("version_label", DEFAULT_APP_VERSION)),
             verbose=bool(logging_raw.get("verbose", False)),
             log_max_entries=int(logging_raw.get("max_entries", 1000)),
             ui_poll_interval_secs=int(
@@ -586,7 +601,7 @@ class CuratorConfig(BaseModel):
                 "CURATOR_STATE_DIR",
                 os.environ.get(
                     "PRESENTATION_STATE_DIR",
-                    os.environ.get("PRESENTATION_STATE_ROOT", "/app/data"),
+                    os.environ.get("PRESENTATION_STATE_ROOT", DEFAULT_STATE_DIR),
                 ),
             )
         )

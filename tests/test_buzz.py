@@ -1128,6 +1128,10 @@ class DavAppTests(unittest.TestCase):
         self.assertIn('href="/static/buzz.css"', body)
         self.assertIn('phx-click="prompt_delete"', body)
         self.assertIn('phx-click="fetch_subs"', body)
+        self.assertIn('phx-hook="BuzzOverflowMarquee"', body)
+        self.assertIn("data-marquee-clip", body)
+        self.assertIn("data-marquee-label", body)
+        self.assertIn('title="Movie &amp; Stuff"', body)
 
     def test_archive_page_renders_pyview_shell(self):
         self.state.trashcan = {
@@ -1155,6 +1159,10 @@ class DavAppTests(unittest.TestCase):
         self.assertIn("Old &amp; Gone", body)
         self.assertIn('href="/static/buzz.css"', body)
         self.assertIn('phx-click="prompt_restore"', body)
+        self.assertIn('phx-hook="BuzzOverflowMarquee"', body)
+        self.assertIn("data-marquee-clip", body)
+        self.assertIn("data-marquee-label", body)
+        self.assertIn('title="Old &amp; Gone"', body)
 
     def test_cache_page_renders_empty_state_and_error_banner(self):
         self.state.last_error = "Boom & stuff"
@@ -1873,7 +1881,7 @@ class DavAppTests(unittest.TestCase):
                     break
                 time.sleep(0.05)
             after = len(registry.events)
-            self.assertTrue(after > before)
+            self.assertGreater(after, before)
             messages = [e["message"] for e in registry.events]
             self.assertIn("OpenSubtitles language refresh started", messages)
             self.assertIn("OpenSubtitles language refresh finished", messages)

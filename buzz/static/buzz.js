@@ -1,35 +1,4 @@
-const buzzTableId = "torrent-table";
-let _truncObserver = null;
 let _buzzSocketStatusMonitor = null;
-
-function markTruncatedCells() {
-  document.querySelectorAll(".trunc-cell").forEach((cell) => {
-    const idle = cell.querySelector(".trunc-idle");
-    if (!idle) return;
-    if (idle.scrollWidth > idle.clientWidth) {
-      cell.classList.add("is-truncated");
-    } else {
-      cell.classList.remove("is-truncated");
-    }
-  });
-}
-
-function initTruncCells() {
-  markTruncatedCells();
-  const table = document.getElementById(buzzTableId);
-  if (!table || typeof ResizeObserver === "undefined") return;
-  if (_truncObserver) {
-    _truncObserver.disconnect();
-  }
-  _truncObserver = new ResizeObserver(markTruncatedCells);
-  _truncObserver.observe(table);
-}
-
-function initTableIfPresent() {
-  if (document.getElementById(buzzTableId)) {
-    initTruncCells();
-  }
-}
 
 function setBuzzStatus(label, className) {
   const element = document.getElementById("status-ready-label");
@@ -88,7 +57,5 @@ function initBuzzSocketStatusMonitor() {
   _buzzSocketStatusMonitor.start();
 }
 
-document.addEventListener("DOMContentLoaded", initTableIfPresent);
 document.addEventListener("DOMContentLoaded", initBuzzSocketStatusMonitor);
-window.addEventListener("phx:navigate", initTableIfPresent);
 window.addEventListener("phx:navigate", initBuzzSocketStatusMonitor);
