@@ -178,6 +178,6 @@ For a deep dive into how Buzz works, components, and data flow, see the [Archite
 - **Linting:** We use `htmlhint` to enforce clean HTML templates and forbid inline styles. A `.htmlhintrc` is provided in the root directory.
   ```sh
   # Run linting on all templates
-  npx htmlhint "buzz/templates/*.html"
+  npx htmlhint "buzz/pyview_templates/*.html"
   ```
 - **Config Migration:** Config migration helper lives in [scripts/migrate_config.py](./scripts/migrate_config.py).
