@@ -619,14 +619,14 @@ class CacheLiveView(_BaseBuzzLiveView):
             socket.context["console_msg"] = (
                 f"Resolved {len(results)} magnets, {len(errors)} failed."
             )
-            socket.context["console_class"] = "ready-label-orange"
+            socket.context["console_class"] = "service-status-orange"
         else:
             socket.context["console_msg"] = (
                 f"Resolved {len(results)} magnet(s)."
                 if len(results) != 1
                 else "Ready to cache."
             )
-            socket.context["console_class"] = "ready-label-green"
+            socket.context["console_class"] = "service-status-green"
 
     def _handle_confirm_cache(
         self, socket: ConnectedLiveViewSocket[CacheContext]

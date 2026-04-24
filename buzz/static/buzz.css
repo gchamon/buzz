@@ -241,10 +241,6 @@ button.secondary {
   min-height: 0;
 }
 
-.table-container table {
-  border-collapse: collapse;
-}
-
 .table-container td:first-of-type {
   min-width: 200px;
 }
@@ -558,11 +554,6 @@ code {
   border-radius: 4px;
 }
 
-.logs-header-btns {
-  display: flex;
-  gap: 10px;
-}
-
 .bulk-magnet-remove {
   padding: 0 10px;
   font-size: 1rem;
@@ -621,13 +612,6 @@ input[type="text"] {
 
 input[type="text"]:focus {
   border-color: var(--purple);
-}
-
-#file-selection-area {
-  margin-top: 15px;
-  border-top: 1px solid var(--comment);
-  padding-top: 15px;
-  display: none;
 }
 
 .file-list {

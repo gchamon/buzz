@@ -57,6 +57,5 @@ function initBuzzSocketStatusMonitor() {
   _buzzSocketStatusMonitor.start();
 }
 
-document.addEventListener("DOMContentLoaded", initTruncCells);
 document.addEventListener("DOMContentLoaded", initBuzzSocketStatusMonitor);
 window.addEventListener("phx:navigate", initBuzzSocketStatusMonitor);
