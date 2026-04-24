@@ -799,6 +799,7 @@ class BuzzState:
         """Flag that the initial startup sync has finished."""
         with self.lock:
             self.startup_sync_complete = True
+        self._notify_ui_change("sync")
 
     def is_ready(self) -> bool:
         """Return True when the library is ready to serve DAV requests."""

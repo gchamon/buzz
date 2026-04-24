@@ -245,6 +245,7 @@ def build_ui(owner: Any) -> PyView:
     """Build the PyView application mounted into the DAV app."""
     app = PyView()
     app.rootTemplate = _build_root_template()
+    app.add_live_view("/", lambda: CacheLiveView(owner))
     app.add_live_view("/cache", lambda: CacheLiveView(owner))
     app.add_live_view("/archive", lambda: ArchiveLiveView(owner))
     app.add_live_view("/logs", lambda: LogsLiveView(owner))
@@ -368,6 +369,7 @@ class CacheLiveView(_BaseBuzzLiveView):
         event: str,
         socket: ConnectedLiveViewSocket[CacheContext],
         payload: dict[str, Any] | None = None,
+        to: str = "",
         hash: str = "",
         index: str = "",
         torrent_name: str = "",
@@ -376,6 +378,9 @@ class CacheLiveView(_BaseBuzzLiveView):
         mode: str = "",
         col: str = "",
     ) -> None:
+        if event == "navigate":
+            await socket.push_navigate(to)
+            return
         if event == "prompt_delete":
             socket.context["confirm_delete_id"] = hash
             return
@@ -665,8 +670,12 @@ class ArchiveLiveView(_BaseBuzzLiveView):
         self,
         event: str,
         socket: ConnectedLiveViewSocket[ArchiveContext],
+        to: str = "",
         hash: str = "",
     ) -> None:
+        if event == "navigate":
+            await socket.push_navigate(to)
+            return
         if event == "prompt_restore":
             socket.context["confirm_restore_hash"] = hash
             socket.context["confirm_delete_hash"] = None
@@ -771,7 +780,11 @@ class LogsLiveView(_BaseBuzzLiveView):
         self,
         event: str,
         socket: ConnectedLiveViewSocket[LogsContext],
+        to: str = "",
     ) -> None:
+        if event == "navigate":
+            await socket.push_navigate(to)
+            return
         if event == "toggle_auto_refresh":
             socket.context["auto_refresh"] = not socket.context["auto_refresh"]
             if socket.context["auto_refresh"]:
@@ -863,8 +876,12 @@ class ConfigLiveView(_BaseBuzzLiveView):
         event: str,
         socket: ConnectedLiveViewSocket[ConfigContext],
         payload: dict[str, Any],
+        to: str = "",
         language_query: str = "",
     ) -> None:
+        if event == "navigate":
+            await socket.push_navigate(to)
+            return
         if event == "edit":
             socket.context["is_editing"] = True
             return

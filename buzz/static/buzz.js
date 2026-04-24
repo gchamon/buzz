@@ -1,4 +1,5 @@
 const buzzTableId = "torrent-table";
+let _truncObserver = null;
 
 function markTruncatedCells() {
   document.querySelectorAll(".trunc-cell").forEach((cell) => {
@@ -16,25 +17,18 @@ function initTruncCells() {
   markTruncatedCells();
   const table = document.getElementById(buzzTableId);
   if (!table || typeof ResizeObserver === "undefined") return;
-  new ResizeObserver(markTruncatedCells).observe(table);
+  if (_truncObserver) {
+    _truncObserver.disconnect();
+  }
+  _truncObserver = new ResizeObserver(markTruncatedCells);
+  _truncObserver.observe(table);
 }
 
-function fitTableToViewport() {
-  const el = document.getElementById("torrent-table-container");
-  if (!el) return;
-  const top = el.getBoundingClientRect().top;
-  const bottomPadding = 20;
-  el.style.height = (window.innerHeight - top - bottomPadding) + "px";
-}
-
-function initTableFit() {
-  fitTableToViewport();
-  window.addEventListener("resize", fitTableToViewport);
-}
-
-document.addEventListener("DOMContentLoaded", function () {
+function initTableIfPresent() {
   if (document.getElementById(buzzTableId)) {
     initTruncCells();
-    initTableFit();
   }
-});
+}
+
+document.addEventListener("DOMContentLoaded", initTableIfPresent);
+window.addEventListener("phx:navigate", initTableIfPresent);

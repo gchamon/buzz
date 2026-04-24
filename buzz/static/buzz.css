@@ -22,12 +22,28 @@ body {
   background: var(--bg);
   color: var(--fg);
   line-height: 1.5;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* pyview injects a wrapper div between body and main */
+body > div[data-phx-main] {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 main {
   padding: 20px;
   max-width: 1400px;
   margin: 0 auto;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
 }
 
 .menu-options {
@@ -221,6 +237,8 @@ button.secondary {
 #torrent-table-container {
   overflow-y: scroll;
   overflow-x: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .table-container table {
@@ -578,6 +596,22 @@ code {
 
 .service-status-orange {
   color: var(--orange);
+}
+
+#status-ready-label.service-status-orange {
+  animation: starting-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes starting-pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.4;
+  }
 }
 
 .service-status-cyan {
@@ -1031,7 +1065,7 @@ input[type="text"]:focus {
   margin: 0 0 24px 0;
   display: flex;
   flex-direction: column;
-  max-height: 80vh;
+  max-height: 75vh;
   overflow: hidden;
 }
 
@@ -1052,7 +1086,7 @@ input[type="text"]:focus {
   flex-shrink: 0;
 }
 
-div.code-toolbar > .toolbar {
+div.code-toolbar>.toolbar {
   display: none;
 }
 

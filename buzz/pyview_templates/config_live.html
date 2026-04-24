@@ -2,18 +2,18 @@
   <div class="prompt">
     <b>buzz:</b>
     <div class="menu-options">
-      <a href="/cache" class="nav-link">🪎 cache</a>
+      <a phx-click="navigate" phx-value-to="/cache" class="nav-link">🪎 cache</a>
       <span class="nav-sep">◈</span>
-      <a href="/archive" class="nav-link" id="nav-archive">
+      <a phx-click="navigate" phx-value-to="/archive" class="nav-link" id="nav-archive">
         <i class="fa-solid fa-box-archive nav-icon" aria-hidden="true"></i>
         archive(<span id="nav-archive-count">{{ nav.archive_count }}</span>)
       </a>
       <span class="nav-sep">◈</span>
-      <a href="/logs" class="nav-link" id="nav-logs" phx-hook="BuzzLogGlow" data-log-level="{{ nav.log_level }}">
+      <a phx-click="navigate" phx-value-to="/logs" class="nav-link" id="nav-logs" phx-hook="BuzzLogGlow" data-log-level="{{ nav.log_level }}">
         📜 logs(<span id="nav-log-count">{{ nav.log_count }}</span>)
       </a>
       <span class="nav-sep">◈</span>
-      <a href="/config" class="nav-link active">⚙️ config</a>
+      <a class="nav-link active">⚙️ config</a>
     </div>
   </div>
 

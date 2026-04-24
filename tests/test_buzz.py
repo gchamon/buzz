@@ -1193,7 +1193,7 @@ class DavAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("markTruncatedCells", response.text)
-        self.assertIn("fitTableToViewport", response.text)
+        self.assertIn("initTruncCells", response.text)
 
     def test_pyview_assets_are_served(self):
         response = self.client.get("/pyview/assets/app.js")
