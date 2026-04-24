@@ -146,5 +146,42 @@ if (typeof window !== "undefined") {
     },
   };
 
+  hooks.BuzzOverflowMarquee = {
+    mounted() {
+      this._reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+      this._onReducedMotionChange = () => this._measureAll();
+      this._reducedMotion.addEventListener("change", this._onReducedMotionChange);
+      this._resizeObserver = new ResizeObserver(() => this._measureAll());
+      this._resizeObserver.observe(this.el);
+      this._measureAll();
+    },
+    updated() {
+      this._measureAll();
+    },
+    destroyed() {
+      this._resizeObserver?.disconnect();
+      this._reducedMotion?.removeEventListener("change", this._onReducedMotionChange);
+    },
+    _measureAll() {
+      const clips = this.el.querySelectorAll("[data-marquee-clip]");
+      const reduced = this._reducedMotion.matches;
+      clips.forEach((clip) => {
+        const label = clip.querySelector("[data-marquee-label]");
+        if (!label) return;
+        const overflow = label.scrollWidth - clip.clientWidth;
+        if (!reduced && overflow > 0) {
+          clip.dataset.overflowing = "true";
+          clip.style.setProperty("--marquee-distance", `${overflow}px`);
+          const duration = Math.min(12, Math.max(3, overflow / 60));
+          clip.style.setProperty("--marquee-duration", `${duration}s`);
+        } else {
+          delete clip.dataset.overflowing;
+          clip.style.removeProperty("--marquee-distance");
+          clip.style.removeProperty("--marquee-duration");
+        }
+      });
+    },
+  };
+
   window.Hooks = hooks;
 }

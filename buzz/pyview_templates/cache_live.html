@@ -142,7 +142,7 @@
     {% endif %}
   </section>
 
-  <div class="table-container relative" id="torrent-table-container">
+  <div class="table-container relative" id="torrent-table-container" phx-hook="BuzzOverflowMarquee">
     <div
       id="processing-overlay"
       class="{% if not show_overlay %}hidden{% endif %} absolute-fill flex flex-center overlay"
@@ -194,7 +194,11 @@
         {% if has_torrents %}
         {% for torrent in torrents %}
         <tr>
-          <td class="name trunc-cell" data-value="{{ torrent.name }}">{{ torrent.name }}</td>
+          <td class="name trunc-cell" data-value="{{ torrent.name }}">
+            <span class="marquee-clip" data-marquee-clip>
+              <span class="marquee-label" data-marquee-label title="{{ torrent.name }}">{{ torrent.name }}</span>
+            </span>
+          </td>
           <td data-value="{{ torrent.status }}">
             <span class="status status-{{ torrent.status }}">[{{ torrent.status }}]</span>
           </td>

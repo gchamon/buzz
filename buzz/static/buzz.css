@@ -321,6 +321,37 @@ td:last-of-type {
   color: var(--fg);
 }
 
+.marquee-clip {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  width: 100%;
+}
+
+.marquee-label {
+  display: inline-block;
+  white-space: nowrap;
+  will-change: transform;
+}
+
+tr:hover .marquee-clip[data-overflowing] .marquee-label,
+tr:focus-within .marquee-clip[data-overflowing] .marquee-label {
+  animation: buzz-marquee var(--marquee-duration, 6s) linear infinite;
+}
+
+@keyframes buzz-marquee {
+  0%, 15%   { transform: translateX(0); }
+  85%, 100% { transform: translateX(calc(var(--marquee-distance, 0px) * -1)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  tr:hover .marquee-clip[data-overflowing] .marquee-label,
+  tr:focus-within .marquee-clip[data-overflowing] .marquee-label {
+    animation: none;
+  }
+}
+
 .comment {
   color: var(--comment);
 }
