@@ -6,6 +6,7 @@ state/jellyfin-library/*
 !state/jellyfin-library/.gitkeep
 presentation/overrides.yml
 !presentation/overrides.dist.yml
+coverage.xml
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
