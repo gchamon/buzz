@@ -1923,6 +1923,73 @@ class DavAppTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "markup instead of media bytes"):
                 open_remote_media(self.state, node, None)
 
+    def test_languages_refreshing_flag_set_while_fetching(self):
+        config = self._config_with_credentials(self.tmpdir.name)
+        with (
+            patch("buzz.dav_app.RD", return_value=self.FakeRD()),
+            patch("buzz.dav_app._fetch_opensubtitles_languages", return_value=[("de", "German")]),
+        ):
+            app = DavApp(config)
+            self.assertFalse(app.languages_refreshing)
+            started = app.trigger_language_refresh(force=True)
+            self.assertTrue(started)
+            self.assertTrue(app.languages_refreshing)
+            # wait for background thread to finish
+            for _ in range(40):
+                if not app.languages_refreshing:
+                    break
+                time.sleep(0.05)
+            self.assertFalse(app.languages_refreshing)
+            self.assertEqual(app.opensubtitles_languages, [("de", "German")])
+
+    def test_languages_refreshing_flag_cleared_on_empty_result(self):
+        config = self._config_with_credentials(self.tmpdir.name)
+
+        def _slow_empty_fetch(*_args):
+            time.sleep(0.05)
+            return []
+
+        with (
+            patch("buzz.dav_app.RD", return_value=self.FakeRD()),
+            patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                side_effect=_slow_empty_fetch,
+            ),
+        ):
+            app = DavApp(config)
+            started = app.trigger_language_refresh(force=True)
+            self.assertTrue(started)
+            self.assertTrue(app.languages_refreshing)
+            for _ in range(40):
+                if not app.languages_refreshing:
+                    break
+                time.sleep(0.05)
+            self.assertFalse(app.languages_refreshing)
+
+    def test_refresh_logs_start_and_finish_events(self):
+        from buzz.core.events import registry
+
+        config = self._config_with_credentials(self.tmpdir.name)
+        with (
+            patch("buzz.dav_app.RD", return_value=self.FakeRD()),
+            patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                return_value=[("it", "Italian")],
+            ),
+        ):
+            app = DavApp(config)
+            before = len(registry.events)
+            app.trigger_language_refresh(force=True)
+            for _ in range(40):
+                if not app.languages_refreshing:
+                    break
+                time.sleep(0.05)
+            after = len(registry.events)
+            self.assertTrue(after > before)
+            messages = [e["message"] for e in registry.events]
+            self.assertIn("OpenSubtitles language refresh started", messages)
+            self.assertIn("OpenSubtitles language refresh finished", messages)
+
 
 class FetchOpenSubtitlesLanguagesTests(unittest.TestCase):
     def test_fetch_sends_api_key_header(self):

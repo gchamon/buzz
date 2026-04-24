@@ -225,6 +225,7 @@ class ConfigContext(PageContext):
     is_editing: bool
     language_query: str
     languages: list[ConfigLanguage]
+    languages_refreshing: bool
     restart_required: bool
     restart_required_fields: list[str]
     subtitles_credentials_ready: bool
@@ -1010,12 +1011,21 @@ class ConfigLiveView(_BaseBuzzLiveView):
     ) -> None:
         if event.name not in {"buzz:status", "buzz:config"}:
             return
+        console_msg = socket.context["console_msg"]
+        console_class = socket.context["console_class"]
+        if (
+            event.name == "buzz:config"
+            and isinstance(event.payload, dict)
+            and event.payload.get("languages_refresh_complete")
+        ):
+            console_msg = "languages updated"
+            console_class = "service-status-green"
         socket.context = self._context(
             is_editing=socket.context["is_editing"],
             draft_payload=socket.context["draft_payload"],
             language_query=socket.context["language_query"],
-            console_msg=socket.context["console_msg"],
-            console_class=socket.context["console_class"],
+            console_msg=console_msg,
+            console_class=console_class,
         )
 
     async def render(
@@ -1080,6 +1090,7 @@ class ConfigLiveView(_BaseBuzzLiveView):
                 "is_editing": is_editing,
                 "language_query": language_query,
                 "languages": languages,
+                "languages_refreshing": self.owner.languages_refreshing,
                 "restart_required": self.owner.restart_required,
                 "restart_required_fields": self.owner.restart_required_fields(),
                 "subtitles_credentials_ready": subtitles_credentials_ready,

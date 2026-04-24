@@ -107,6 +107,7 @@ class DavApp:
         self.state = BuzzState(config, self.client, on_ui_change=self._notify_ui_change)
         self.curator_ready = not bool(config.curator_url)
         self.opensubtitles_languages: list[tuple[str, str]] = []
+        self.languages_refreshing = False
         self._language_refresh_lock = threading.Lock()
         self._language_refresh_running = False
         self.ui = build_ui(self)
@@ -190,6 +191,9 @@ class DavApp:
             ):
                 return False
             self._language_refresh_running = True
+        self.languages_refreshing = True
+        record_event("OpenSubtitles language refresh started")
+        self._notify_ui_change("config", {"languages_refreshing": True})
         threading.Thread(
             target=self._refresh_opensubtitles_languages,
             name="buzz-opensubtitles-languages",
@@ -208,6 +212,9 @@ class DavApp:
             self._notify_ui_change("config")
         finally:
             self._language_refresh_running = False
+            self.languages_refreshing = False
+            record_event("OpenSubtitles language refresh finished")
+            self._notify_ui_change("config", {"languages_refresh_complete": True})
 
     def is_ready(self) -> bool:
         return self.state.is_ready() and self.curator_ready
@@ -817,15 +824,20 @@ class DavApp:
         self._notify_ui_topic("buzz:logs", event)
         self._notify_ui_topic("buzz:status", event)
 
-    def _notify_ui_change(self, topic: str) -> None:
-        self._notify_ui_topic("buzz:status", {"topic": topic})
+    def _notify_ui_change(
+        self, topic: str, payload: dict | None = None
+    ) -> None:
+        message: dict = {"topic": topic}
+        if payload:
+            message.update(payload)
+        self._notify_ui_topic("buzz:status", message)
         if topic == "archive":
-            self._notify_ui_topic("buzz:archive", {"topic": topic})
+            self._notify_ui_topic("buzz:archive", message)
         elif topic == "sync":
-            self._notify_ui_topic("buzz:archive", {"topic": topic})
-            self._notify_ui_topic("buzz:logs", {"topic": topic})
+            self._notify_ui_topic("buzz:archive", message)
+            self._notify_ui_topic("buzz:logs", message)
         elif topic == "config":
-            self._notify_ui_topic("buzz:config", {"topic": topic})
+            self._notify_ui_topic("buzz:config", message)
 
     def _notify_ui_topic(self, topic: str, message: dict) -> None:
         if self.ui_loop is None:

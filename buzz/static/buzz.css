@@ -28,7 +28,7 @@ body {
 }
 
 /* pyview injects a wrapper div between body and main */
-body > div[data-phx-main] {
+body>div[data-phx-main] {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -1134,6 +1134,15 @@ div.code-toolbar>.toolbar {
   display: none;
 }
 
+.lang-header {
+  display: flex;
+  gap: 7px;
+}
+
+.lang-header button {
+  margin-left: auto;
+}
+
 .lang-list {
   max-height: 150px;
   overflow-y: auto;
@@ -1144,6 +1153,17 @@ div.code-toolbar>.toolbar {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.lang-list-processing {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.lang-processing-label {
+  font-size: 0.85em;
+  color: var(--green);
+  margin-left: 4px;
 }
 
 .lang-item {
