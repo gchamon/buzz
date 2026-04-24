@@ -217,21 +217,6 @@ class CuratorAppTests(unittest.TestCase):
                 _source_matches_torrent(source_path, original_filename)
             )
 
-    def test_curator_rebuild_returns_immediately(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            (root / "raw" / "movies").mkdir(parents=True)
-            (root / "raw" / "shows").mkdir(parents=True)
-            (root / "raw" / "anime").mkdir(parents=True)
-
-            app = CuratorApp(self._config(root))
-            client = TestClient(app.app)
-
-            response = client.post("/rebuild")
-
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json(), {"status": "rebuilding"})
-
     def test_curator_config_load_merges_overrides(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

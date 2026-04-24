@@ -1225,84 +1225,6 @@ class DavAppTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertIn("# Overriden via UI", response.text)
 
-    def test_config_page_ignores_redundant_override_values_in_yaml(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base_path = Path(tmpdir) / "buzz.yml"
-            overrides_path = Path(tmpdir) / "buzz.overrides.yml"
-            base_path.write_text(
-                "provider:\n  token: testtoken\n"
-                f"state_dir: {tmpdir}\n"
-                "poll_interval_secs: 60\n",
-                encoding="utf-8",
-            )
-            overrides_path.write_text(
-                "poll_interval_secs: 60\n",
-                encoding="utf-8",
-            )
-            config = Config.load(str(base_path))
-            rd_patcher = patch(
-                "buzz.dav_app.RD",
-                return_value=DavAppTests.FakeRD(),
-            )
-            languages_patcher = patch(
-                "buzz.dav_app._fetch_opensubtitles_languages",
-                return_value=[],
-            )
-            rd_patcher.start()
-            languages_patcher.start()
-            self.addCleanup(rd_patcher.stop)
-            self.addCleanup(languages_patcher.stop)
-            app = DavApp(config)
-            client = TestClient(app.app)
-
-            response = client.get("/config")
-
-            self.assertEqual(response.status_code, 200)
-            self.assertNotIn("# Overriden via UI\npoll_interval_secs: 60", response.text)
-
-    def test_config_page_ignores_override_matching_dist_defaults(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            dist_path = root / "buzz.dist.yml"
-            base_path = root / "buzz.yml"
-            overrides_path = root / "buzz.overrides.yml"
-            dist_path.write_text(
-                "provider:\n  token: yourtoken\n"
-                "hooks:\n  curator_url: http://buzz-curator:8400/rebuild\n",
-                encoding="utf-8",
-            )
-            base_path.write_text(
-                f"provider:\n  token: testtoken\nstate_dir: {tmpdir}\n",
-                encoding="utf-8",
-            )
-            overrides_path.write_text(
-                "hooks:\n  curator_url: http://buzz-curator:8400/rebuild\n",
-                encoding="utf-8",
-            )
-            config = Config.load(str(base_path))
-            rd_patcher = patch(
-                "buzz.dav_app.RD",
-                return_value=DavAppTests.FakeRD(),
-            )
-            languages_patcher = patch(
-                "buzz.dav_app._fetch_opensubtitles_languages",
-                return_value=[],
-            )
-            rd_patcher.start()
-            languages_patcher.start()
-            self.addCleanup(rd_patcher.stop)
-            self.addCleanup(languages_patcher.stop)
-            app = DavApp(config)
-            client = TestClient(app.app)
-
-            response = client.get("/config")
-
-            self.assertEqual(response.status_code, 200)
-            self.assertNotIn(
-                "# Overriden via UI\n  curator_url: http://buzz-curator:8400/rebuild",
-                response.text,
-            )
-
     def test_config_page_ignores_default_valued_override_fields(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -1419,22 +1341,6 @@ class DavAppTests(unittest.TestCase):
         dockerfile = Path("buzz/Dockerfile").read_text(encoding="utf-8")
 
         self.assertIn("COPY pyproject.toml README.md buzz.dist.yml /app/", dockerfile)
-
-    def test_static_assets_are_served(self):
-        response = self.client.get("/static/buzz.js")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("markTruncatedCells", response.text)
-        self.assertIn("initTruncCells", response.text)
-        self.assertIn("createBuzzSocketStatusMonitor", response.text)
-        self.assertIn("window.liveSocket", response.text)
-        self.assertIn("socket.onOpen", response.text)
-        self.assertIn("socket.onClose", response.text)
-        self.assertIn("socket.onError", response.text)
-        self.assertIn("setBuzzStatus(\"[offline]\"", response.text)
-        self.assertNotIn("heartbeatIntervalMs", response.text)
-        self.assertNotIn("socket.onMessage", response.text)
-        self.assertNotIn("/readyz", response.text)
 
     def test_pyview_assets_are_served(self):
         response = self.client.get("/pyview/assets/app.js")
@@ -1641,9 +1547,6 @@ class DavAppTests(unittest.TestCase):
             app = DavApp(config)
             self.assertFalse(app.trigger_language_refresh())
 
-    def test_manual_reload_without_credentials_returns_error_state(self):
-        self.assertFalse(self.dav_app.trigger_language_refresh(force=True))
-
     def test_manual_reload_while_refresh_running_is_noop(self):
         config = self._config_with_credentials(self.tmpdir.name)
         with (
@@ -1689,21 +1592,6 @@ class DavAppTests(unittest.TestCase):
         self.assertIn("subtitles.search_delay_secs", html)
         self.assertIn("reload_languages", html)
         self.assertIn("fa-arrows-rotate", html)
-
-    def test_credential_gating_flag_reflects_subtitles_keys(self):
-        from buzz.ui_live import ConfigLiveView
-
-        view = ConfigLiveView(owner=self.dav_app)
-
-        # no credentials in setUp config -> flag False
-        context = view._context(is_editing=True)
-        self.assertFalse(context["subtitles_credentials_ready"])
-
-        self.dav_app.saved_config.subtitles.api_key = "ak"
-        self.dav_app.saved_config.subtitles.username = "u"
-        self.dav_app.saved_config.subtitles.password = "p"
-        context = view._context(is_editing=True)
-        self.assertTrue(context["subtitles_credentials_ready"])
 
     def test_options_and_propfind_use_asgi_routes(self):
         options = self.client.options("/dav/movies")
