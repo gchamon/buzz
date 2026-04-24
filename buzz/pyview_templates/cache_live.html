@@ -50,33 +50,34 @@
       <span>ADD NEW MAGNET TO THE CACHE:</span>
     </div>
     <form phx-change="update_magnets" phx-submit="analyze">
-      <div id="magnet-inputs-container">
-        {% for input in magnet_inputs %}
-        <div class="input-group m-b-5">
-          <input
-            type="text"
-            name="magnet"
-            value="{{ input }}"
-            class="bulk-magnet-input"
-            placeholder="magnet:?xt=urn:btih:..."
-          >
-          {% if not loop.is_first %}
-          <button
-            type="button"
-            class="secondary bulk-magnet-remove"
-            phx-click="remove_magnet_input"
-            phx-value-index="{{ loop.index }}"
-          >-</button>
-          {% endif %}
+      <div id="magnet-input-area">
+        <div id="magnet-inputs-container">
+          {% for input in magnet_inputs %}
+          <div class="input-group {% if not loop.is_last %}m-b-5{% endif %}">
+            <input
+              type="text"
+              name="magnet"
+              value="{{ input }}"
+              class="bulk-magnet-input"
+              placeholder="magnet:?xt=urn:btih:..."
+            >
+            {% if not loop.is_first %}
+            <button
+              type="button"
+              class="secondary bulk-magnet-remove"
+              phx-click="remove_magnet_input"
+              phx-value-index="{{ loop.index }}"
+            >-</button>
+            {% else %}
+            <button
+              type="button"
+              class="secondary bulk-magnet-remove"
+              phx-click="add_magnet_input"
+            >+</button>
+            {% endif %}
+          </div>
+          {% endfor %}
         </div>
-        {% endfor %}
-      </div>
-      <div class="file-actions m-b-10">
-        <button
-          type="button"
-          class="secondary btn-icon"
-          phx-click="add_magnet_input"
-        >+</button>
         <button
           type="submit"
           id="resolve-btn"

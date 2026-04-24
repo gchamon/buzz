@@ -233,16 +233,6 @@ def _build_root_template() -> Any:
   >
     {context["content"]}
   </div>
-  <script>
-    document.addEventListener("DOMContentLoaded", function() {{
-      if (typeof zookeeper !== "undefined") zookeeper.hydrate();
-      if (typeof initializeReadyLabel !== "undefined") initializeReadyLabel();
-      if (typeof pollStatus !== "undefined") {{
-        pollStatus();
-        setInterval(pollStatus, 3000);
-      }}
-    }});
-  </script>
 </body>
 </html>"""
             )

@@ -1192,8 +1192,8 @@ class DavAppTests(unittest.TestCase):
         response = self.client.get("/static/buzz.js")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("initBuzzPage", response.text)
-        self.assertIn("const zookeeper", response.text)
+        self.assertIn("markTruncatedCells", response.text)
+        self.assertIn("fitTableToViewport", response.text)
 
     def test_pyview_assets_are_served(self):
         response = self.client.get("/pyview/assets/app.js")
