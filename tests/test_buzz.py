@@ -19,6 +19,7 @@ from buzz.core.state import (
     dav_rel_path,
     normalize_posix_path,
 )
+from buzz.core import db
 from buzz.dav_app import DavApp
 from buzz.dav_protocol import open_remote_media, propfind_body
 from buzz.models import (
@@ -26,6 +27,7 @@ from buzz.models import (
 )
 from buzz.models import (
     CuratorConfig,
+    SubtitleConfig,
     deep_merge,
     mask_secrets,
 )
@@ -1527,6 +1529,182 @@ class DavAppTests(unittest.TestCase):
 
         self.assertEqual(app.opensubtitles_languages, [])
 
+    def _config_with_credentials(self, tmpdir: str) -> Config:
+        return Config(
+            token="token",
+            poll_interval_secs=10,
+            bind="127.0.0.1",
+            port=9999,
+            state_dir=tmpdir,
+            hook_command="",
+            anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+            enable_all_dir=True,
+            enable_unplayable_dir=True,
+            request_timeout_secs=30,
+            user_agent="buzz-tests",
+            version_label="buzz/test",
+            rd_update_delay_secs=0,
+            subtitles=SubtitleConfig(
+                api_key="ak", username="u", password="p"
+            ),
+        )
+
+    def test_startup_uses_cached_languages_without_fetching(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = db.connect(Path(tmpdir) / "buzz.sqlite")
+            db.apply_migrations(conn)
+            db.save_opensubtitles_languages(
+                conn, [("en", "English"), ("pt", "Portuguese")]
+            )
+            conn.close()
+            config = self._config_with_credentials(tmpdir)
+            with (
+                patch("buzz.dav_app.RD", return_value=self.FakeRD()),
+                patch(
+                    "buzz.dav_app._fetch_opensubtitles_languages",
+                    side_effect=AssertionError("should not refetch when fresh"),
+                ),
+            ):
+                app = DavApp(config)
+                app._load_opensubtitles_languages()
+            self.assertEqual(
+                app.opensubtitles_languages,
+                [("en", "English"), ("pt", "Portuguese")],
+            )
+
+    def test_stale_cache_triggers_refresh(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = db.connect(Path(tmpdir) / "buzz.sqlite")
+            db.apply_migrations(conn)
+            db.save_opensubtitles_languages(conn, [("old", "Old Lang")])
+            conn.execute(
+                "UPDATE opensubtitles_languages_meta"
+                " SET fetched_at = '2000-01-01T00:00:00Z' WHERE singleton = 1"
+            )
+            conn.commit()
+            conn.close()
+            config = self._config_with_credentials(tmpdir)
+            refreshed = threading.Event()
+
+            def fake_fetch(api_key):
+                refreshed.set()
+                return [("fr", "French")]
+
+            with (
+                patch("buzz.dav_app.RD", return_value=self.FakeRD()),
+                patch(
+                    "buzz.dav_app._fetch_opensubtitles_languages",
+                    side_effect=fake_fetch,
+                ),
+            ):
+                app = DavApp(config)
+                app._load_opensubtitles_languages()
+                self.assertTrue(refreshed.wait(timeout=2.0))
+                # give the background thread a moment to finish the save
+                for _ in range(20):
+                    if app.opensubtitles_languages == [("fr", "French")]:
+                        break
+                    time.sleep(0.05)
+
+            self.assertEqual(app.opensubtitles_languages, [("fr", "French")])
+            conn = db.connect(Path(tmpdir) / "buzz.sqlite")
+            try:
+                cached, fetched_at = db.load_opensubtitles_languages(conn)
+            finally:
+                conn.close()
+            self.assertEqual(cached, [("fr", "French")])
+            self.assertNotEqual(fetched_at, "2000-01-01T00:00:00Z")
+
+    def test_refresh_skipped_without_credentials(self):
+        config = Config(
+            token="token",
+            poll_interval_secs=10,
+            bind="127.0.0.1",
+            port=9999,
+            state_dir=self.tmpdir.name,
+            hook_command="",
+            anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+            enable_all_dir=True,
+            enable_unplayable_dir=True,
+            request_timeout_secs=30,
+            user_agent="buzz-tests",
+            version_label="buzz/test",
+            rd_update_delay_secs=0,
+        )
+        with (
+            patch("buzz.dav_app.RD", return_value=self.FakeRD()),
+            patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                side_effect=AssertionError("should not fetch without creds"),
+            ),
+        ):
+            app = DavApp(config)
+            self.assertFalse(app.trigger_language_refresh())
+
+    def test_manual_reload_without_credentials_returns_error_state(self):
+        self.assertFalse(self.dav_app.trigger_language_refresh(force=True))
+
+    def test_manual_reload_while_refresh_running_is_noop(self):
+        config = self._config_with_credentials(self.tmpdir.name)
+        with (
+            patch("buzz.dav_app.RD", return_value=self.FakeRD()),
+            patch("buzz.dav_app._fetch_opensubtitles_languages", return_value=[]),
+        ):
+            app = DavApp(config)
+        app._language_refresh_running = True
+        self.assertFalse(app.trigger_language_refresh(force=True))
+
+    def test_rendered_config_without_credentials_omits_subtitle_controls(self):
+        from buzz.ui_live import ConfigLiveView, _load_template
+        from pyview.meta import PyViewMeta
+
+        view = ConfigLiveView(owner=self.dav_app)
+        context = view._context(is_editing=True)
+        html = _load_template("config_live.html").render(context, PyViewMeta())
+
+        self.assertIn("subtitles.enabled", html)
+        self.assertIn("config-credentials-hint", html)
+        self.assertNotIn("subtitles.fetch_on_resync", html)
+        self.assertNotIn("lang-list", html)
+        self.assertNotIn("subtitles.strategy", html)
+        self.assertNotIn("subtitles.filters.exclude_ai", html)
+        self.assertNotIn("subtitles.search_delay_secs", html)
+        self.assertNotIn("reload_languages", html)
+
+    def test_rendered_config_with_credentials_includes_subtitle_controls(self):
+        from buzz.ui_live import ConfigLiveView, _load_template
+        from pyview.meta import PyViewMeta
+
+        self.dav_app.saved_config.subtitles.api_key = "ak"
+        self.dav_app.saved_config.subtitles.username = "u"
+        self.dav_app.saved_config.subtitles.password = "p"
+        view = ConfigLiveView(owner=self.dav_app)
+        context = view._context(is_editing=True)
+        html = _load_template("config_live.html").render(context, PyViewMeta())
+
+        self.assertIn("subtitles.fetch_on_resync", html)
+        self.assertIn("lang-list", html)
+        self.assertIn("subtitles.strategy", html)
+        self.assertIn("subtitles.filters.exclude_ai", html)
+        self.assertIn("subtitles.search_delay_secs", html)
+        self.assertIn("reload_languages", html)
+        self.assertIn("fa-arrows-rotate", html)
+
+    def test_credential_gating_flag_reflects_subtitles_keys(self):
+        from buzz.ui_live import ConfigLiveView
+
+        view = ConfigLiveView(owner=self.dav_app)
+
+        # no credentials in setUp config -> flag False
+        context = view._context(is_editing=True)
+        self.assertFalse(context["subtitles_credentials_ready"])
+
+        self.dav_app.saved_config.subtitles.api_key = "ak"
+        self.dav_app.saved_config.subtitles.username = "u"
+        self.dav_app.saved_config.subtitles.password = "p"
+        context = view._context(is_editing=True)
+        self.assertTrue(context["subtitles_credentials_ready"])
+
     def test_options_and_propfind_use_asgi_routes(self):
         options = self.client.options("/dav/movies")
         propfind = self.client.request("PROPFIND", "/dav/movies", headers={"Depth": "1"})
@@ -1744,6 +1922,32 @@ class DavAppTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "markup instead of media bytes"):
                 open_remote_media(self.state, node, None)
+
+
+class FetchOpenSubtitlesLanguagesTests(unittest.TestCase):
+    def test_fetch_sends_api_key_header(self):
+        from buzz.dav_app import _fetch_opensubtitles_languages
+
+        captured = {}
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"data": [{"language_code": "en", "language_name": "English"}]}
+
+        def fake_get(url, timeout, headers):
+            captured["url"] = url
+            captured["headers"] = headers
+            return _Resp()
+
+        with patch("httpx.get", fake_get):
+            result = _fetch_opensubtitles_languages("secret-key")
+
+        self.assertEqual(result, [("en", "English")])
+        self.assertEqual(captured["headers"]["Api-Key"], "secret-key")
+        self.assertIn("User-Agent", captured["headers"])
 
 
 class DavBufferedStreamingTests(unittest.TestCase):

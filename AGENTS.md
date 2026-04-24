@@ -44,6 +44,11 @@ Here are the core best practices to follow when writing Python:
 
 Always use `uvx pyright {folder}` to scan projects after implementing changes.
 
+The test suite buffers stdout/stderr by default so only test progress and
+unexpected errors are shown. Output from passing tests (event-registry logs,
+subtitle fetching, curator notifications, etc.) is captured and discarded
+automatically:
+
 #### 1. Follow PEP 8 (The Style Guide)
 
 PEP 8 is the official style guide for Python code. Adhering to it ensures your code is readable to any other Python developer.

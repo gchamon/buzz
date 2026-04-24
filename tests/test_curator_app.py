@@ -106,7 +106,9 @@ class CuratorAppTests(unittest.TestCase):
                 dav_ui_notify_url="http://buzz-dav:9999/api/ui/notify",
             )
 
-            with patch("urllib.request.urlopen", return_value=response) as mock_urlopen:
+            with patch(
+                "urllib.request.urlopen", return_value=response
+            ) as mock_urlopen:
                 with TestClient(CuratorApp(config).app) as client:
                     self.assertEqual(client.get("/healthz").status_code, 200)
 
@@ -135,7 +137,9 @@ class CuratorAppTests(unittest.TestCase):
             # state.py torrents() now also uses _torrent_name()
 
             torrent_id = "abc123"
-            original_filename = "The Imaginarium of Doctor Parnassus 2009 BRrip"
+            original_filename = (
+                "The Imaginarium of Doctor Parnassus 2009 BRrip"
+            )
             filename = "The Imaginarium of Doctor Parnassus.mp4"
 
             # 1. Mock state and client to return our torrent
@@ -153,10 +157,12 @@ class CuratorAppTests(unittest.TestCase):
                 "bytes": 1000,
                 "files": [{"selected": 1}],
                 "links": ["link1"],
-                "ended": "2024-04-21"
+                "ended": "2024-04-21",
             }
 
-            dav_config = DavConfig(state_dir=str(state_dir), token="test-token")
+            dav_config = DavConfig(
+                state_dir=str(state_dir), token="test-token"
+            )
             state = BuzzState(dav_config, mock_client)
 
             # Manually seed cache since update() doesn't exist (it's part of sync())
@@ -170,7 +176,7 @@ class CuratorAppTests(unittest.TestCase):
                     "bytes": 1000,
                     "files": [{"selected": 1}],
                     "links": ["link1"],
-                    "ended": "2024-04-21"
+                    "ended": "2024-04-21",
                 }
             }
 
@@ -181,22 +187,35 @@ class CuratorAppTests(unittest.TestCase):
 
             # 2. Verify curator app trigger uses this name
             from buzz.models import SubtitleConfig
-            config = self._config(root, subtitles=SubtitleConfig(enabled=True, api_key="test"))
+
+            config = self._config(
+                root, subtitles=SubtitleConfig(enabled=True, api_key="test")
+            )
             app = CuratorApp(config)
             client = TestClient(app.app)
 
             # Mock background_fetch_subtitles to capture what name it gets
-            with patch("buzz.curator_app.background_fetch_subtitles") as mock_fetch:
-                response = client.post("/api/subtitles/fetch", json={"torrent_name": torrents[0]["name"]})
+            with patch(
+                "buzz.curator_app.background_fetch_subtitles"
+            ) as mock_fetch:
+                response = client.post(
+                    "/api/subtitles/fetch",
+                    json={"torrent_name": torrents[0]["name"]},
+                )
                 self.assertEqual(response.status_code, 200)
                 mock_fetch.assert_called_once()
-                self.assertEqual(mock_fetch.call_args[1]["torrent_name"], original_filename)
+                self.assertEqual(
+                    mock_fetch.call_args[1]["torrent_name"], original_filename
+                )
 
             # 3. Verify mapping match
             from buzz.core.subtitles import _source_matches_torrent
+
             # mapping source path looks like: category/TorrentName/file
             source_path = f"movies/{original_filename}/{filename}"
-            self.assertTrue(_source_matches_torrent(source_path, original_filename))
+            self.assertTrue(
+                _source_matches_torrent(source_path, original_filename)
+            )
 
     def test_curator_rebuild_returns_immediately(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -276,7 +295,10 @@ class CuratorAppTests(unittest.TestCase):
                 "handle_rebuild",
                 side_effect=RebuildError(
                     "scan failed",
-                    {"jellyfin_scan_status": "failed", "jellyfin_scan_triggered": False},
+                    {
+                        "jellyfin_scan_status": "failed",
+                        "jellyfin_scan_triggered": False,
+                    },
                 ),
             ):
                 with patch("sys.stdout", io.StringIO()) as stdout:
@@ -295,13 +317,17 @@ class CuratorAppTests(unittest.TestCase):
 
             self.assertEqual(report["movies"], 1)
             self.assertFalse(report["jellyfin_scan_triggered"])
-            self.assertEqual(report["jellyfin_scan_status"], "skipped_configured")
+            self.assertEqual(
+                report["jellyfin_scan_status"], "skipped_configured"
+            )
             self.assertIsNone(report["jellyfin_scan_error"])
 
     def test_rebuild_and_trigger_skips_scan_when_api_key_is_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = self._config(root, skip_jellyfin_scan=False, jellyfin_api_key="")
+            config = self._config(
+                root, skip_jellyfin_scan=False, jellyfin_api_key=""
+            )
             self._create_source_tree(config.source_root)
 
             stdout = io.StringIO()
@@ -310,7 +336,9 @@ class CuratorAppTests(unittest.TestCase):
 
             self.assertEqual(report["movies"], 1)
             self.assertFalse(report["jellyfin_scan_triggered"])
-            self.assertEqual(report["jellyfin_scan_status"], "skipped_missing_auth")
+            self.assertEqual(
+                report["jellyfin_scan_status"], "skipped_missing_auth"
+            )
             self.assertIsNone(report["jellyfin_scan_error"])
             # The curator now always logs mapping events
             self.assertIn("Curator mapping updated", stdout.getvalue())
@@ -369,7 +397,9 @@ class CuratorAppTests(unittest.TestCase):
             self.assertEqual(mapping_log["changed"], [])
 
     @patch("buzz.core.curator.validate_jellyfin_auth")
-    def test_rebuild_and_trigger_calls_jellyfin_scan_when_auth_is_configured(self, mock_validate):
+    def test_rebuild_and_trigger_calls_jellyfin_scan_when_auth_is_configured(
+        self, mock_validate
+    ):
         mock_validate.return_value = True
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -381,7 +411,9 @@ class CuratorAppTests(unittest.TestCase):
             )
             self._create_source_tree(config.source_root)
 
-            with patch("buzz.core.curator.trigger_jellyfin_scan") as trigger_scan:
+            with patch(
+                "buzz.core.curator.trigger_jellyfin_scan"
+            ) as trigger_scan:
                 report = rebuild_and_trigger(config)
 
             trigger_scan.assert_called_once_with(config)
@@ -390,21 +422,31 @@ class CuratorAppTests(unittest.TestCase):
             self.assertIsNone(report["jellyfin_scan_error"])
 
     @patch("buzz.core.curator.validate_jellyfin_auth")
-    def test_rebuild_and_trigger_calls_selective_refresh_when_changed_roots_provided(self, mock_validate):
+    def test_rebuild_and_trigger_calls_selective_refresh_when_changed_roots_provided(
+        self, mock_validate
+    ):
         mock_validate.return_value = True
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = self._config(root, skip_jellyfin_scan=False, jellyfin_api_key="token")
+            config = self._config(
+                root, skip_jellyfin_scan=False, jellyfin_api_key="token"
+            )
             self._create_source_tree(config.source_root)
 
             with patch(
                 "buzz.core.curator.trigger_jellyfin_selective_refresh"
             ) as trigger_selective:
-                report = rebuild_and_trigger(config, changed_roots=["movies/MyMovie"])
+                report = rebuild_and_trigger(
+                    config, changed_roots=["movies/MyMovie"]
+                )
 
-            trigger_selective.assert_called_once_with(config, ["movies/MyMovie"])
+            trigger_selective.assert_called_once_with(
+                config, ["movies/MyMovie"]
+            )
             self.assertTrue(report["jellyfin_scan_triggered"])
-            self.assertEqual(report["jellyfin_scan_status"], "selective_triggered")
+            self.assertEqual(
+                report["jellyfin_scan_status"], "selective_triggered"
+            )
 
     @patch("buzz.core.media_server.discover_jellyfin_libraries")
     @patch("urllib.request.urlopen")
@@ -429,13 +471,16 @@ class CuratorAppTests(unittest.TestCase):
             refresh_url = f"{config.jellyfin_url}/Items/movie-id-123/Refresh"
             self.assertTrue(
                 any(
-                    refresh_url in (url.full_url if hasattr(url, "full_url") else str(url))
+                    refresh_url
+                    in (url.full_url if hasattr(url, "full_url") else str(url))
                     for url in calls
                 )
             )
 
     @patch("buzz.core.curator.validate_jellyfin_auth")
-    def test_rebuild_and_trigger_logs_error_and_returns_report_for_scan_failure(self, mock_validate):
+    def test_rebuild_and_trigger_logs_error_and_returns_report_for_scan_failure(
+        self, mock_validate
+    ):
         mock_validate.return_value = True
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -468,7 +513,9 @@ class CuratorAppTests(unittest.TestCase):
             client = TestClient(app.app)
 
             stdout = io.StringIO()
-            with patch.object(app.curator, "handle_rebuild", side_effect=RuntimeError("boom")):
+            with patch.object(
+                app.curator, "handle_rebuild", side_effect=RuntimeError("boom")
+            ):
                 with patch("sys.stdout", stdout):
                     response = client.post("/rebuild")
 
@@ -482,7 +529,11 @@ class CuratorAppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config = self._config(root)
-            movie_dir = config.source_root / "movies" / "2001 - A Space Odyssey (1968) V2 (2160p BluRay x265 HEVC 10bit HDR AAC 5.1 Tigole)"
+            movie_dir = (
+                config.source_root
+                / "movies"
+                / "2001 - A Space Odyssey (1968) V2 (2160p BluRay x265 HEVC 10bit HDR AAC 5.1 Tigole)"
+            )
             movie_dir.mkdir(parents=True)
             (movie_dir / "2001.mkv").write_text("video", encoding="utf-8")
 
@@ -492,7 +543,12 @@ class CuratorAppTests(unittest.TestCase):
             self.assertEqual(len(report["skipped_movies"]), 0)
 
             # The folder name should be "2001 A Space Odyssey (1968)"
-            curated_file = config.target_root / "movies" / "2001 A Space Odyssey (1968)" / "2001 A Space Odyssey (1968).mkv"
+            curated_file = (
+                config.target_root
+                / "movies"
+                / "2001 A Space Odyssey (1968)"
+                / "2001 A Space Odyssey (1968).mkv"
+            )
             self.assertTrue(curated_file.exists())
 
     def test_build_library_handles_year_only_in_folder_name(self):
@@ -500,16 +556,27 @@ class CuratorAppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config = self._config(root)
-            movie_dir = config.source_root / "movies" / "The Imaginarium of Doctor Parnassus 2009 BRrip 1080P x264 MP4 - Ofek"
+            movie_dir = (
+                config.source_root
+                / "movies"
+                / "The Imaginarium of Doctor Parnassus 2009 BRrip 1080P x264 MP4 - Ofek"
+            )
             movie_dir.mkdir(parents=True)
-            (movie_dir / "The Imaginarium of Doctor Parnassus.mp4").write_text("video", encoding="utf-8")
+            (movie_dir / "The Imaginarium of Doctor Parnassus.mp4").write_text(
+                "video", encoding="utf-8"
+            )
 
             report = build_library(config)
 
             self.assertEqual(report["movies"], 1)
             self.assertEqual(len(report["skipped_movies"]), 0)
 
-            curated_file = config.target_root / "movies" / "The Imaginarium Of Doctor Parnassus (2009)" / "The Imaginarium Of Doctor Parnassus (2009).mp4"
+            curated_file = (
+                config.target_root
+                / "movies"
+                / "The Imaginarium Of Doctor Parnassus (2009)"
+                / "The Imaginarium Of Doctor Parnassus (2009).mp4"
+            )
             self.assertTrue(curated_file.exists())
 
 

@@ -6,6 +6,7 @@ import queue
 import threading
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from urllib import error
 from typing import cast
@@ -18,6 +19,7 @@ from pyview.live_socket import pub_sub_hub
 from pyview.pyview import liveview_container
 from rdapi import RD
 
+from .core import db
 from .core.events import record_event
 from .core.state import (
     BuzzState,
@@ -63,17 +65,23 @@ SNAPSHOT_RELOAD_FIELDS = (
 )
 
 
-def _fetch_opensubtitles_languages() -> list[tuple[str, str]]:
+def _fetch_opensubtitles_languages(api_key: str) -> list[tuple[str, str]]:
     try:
         import httpx
 
         resp = httpx.get(
-            "https://api.opensubtitles.com/api/v1/infos/languages", timeout=10.0
+            "https://api.opensubtitles.com/api/v1/infos/languages",
+            timeout=10.0,
+            headers={"Api-Key": api_key, "User-Agent": "buzz/1.0"},
         )
         resp.raise_for_status()
         data = resp.json().get("data", [])
         return [(item["language_code"], item["language_name"]) for item in data]
-    except Exception:
+    except Exception as exc:
+        record_event(
+            f"opensubtitles languages fetch failed: {exc}",
+            level="warning",
+        )
         return []
 
 
@@ -99,6 +107,8 @@ class DavApp:
         self.state = BuzzState(config, self.client, on_ui_change=self._notify_ui_change)
         self.curator_ready = not bool(config.curator_url)
         self.opensubtitles_languages: list[tuple[str, str]] = []
+        self._language_refresh_lock = threading.Lock()
+        self._language_refresh_running = False
         self.ui = build_ui(self)
         self._curator_log_level: str = "info"
         registry.add_listener(self._handle_recorded_event)
@@ -106,11 +116,7 @@ class DavApp:
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             self.ui_loop = asyncio.get_running_loop()
-            threading.Thread(
-                target=self._load_opensubtitles_languages,
-                name="buzz-opensubtitles-languages",
-                daemon=True,
-            ).start()
+            self._load_opensubtitles_languages()
             initial_sync = InitialSync(self.state)
             poller = Poller(self.state)
             initial_sync.start()
@@ -144,9 +150,64 @@ class DavApp:
         self.app.router.routes.append(websocket_route)
 
     def _load_opensubtitles_languages(self) -> None:
-        languages = _fetch_opensubtitles_languages()
-        self.opensubtitles_languages = languages
-        self._notify_ui_change("config")
+        """Populate the cache from SQLite; refresh in the background if stale."""
+        cached, fetched_at = db.load_opensubtitles_languages(self.state.conn)
+        self.opensubtitles_languages = cached
+        if self._languages_cache_is_stale(fetched_at):
+            self.trigger_language_refresh(force=False)
+
+    def _languages_cache_is_stale(self, fetched_at: str | None) -> bool:
+        if not fetched_at:
+            return True
+        try:
+            stamp = datetime.strptime(fetched_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            return True
+        return datetime.now(timezone.utc) - stamp > timedelta(days=30)
+
+    def _subtitles_credentials_ready(self) -> bool:
+        subs = self.saved_config.subtitles
+        return bool(subs.api_key and subs.username and subs.password)
+
+    def trigger_language_refresh(self, force: bool = False) -> bool:
+        """Spawn a background fetch if credentials are set.
+
+        Returns ``True`` when a refresh thread was started, ``False`` when
+        credentials are missing, the cache is still fresh and *force* is
+        ``False``, or a refresh is already in progress.
+        """
+        if not self._subtitles_credentials_ready():
+            return False
+        with self._language_refresh_lock:
+            # The lock is re-entrant in CPython but we use a simple bool flag
+            # checked under the lock to implement single-flight.
+            if getattr(self, "_language_refresh_running", False):
+                return False
+            if not force and not self._languages_cache_is_stale(
+                db.load_opensubtitles_languages(self.state.conn)[1]
+            ):
+                return False
+            self._language_refresh_running = True
+        threading.Thread(
+            target=self._refresh_opensubtitles_languages,
+            name="buzz-opensubtitles-languages",
+            daemon=True,
+        ).start()
+        return True
+
+    def _refresh_opensubtitles_languages(self) -> None:
+        try:
+            api_key = self.saved_config.subtitles.api_key
+            languages = _fetch_opensubtitles_languages(api_key)
+            if not languages:
+                return
+            db.save_opensubtitles_languages(self.state.conn, languages)
+            self.opensubtitles_languages = languages
+            self._notify_ui_change("config")
+        finally:
+            self._language_refresh_running = False
 
     def is_ready(self) -> bool:
         return self.state.is_ready() and self.curator_ready

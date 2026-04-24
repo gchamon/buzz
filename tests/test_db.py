@@ -19,7 +19,7 @@ class DatabaseTests(unittest.TestCase):
             ).fetchone()["version"]
         finally:
             conn.close()
-        self.assertEqual(version, 2)
+        self.assertEqual(version, 3)
 
     def test_legacy_json_import_renames_files_to_migrated(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -211,6 +211,25 @@ class DatabaseTests(unittest.TestCase):
             meta,
             {"file_id": 123, "release": "Movie.2024.Release"},
         )
+
+    def test_opensubtitles_languages_roundtrip(self):
+        conn = db.connect(":memory:")
+        try:
+            db.apply_migrations(conn)
+            cached, fetched_at = db.load_opensubtitles_languages(conn)
+            self.assertEqual(cached, [])
+            self.assertIsNone(fetched_at)
+
+            db.save_opensubtitles_languages(conn, [("en", "English"), ("pt", "Portuguese")])
+            cached, fetched_at = db.load_opensubtitles_languages(conn)
+            self.assertEqual(cached, [("en", "English"), ("pt", "Portuguese")])
+            self.assertIsNotNone(fetched_at)
+
+            db.save_opensubtitles_languages(conn, [("fr", "French")])
+            cached, _ = db.load_opensubtitles_languages(conn)
+            self.assertEqual(cached, [("fr", "French")])
+        finally:
+            conn.close()
 
     def test_curator_mapping_replace_replaces_all_rows(self):
         conn = db.connect(":memory:")

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, TypedDict, TypeVar, cast
 
 import yaml
 from markupsafe import Markup
@@ -27,7 +27,6 @@ from .models import (
     effective_override_field_paths,
     load_base_and_overrides,
     mask_secrets,
-    override_field_paths,
     to_nested_dict,
 )
 
@@ -228,6 +227,7 @@ class ConfigContext(PageContext):
     languages: list[ConfigLanguage]
     restart_required: bool
     restart_required_fields: list[str]
+    subtitles_credentials_ready: bool
     values: ConfigValues
 
 
@@ -290,15 +290,18 @@ def build_ui(owner: Any) -> PyView:
     """Build the PyView application mounted into the DAV app."""
     app = PyView()
     app.rootTemplate = _build_root_template()
-    app.add_live_view("/", lambda: CacheLiveView(owner))
-    app.add_live_view("/cache", lambda: CacheLiveView(owner))
-    app.add_live_view("/archive", lambda: ArchiveLiveView(owner))
-    app.add_live_view("/logs", lambda: LogsLiveView(owner))
-    app.add_live_view("/config", lambda: ConfigLiveView(owner))
+    app.add_live_view("/", lambda: CacheLiveView(owner))  # pyright: ignore[reportArgumentType]
+    app.add_live_view("/cache", lambda: CacheLiveView(owner))  # pyright: ignore[reportArgumentType]
+    app.add_live_view("/archive", lambda: ArchiveLiveView(owner))  # pyright: ignore[reportArgumentType]
+    app.add_live_view("/logs", lambda: LogsLiveView(owner))  # pyright: ignore[reportArgumentType]
+    app.add_live_view("/config", lambda: ConfigLiveView(owner))  # pyright: ignore[reportArgumentType]
     return app
 
 
-class _BaseBuzzLiveView(LiveView[PageContext]):
+_TContext = TypeVar("_TContext", bound=PageContext)
+
+
+class _BaseBuzzLiveView(LiveView[_TContext]):
     page_title = "buzz"
     page_name = "cache"
 
@@ -390,10 +393,10 @@ class _BaseBuzzLiveView(LiveView[PageContext]):
         }
         return context
 
-    async def mount(
+    async def mount(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
-        socket: LiveViewSocket[PageContext],
-        _session: dict[str, Any],
+        socket: LiveViewSocket[_TContext],
+        session: dict[str, Any],
     ) -> None:
         socket.live_title = self.page_title
         if is_connected(socket):
@@ -409,12 +412,12 @@ class CacheLiveView(_BaseBuzzLiveView):
     page_name = "cache"
     page_title = "buzz: cache"
 
-    async def mount(
+    async def mount(  # pyright: ignore[reportIncompatibleMethodOverride, reportArgumentType]
         self,
         socket: LiveViewSocket[CacheContext],
         session: dict[str, Any],
     ) -> None:
-        await super().mount(socket, session)
+        await super().mount(socket, session)  # pyright: ignore[reportArgumentType]
         socket.context = self._context()
         if is_connected(socket):
             await socket.subscribe("buzz:status")
@@ -711,12 +714,12 @@ class ArchiveLiveView(_BaseBuzzLiveView):
     page_name = "archive"
     page_title = "buzz: archive"
 
-    async def mount(
+    async def mount(  # pyright: ignore[reportIncompatibleMethodOverride, reportArgumentType]
         self,
         socket: LiveViewSocket[ArchiveContext],
         session: dict[str, Any],
     ) -> None:
-        await super().mount(socket, session)
+        await super().mount(socket, session)  # pyright: ignore[reportArgumentType]
         socket.context = self._context()
         if is_connected(socket):
             await socket.subscribe("buzz:archive")
@@ -819,12 +822,12 @@ class LogsLiveView(_BaseBuzzLiveView):
     page_name = "logs"
     page_title = "buzz: system logs"
 
-    async def mount(
+    async def mount(  # pyright: ignore[reportIncompatibleMethodOverride, reportArgumentType]
         self,
         socket: LiveViewSocket[LogsContext],
         session: dict[str, Any],
     ) -> None:
-        await super().mount(socket, session)
+        await super().mount(socket, session)  # pyright: ignore[reportArgumentType]
         self.owner._curator_log_level = "info"
         socket.context = self._context()
         if is_connected(socket):
@@ -902,12 +905,12 @@ class ConfigLiveView(_BaseBuzzLiveView):
     page_name = "config"
     page_title = "buzz: config"
 
-    async def mount(
+    async def mount(  # pyright: ignore[reportIncompatibleMethodOverride, reportArgumentType]
         self,
         socket: LiveViewSocket[ConfigContext],
         session: dict[str, Any],
     ) -> None:
-        await super().mount(socket, session)
+        await super().mount(socket, session)  # pyright: ignore[reportArgumentType]
         socket.context = self._context()
         if is_connected(socket):
             await socket.subscribe("buzz:status")
@@ -944,6 +947,27 @@ class ConfigLiveView(_BaseBuzzLiveView):
                 language_query=form_payload.get("language_query", language_query),
                 console_msg=socket.context["console_msg"],
                 console_class=socket.context["console_class"],
+            )
+            return
+        if event == "reload_languages":
+            if not self.owner._subtitles_credentials_ready():
+                console_msg = (
+                    "cannot refresh languages: set subtitles.opensubtitles"
+                    " api_key, username, and password in buzz.yml"
+                )
+                console_class = "service-status-red"
+            elif not self.owner.trigger_language_refresh(force=True):
+                console_msg = "language refresh already in progress"
+                console_class = "service-status-yellow"
+            else:
+                console_msg = "refreshing languages from opensubtitles..."
+                console_class = "service-status-green"
+            socket.context = self._context(
+                is_editing=socket.context["is_editing"],
+                draft_payload=socket.context["draft_payload"],
+                language_query=socket.context["language_query"],
+                console_msg=console_msg,
+                console_class=console_class,
             )
             return
         if event == "restore_defaults":
@@ -1032,13 +1056,18 @@ class ConfigLiveView(_BaseBuzzLiveView):
         current_overrides = effective_config._raw_overrides
         field_states = _field_states(
             effective,
+            baseline_config,
             current_overrides,
-            _config_overrides_from_payload(draft_payload or {}) if is_editing else {},
+            _config_overrides_from_payload(draft_payload) if is_editing and draft_payload else {},
         )
         languages = _language_rows(
             self.owner.opensubtitles_languages,
             tuple(values["selected_languages"]),
             language_query,
+        )
+        subs = effective_config.subtitles
+        subtitles_credentials_ready = bool(
+            subs.api_key and subs.username and subs.password
         )
         return cast(
             ConfigContext,
@@ -1053,6 +1082,7 @@ class ConfigLiveView(_BaseBuzzLiveView):
                 "languages": languages,
                 "restart_required": self.owner.restart_required,
                 "restart_required_fields": self.owner.restart_required_fields(),
+                "subtitles_credentials_ready": subtitles_credentials_ready,
                 "values": values,
             },
         )
@@ -1120,6 +1150,8 @@ def _config_values(
 def _config_overrides_from_payload(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
+    if not payload:
+        return {}
     overrides: dict[str, Any] = {}
     normalized = {
         key: value if isinstance(value, list) else [value]
@@ -1183,10 +1215,13 @@ def _set_nested_value(target: dict[str, Any], path: str, value: Any) -> None:
 
 def _field_states(
     effective: dict[str, Any],
+    baseline: dict[str, Any],
     current_overrides: dict[str, Any],
     draft_overrides: dict[str, Any],
 ) -> dict[str, ConfigFieldState]:
-    current_override_paths = set(override_field_paths(current_overrides))
+    current_override_paths = set(
+        effective_override_field_paths(baseline, current_overrides)
+    )
     dirty_paths = set(
         diff_fields(effective, deep_merge(effective, draft_overrides), _CONFIG_TRACKED_FIELDS)
     )

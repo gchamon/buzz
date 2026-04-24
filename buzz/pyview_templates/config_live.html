@@ -218,16 +218,22 @@
 
           <fieldset class="config-section">
             <legend>Subtitles</legend>
-            <div class="config-field checkbox-field {{ field_states.subtitles_enabled.css_class }}">
+            <div class="config-field checkbox-field {{ field_states.subtitles_enabled.css_class }}{% if not subtitles_credentials_ready %} config-field-disabled{% endif %}">
               <input
                 type="checkbox"
                 id="subtitles.enabled"
                 name="subtitles.enabled"
                 {% if values.subtitles_enabled %}checked{% endif %}
+                {% if not subtitles_credentials_ready %}disabled{% endif %}
               >
               <label for="subtitles.enabled">enabled</label>
               <span class="config-reload-mode">{{ field_states.subtitles_enabled.reload_mode }}</span>
             </div>
+            {% if not subtitles_credentials_ready %}
+            <div class="config-credentials-hint">
+              Add <code>subtitles.opensubtitles.api_key</code>, <code>.username</code>, and <code>.password</code> to <code>buzz.yml</code> to enable subtitles.
+            </div>
+            {% else %}
             <div class="config-field checkbox-field {{ field_states.subtitles_fetch_on_resync.css_class }}">
               <input
                 type="checkbox"
@@ -241,6 +247,14 @@
             <div class="config-field {{ field_states.subtitles_languages.css_class }}">
               <label for="lang-list">languages</label>
               <span class="config-reload-mode">{{ field_states.subtitles_languages.reload_mode }}</span>
+              <button
+                type="button"
+                class="icon-button"
+                phx-click="reload_languages"
+                title="Reload languages from OpenSubtitles"
+              >
+                <i class="fa-solid fa-arrows-rotate"></i>
+              </button>
               <input
                 type="text"
                 id="language_query"
@@ -358,6 +372,7 @@
                 value="{{ values.download_delay_secs }}"
               >
             </div>
+            {% endif %}
           </fieldset>
         </form>
       </div>

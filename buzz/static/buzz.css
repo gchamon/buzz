@@ -1272,3 +1272,45 @@ div.code-toolbar>.toolbar {
   background: var(--orange);
   color: var(--bg);
 }
+
+.config-field-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.config-credentials-hint {
+  color: var(--comment);
+  font-size: 0.85rem;
+  padding: 8px 10px;
+  border: 1px dashed var(--comment);
+  border-radius: 3px;
+  margin: 4px 0 10px;
+}
+
+.config-credentials-hint code {
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+.icon-button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--comment);
+  border-radius: 3px;
+  padding: 2px 8px;
+  cursor: pointer;
+  margin-left: 6px;
+  font-size: 0.85rem;
+}
+
+.icon-button:hover {
+  border-color: var(--purple);
+  color: var(--purple);
+}
+
+.icon-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

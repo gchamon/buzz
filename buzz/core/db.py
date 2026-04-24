@@ -66,6 +66,20 @@ _MIGRATIONS: list[tuple[int, str]] = [
         ALTER TABLE archive ADD COLUMN magnet TEXT;
         """,
     ),
+    (
+        3,
+        """
+        CREATE TABLE IF NOT EXISTS opensubtitles_languages (
+            code TEXT PRIMARY KEY,
+            name TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS opensubtitles_languages_meta (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            fetched_at TEXT NOT NULL
+        );
+        """,
+    ),
 ]
 
 def connect(path: Path | str) -> sqlite3.Connection:
@@ -362,6 +376,38 @@ def upsert_subtitle_metadata(
             "INSERT OR REPLACE INTO subtitle_metadata"
             " (overlay_path, file_id, release, updated_at) VALUES (?, ?, ?, ?)",
             (overlay_path, int(meta["file_id"]), meta.get("release"), _now_iso()),
+        )
+
+
+def load_opensubtitles_languages(
+    conn: sqlite3.Connection,
+) -> tuple[list[tuple[str, str]], str | None]:
+    """Return cached (code, name) language pairs and the fetched_at timestamp."""
+    rows = conn.execute(
+        "SELECT code, name FROM opensubtitles_languages ORDER BY name COLLATE NOCASE"
+    ).fetchall()
+    languages = [(row["code"], row["name"]) for row in rows]
+    meta = conn.execute(
+        "SELECT fetched_at FROM opensubtitles_languages_meta WHERE singleton = 1"
+    ).fetchone()
+    fetched_at = meta["fetched_at"] if meta else None
+    return languages, fetched_at
+
+
+def save_opensubtitles_languages(
+    conn: sqlite3.Connection, languages: list[tuple[str, str]]
+) -> None:
+    """Replace the cached language list and stamp fetched_at to now."""
+    with conn:
+        conn.execute("DELETE FROM opensubtitles_languages")
+        conn.executemany(
+            "INSERT INTO opensubtitles_languages (code, name) VALUES (?, ?)",
+            [(code, name) for code, name in languages],
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO opensubtitles_languages_meta"
+            " (singleton, fetched_at) VALUES (1, ?)",
+            (_now_iso(),),
         )
 
 
