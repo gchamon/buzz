@@ -1,8 +1,14 @@
 services:
   buzz-dav:
+    build:
+      context: .
+      dockerfile: buzz/Dockerfile
     volumes:
       - ./:/app
 
   buzz-curator:
+    build:
+      context: .
+      dockerfile: buzz/Dockerfile
     volumes:
       - ./:/app

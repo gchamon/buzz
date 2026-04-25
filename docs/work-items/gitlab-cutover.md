@@ -6,7 +6,7 @@ buzz image so operators can pull instead of build.
 
 ## Status
 
-backlog
+done
 
 ## Outcome
 

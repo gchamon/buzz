@@ -2,6 +2,9 @@
 
 `buzz` is a small Debrid WebDAV service for [Jellyfin](https://jellyfin.org/) and [Plex](https://watch.plex.tv).
 
+The canonical repository for Buzz is
+https://gitlab.com/gabriel.chamon/buzz.
+
 ![screenshot](/docs/assets/screenshot.png) 
 
 ## Layout

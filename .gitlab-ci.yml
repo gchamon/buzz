@@ -1,0 +1,12 @@
+stages:
+  - test
+  - build
+  - publish
+  - tag
+
+include:
+  - local: .gitlab/ci/gitleaks.gitlab-ci.yml
+  - local: .gitlab/ci/test.gitlab-ci.yml
+  - local: .gitlab/ci/build.gitlab-ci.yml
+  - local: .gitlab/ci/publish.gitlab-ci.yml
+  - local: .gitlab/ci/update-major-tag.gitlab-ci.yml
