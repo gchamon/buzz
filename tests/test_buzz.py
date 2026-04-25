@@ -1820,6 +1820,168 @@ class DavAppTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "markup instead of media bytes"):
                 open_remote_media(self.state, node, None)
 
+    def test_open_remote_media_does_not_invalidate_url_on_connection_error(self):
+        self.state.client = self.FakeRD(["https://example.invalid/cdn"])
+
+        node = {
+            "type": "remote",
+            "size": 14,
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-conn",
+        }
+
+        with patch.object(
+            self.state, "invalidate_download_url"
+        ) as mock_invalidate, patch(
+            "buzz.dav_protocol.request.urlopen",
+            side_effect=OSError("Connection reset by peer"),
+        ), patch("buzz.dav_protocol.time.sleep"):
+            with self.assertRaisesRegex(ValueError, "failed to connect to upstream"):
+                open_remote_media(self.state, node, None)
+
+        self.assertEqual(mock_invalidate.call_count, 0)
+        self.assertEqual(len(self.state.client.calls), 1)
+
+    def test_open_remote_media_invalidates_url_on_http_error(self):
+        from email.message import Message
+        from urllib.error import HTTPError
+
+        self.state.client = self.FakeRD(
+            [
+                "https://example.invalid/cdn1",
+                "https://example.invalid/cdn2",
+                "https://example.invalid/cdn3",
+            ]
+        )
+
+        node = {
+            "type": "remote",
+            "size": 14,
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-http",
+        }
+
+        def http_error(*args, **kwargs):
+            raise HTTPError(
+                "https://example.invalid/cdn", 503, "boom", hdrs=Message(), fp=None
+            )
+
+        with patch.object(
+            self.state, "invalidate_download_url"
+        ) as mock_invalidate, patch(
+            "buzz.dav_protocol.request.urlopen", side_effect=http_error
+        ), patch("buzz.dav_protocol.time.sleep"):
+            with self.assertRaisesRegex(ValueError, "upstream returned HTTP 503"):
+                open_remote_media(self.state, node, None)
+
+        self.assertEqual(mock_invalidate.call_count, 3)
+
+    def test_retry_sleep_jitter_bounds(self):
+        from buzz import dav_protocol
+
+        recorded = []
+        with patch("buzz.dav_protocol.time.sleep", side_effect=recorded.append):
+            with patch("buzz.dav_protocol.random.random", return_value=0.0):
+                dav_protocol._retry_sleep(0)
+            with patch("buzz.dav_protocol.random.random", return_value=1.0):
+                dav_protocol._retry_sleep(0)
+            with patch("buzz.dav_protocol.random.random", return_value=0.0):
+                dav_protocol._retry_sleep(5)
+
+        # attempt 0: base=0.5, range [0.375, 0.625]
+        self.assertAlmostEqual(recorded[0], 0.5 * 0.75, places=6)
+        self.assertAlmostEqual(recorded[1], 0.5 * 1.25, places=6)
+        # attempt 5 capped at base=8.0
+        self.assertAlmostEqual(recorded[2], 8.0 * 0.75, places=6)
+
+    def test_open_remote_media_caps_concurrent_upstream_connections(self):
+        import threading as _threading
+
+        self.state.config = self.state.config.model_copy(
+            update={"upstream_concurrency": 2}
+        )
+        self.state.client = self.FakeRD(
+            [f"https://example.invalid/cdn/{i}" for i in range(10)]
+        )
+
+        node_template = {
+            "type": "remote",
+            "size": 14,
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-cap",
+        }
+
+        in_flight = 0
+        max_in_flight = 0
+        flight_lock = _threading.Lock()
+
+        class FakeResponse:
+            def __init__(self):
+                self.headers = {"Content-Type": "video/x-matroska"}
+                self._body = b"\x1a\x45\xdf\xa3media"
+
+            def read(self, amount=-1):
+                if amount is None or amount < 0:
+                    amount = len(self._body)
+                chunk = self._body[:amount]
+                self._body = self._body[amount:]
+                return chunk
+
+            def close(self):
+                return None
+
+        def fake_urlopen(*args, **kwargs):
+            nonlocal in_flight, max_in_flight
+            with flight_lock:
+                in_flight += 1
+                if in_flight > max_in_flight:
+                    max_in_flight = in_flight
+            try:
+                # Hold long enough that concurrent threads pile up against
+                # the semaphore cap.
+                time.sleep(0.05)
+                return FakeResponse()
+            finally:
+                with flight_lock:
+                    in_flight -= 1
+
+        results: list = []
+        errors: list[Exception] = []
+
+        def worker():
+            try:
+                response, _ = open_remote_media(
+                    self.state, dict(node_template), None
+                )
+                # Close immediately so the semaphore is released for the
+                # next waiter; we are testing the cap, not stream lifetime.
+                response.close()
+                results.append(response)
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch(
+            "buzz.dav_protocol.request.urlopen", side_effect=fake_urlopen
+        ):
+            threads = [
+                _threading.Thread(target=worker) for _ in range(6)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 6)
+        self.assertLessEqual(max_in_flight, 2)
+        self.assertGreaterEqual(max_in_flight, 1)
+
     def test_languages_refreshing_flag_set_while_fetching(self):
         config = self._config_with_credentials(self.tmpdir.name)
         with (

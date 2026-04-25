@@ -8,6 +8,11 @@ server:
   # Set to 0 to disable. When enabled, a background thread pre-fetches data from
   # Real-Debrid into a bounded queue to smooth out network variations.
   stream_buffer_size: 0
+  # Maximum number of concurrent upstream connections to Real-Debrid.
+  # Caps the parallelism of media probes/streams (e.g. during a Jellyfin
+  # library scan) so the upstream CDN doesn't drop connections under load.
+  # Increase if scans crawl, decrease if you still see retry storms.
+  upstream_concurrency: 4
 state_dir: /app/data
 hooks:
   on_library_change: "bash /app/scripts/media_update.sh"

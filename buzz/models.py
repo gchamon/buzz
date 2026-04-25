@@ -24,6 +24,7 @@ UI_MANAGED_CONFIG_FIELDS = (
     "server.bind",
     "server.port",
     "server.stream_buffer_size",
+    "server.upstream_concurrency",
     "hooks.on_library_change",
     "hooks.curator_url",
     "hooks.rd_update_delay_secs",
@@ -239,7 +240,12 @@ def _strip_secrets(d: dict) -> dict:
 
 _OVERRIDE_SCHEMA = {
     "poll_interval_secs": True,
-    "server": {"bind": True, "port": True, "stream_buffer_size": True},
+    "server": {
+        "bind": True,
+        "port": True,
+        "stream_buffer_size": True,
+        "upstream_concurrency": True,
+    },
     "state_dir": True,
     "hooks": {
         "on_library_change": True,
@@ -347,6 +353,7 @@ def to_nested_dict(config: DavConfig) -> dict:
             "bind": config.bind,
             "port": config.port,
             "stream_buffer_size": config.stream_buffer_size,
+            "upstream_concurrency": config.upstream_concurrency,
         },
         "state_dir": config.state_dir,
         "hooks": {
@@ -479,6 +486,7 @@ class DavConfig(BaseModel):
     bind: str = "0.0.0.0"
     port: int = 9999
     stream_buffer_size: int = 0
+    upstream_concurrency: int = 4
     state_dir: str = DEFAULT_STATE_DIR
     hook_command: str = ""
     anime_patterns: tuple[str, ...] = (DEFAULT_ANIME_PATTERN,)
@@ -528,6 +536,9 @@ class DavConfig(BaseModel):
             bind=str(server.get("bind", "0.0.0.0")),
             port=int(server.get("port", 9999)),
             stream_buffer_size=int(server.get("stream_buffer_size", 0)),
+            upstream_concurrency=max(
+                1, int(server.get("upstream_concurrency", 4))
+            ),
             state_dir=str(raw.get("state_dir", DEFAULT_STATE_DIR)),
             hook_command=str(hooks.get("on_library_change", "")).strip(),
             curator_url=str(

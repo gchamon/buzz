@@ -1,5 +1,7 @@
 """WebDAV XML response generation and remote media validation."""
 
+import random
+import threading
 import time
 from typing import Any
 from urllib import error, parse, request
@@ -10,6 +12,58 @@ from .core.events import record_event
 from .core.media import is_probably_media_content_type, looks_like_markup
 from .core.state import BuzzState
 from .core.utils import http_date
+
+
+_upstream_lock = threading.Lock()
+_upstream_semaphore: threading.BoundedSemaphore | None = None
+_upstream_limit: int = 0
+
+
+def _get_upstream_semaphore(limit: int) -> threading.BoundedSemaphore:
+    """Return the module-level semaphore, rebuilding it if *limit* changed."""
+    global _upstream_semaphore, _upstream_limit
+    target = max(1, int(limit))
+    with _upstream_lock:
+        if _upstream_semaphore is None or _upstream_limit != target:
+            _upstream_semaphore = threading.BoundedSemaphore(target)
+            _upstream_limit = target
+        return _upstream_semaphore
+
+
+def _retry_sleep(attempt: int) -> None:
+    """Sleep with exponential backoff and ±25% jitter before the next attempt."""
+    base = min(8.0, 0.5 * (2 ** attempt))
+    time.sleep(base * (0.75 + random.random() * 0.5))
+
+
+class _SemaphoreReleasingResponse:
+    """Proxy a urlopen response and release a semaphore exactly once on close."""
+
+    def __init__(
+        self,
+        response: Any,
+        semaphore: threading.BoundedSemaphore,
+    ) -> None:
+        self._response = response
+        self._semaphore = semaphore
+        self._released = False
+        self._release_lock = threading.Lock()
+
+    def _release(self) -> None:
+        with self._release_lock:
+            if self._released:
+                return
+            self._released = True
+        self._semaphore.release()
+
+    def close(self) -> None:
+        try:
+            self._response.close()
+        finally:
+            self._release()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._response, name)
 
 
 def propfind_body(state: BuzzState, paths: list[str]) -> str:
@@ -57,7 +111,7 @@ def _try_resolve_download_url(
     max_attempts: int,
 ) -> str:
     try:
-        return state.resolve_download_url(source_url, force_refresh=attempt > 0)
+        return state.resolve_download_url(source_url)
     except Exception as exc:
         state.verbose_log(f"Failed to resolve download URL: {exc}")
         if attempt < max_attempts - 1:
@@ -68,7 +122,7 @@ def _try_resolve_download_url(
                 path=source_url,
                 attempt=attempt + 1,
             )
-            time.sleep(0.5 * (attempt + 1))
+            _retry_sleep(attempt)
         raise
 
 
@@ -84,41 +138,54 @@ def _try_open_stream(
     if range_header:
         start, end = range_header
         req.add_header("Range", f"bytes={start}-{end}")
+    semaphore = _get_upstream_semaphore(state.config.upstream_concurrency)
+    semaphore.acquire()
+    released = False
     try:
-        return request.urlopen(
-            req,
-            timeout=max(1, int(state.config.request_timeout_secs)),
-        )
-    except error.HTTPError as exc:
-        state.invalidate_download_url(source_url)
-        state.verbose_log(
-            f"HTTP Error {exc.code} on attempt {attempt + 1}: {exc.reason}"
-        )
-        if attempt < max_attempts - 1:
-            record_event(
-                f"Retrying Real-Debrid stream after upstream HTTP {exc.code}",
-                level="warning",
-                event="rd_stream_retry",
-                path=source_url,
-                attempt=attempt + 1,
+        try:
+            response = request.urlopen(
+                req,
+                timeout=max(1, int(state.config.request_timeout_secs)),
             )
-            time.sleep(0.5 * (attempt + 1))
-        raise ValueError(
-            f"upstream returned HTTP {exc.code} for {download_url}"
-        ) from exc
-    except Exception as exc:
-        state.invalidate_download_url(source_url)
-        state.verbose_log(f"Connection error on attempt {attempt + 1}: {exc}")
-        if attempt < max_attempts - 1:
-            record_event(
-                f"Retrying Real-Debrid stream after connection error: {exc}",
-                level="warning",
-                event="rd_stream_retry",
-                path=source_url,
-                attempt=attempt + 1,
+        except error.HTTPError as exc:
+            state.invalidate_download_url(source_url)
+            state.verbose_log(
+                f"HTTP Error {exc.code} on attempt {attempt + 1}: {exc.reason}"
             )
-            time.sleep(0.5 * (attempt + 1))
-        raise ValueError(f"failed to connect to upstream: {exc}") from exc
+            if attempt < max_attempts - 1:
+                record_event(
+                    f"Retrying Real-Debrid stream after upstream HTTP {exc.code}",
+                    level="warning",
+                    event="rd_stream_retry",
+                    path=source_url,
+                    attempt=attempt + 1,
+                )
+                _retry_sleep(attempt)
+            raise ValueError(
+                f"upstream returned HTTP {exc.code} for {download_url}"
+            ) from exc
+        except Exception as exc:
+            state.verbose_log(
+                f"Connection error on attempt {attempt + 1}: {exc}"
+            )
+            if attempt < max_attempts - 1:
+                record_event(
+                    f"Retrying Real-Debrid stream after connection error: {exc}",
+                    level="debug",
+                    event="rd_stream_retry",
+                    path=source_url,
+                    attempt=attempt + 1,
+                )
+                _retry_sleep(attempt)
+            raise ValueError(
+                f"failed to connect to upstream: {exc}"
+            ) from exc
+        wrapped = _SemaphoreReleasingResponse(response, semaphore)
+        released = True
+        return wrapped
+    finally:
+        if not released:
+            semaphore.release()
 
 
 def open_remote_media(
@@ -177,7 +244,7 @@ def open_remote_media(
                     path=source_url,
                     attempt=attempt + 1,
                 )
-                time.sleep(0.5 * (attempt + 1))
+                _retry_sleep(attempt)
                 continue
             raise
     raise ValueError(last_error) from last_exception
