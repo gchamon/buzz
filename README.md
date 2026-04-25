@@ -31,30 +31,40 @@ sudo chown -R 1000:1000 /mnt/buzz data cache/jellyfin config/plex config/jellyfi
 
 ## Quick Start
 
-1. Copy [buzz.dist.yml](./buzz.dist.yml) to `buzz.yml` and set your Real-Debrid token.
-2. Copy `.env.dist` to `.env` and adjust any mount or media-server settings.
+1. Download the deployment files from the canonical repository:
+
+```bash
+curl -fsSLO https://gitlab.com/gabriel.chamon/buzz/-/raw/main/docker-compose.yml
+curl -fsSL https://gitlab.com/gabriel.chamon/buzz/-/raw/main/buzz.dist.yml -o buzz.yml
+curl -fsSL https://gitlab.com/gabriel.chamon/buzz/-/raw/main/.env.dist -o .env
+```
+
+2. Fill in `buzz.yml` and `.env` for your Real-Debrid token, media server,
+   and host paths.
+
 3. Perform the **Host Preparation** steps above.
+
 4. Start the stack:
 
-```sh
-docker compose up -d
+```bash
+docker compose up --pull always --detach
 ```
 
 5. Verify the WebDAV mount:
 
-```sh
+```bash
 time ls -1R /mnt/buzz
 ```
 
 If you change `buzz.yml`, restart the service:
 
-```sh
+```bash
 docker compose restart buzz
 ```
 
 To inspect machine-managed state:
 
-```sh
+```bash
 sqlite3 /path/to/state_dir/buzz.sqlite ".tables"
 ```
 
@@ -169,7 +179,12 @@ The DAV service lives in [`buzz/dav_app.py`](./buzz/dav_app.py) and the curator 
 For everyday hacking, use the development override [`docker-compose.dev.yml`](./docker-compose.dev.yml) to mount your local code directly into the containers (`- ./:/app`):
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.dev.yml up \
+  --pull always \
+  --detach \
+  --build
 ```
 
 Source changes take effect immediately after restarting the service (`docker compose restart buzz-dav`) without rebuilding the image. If you prefer an isolated environment, you can spin up a full development VM with [Incus](./docs/incus-dev-vm.md). In production, `docker compose up -d` runs the stable, immutable code baked into the image; rebuild it after changes with `docker compose up -d --build`.
