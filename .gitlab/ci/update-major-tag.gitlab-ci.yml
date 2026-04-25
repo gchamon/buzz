@@ -8,3 +8,5 @@ update-major-tag:
   extends: .sync_major_branch_tags
   variables:
     TRACKED_MAJOR_TAG: v1
+  rules:
+    - when: always
