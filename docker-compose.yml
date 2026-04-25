@@ -1,6 +1,6 @@
 services:
   buzz-dav:
-    image: registry.gitlab.com/gabriel.chamon/buzz:latest
+    image: registry.gitlab.com/gabriel.chamon/buzz/buzz:v1
     container_name: buzz-dav
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
@@ -105,7 +105,7 @@ services:
 
   buzz-curator:
     profiles: ["jellyfin", "plex"]
-    image: registry.gitlab.com/gabriel.chamon/buzz:latest
+    image: registry.gitlab.com/gabriel.chamon/buzz/buzz:v1
     container_name: buzz-curator
     user: "${PUID:-1000}:${PGID:-1000}"
     working_dir: /app
