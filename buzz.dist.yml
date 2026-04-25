@@ -35,6 +35,16 @@ ui:
 logging:
   verbose: false
 
+media_server:
+  # Map debrid category directory names to Jellyfin library names.
+  # Keys must match the directory names produced by the debrid layer
+  # (movies, shows, anime). Values must match the Jellyfin library
+  # names exactly as they appear in the Jellyfin UI.
+  library_map:
+    movies: Movies
+    shows: TV Shows
+    anime: Anime
+
 subtitles:
   enabled: false
   fetch_on_resync: false

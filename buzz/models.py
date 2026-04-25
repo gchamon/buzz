@@ -1,6 +1,5 @@
 """Buzz configuration models and persistence helpers."""
 
-import json
 import os
 from copy import deepcopy
 from pathlib import Path
@@ -34,6 +33,9 @@ UI_MANAGED_CONFIG_FIELDS = (
     "request_timeout_secs",
     "version_label",
     "logging.verbose",
+    "media_server.library_map.movies",
+    "media_server.library_map.shows",
+    "media_server.library_map.anime",
     "subtitles.enabled",
     "subtitles.fetch_on_resync",
     FIELD_SUBTITLES_LANGUAGES,
@@ -252,6 +254,7 @@ _OVERRIDE_SCHEMA = {
     "version_label": True,
     "ui": {"poll_interval_secs": True},
     "logging": {"verbose": True, "max_entries": True},
+    "media_server": {"library_map": True},
     "subtitles": {
         "enabled": True,
         "fetch_on_resync": True,
@@ -366,6 +369,9 @@ def to_nested_dict(config: DavConfig) -> dict:
         "logging": {
             "verbose": config.verbose,
             "max_entries": config.log_max_entries,
+        },
+        "media_server": {
+            "library_map": dict(config.library_map),
         },
         "subtitles": {
             "enabled": config.subtitles.enabled,
@@ -488,6 +494,7 @@ class DavConfig(BaseModel):
     verbose: bool = False
     log_max_entries: int = 1000
     ui_poll_interval_secs: int = 3
+    library_map: dict[str, str] = Field(default_factory=dict)
     subtitles: SubtitleConfig = Field(default_factory=SubtitleConfig)
 
     _overrides_path: Path = PrivateAttr(
@@ -509,6 +516,7 @@ class DavConfig(BaseModel):
         compat = raw.get("compat", {})
         logging_raw = raw.get("logging", {})
         ui_raw = raw.get("ui", {})
+        media_server_raw = raw.get("media_server", {})
 
         token = provider.get("token", "").strip()
         if not token:
@@ -545,6 +553,10 @@ class DavConfig(BaseModel):
             ui_poll_interval_secs=int(
                 ui_raw.get("poll_interval_secs", 3)
             ),
+            library_map={
+                str(k): str(v)
+                for k, v in (media_server_raw.get("library_map") or {}).items()
+            },
             subtitles=SubtitleConfig.from_raw(raw.get("subtitles")),
         )
 
@@ -627,14 +639,7 @@ class CuratorConfig(BaseModel):
             "JELLYFIN_SCAN_TASK_ID", ""
         )
     )
-    jellyfin_library_map: dict[str, str] = Field(
-        default_factory=lambda: json.loads(
-            os.environ.get(
-                "JELLYFIN_LIBRARY_MAP",
-                '{"movies": "Movies", "shows": "TV Shows", "anime": "Anime"}',
-            )
-        )
-    )
+    jellyfin_library_map: dict[str, str] = Field(default_factory=dict)
     skip_jellyfin_scan: bool = Field(
         default_factory=lambda: _env_flag(
             "CURATOR_SKIP_JELLYFIN_SCAN"
@@ -701,6 +706,12 @@ class CuratorConfig(BaseModel):
                     data["subtitles"] = SubtitleConfig.from_raw(
                         merged["subtitles"]
                     )
+                media_server = merged.get("media_server") or {}
+                library_map = media_server.get("library_map") or {}
+                if library_map:
+                    data["jellyfin_library_map"] = {
+                        str(k): str(v) for k, v in library_map.items()
+                    }
                 config = cls(**data)
                 config._config_path = config_path
                 config._default_raw = default_raw

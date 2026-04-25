@@ -61,6 +61,12 @@ _CONFIG_NUMBER_FIELDS = (
     "subtitles.search_delay_secs",
     "subtitles.download_delay_secs",
 )
+_LIBRARY_MAP_KEYS = ("movies", "shows", "anime")
+_FIELD_LIBRARY_MAP = "media_server.library_map"
+_LIBRARY_MAP_FIELDS = tuple(
+    f"{_FIELD_LIBRARY_MAP}.{key}" for key in _LIBRARY_MAP_KEYS
+)
+
 _CONFIG_TRACKED_FIELDS = (
     "poll_interval_secs",
     "server.bind",
@@ -75,6 +81,7 @@ _CONFIG_TRACKED_FIELDS = (
     "request_timeout_secs",
     "logging.verbose",
     "version_label",
+    *_LIBRARY_MAP_FIELDS,
     "subtitles.enabled",
     "subtitles.fetch_on_resync",
     FIELD_SUBTITLES_LANGUAGES,
@@ -207,6 +214,7 @@ class ConfigValues(TypedDict):
     exclude_machine: bool
     fetch_on_resync: bool
     hearing_impaired: str
+    library_map: dict[str, str]
     poll_interval_secs: int
     port: int
     on_library_change: str
@@ -1176,6 +1184,14 @@ def _config_values(
         "exclude_machine": subtitle_filters["exclude_machine"],
         "fetch_on_resync": subtitles["fetch_on_resync"],
         "hearing_impaired": subtitle_filters["hearing_impaired"],
+        "library_map": {
+            key: str(
+                effective.get("media_server", {})
+                .get("library_map", {})
+                .get(key, "")
+            )
+            for key in _LIBRARY_MAP_KEYS
+        },
         "on_library_change": effective["hooks"]["on_library_change"],
         "poll_interval_secs": effective["poll_interval_secs"],
         "port": effective["server"]["port"],
@@ -1249,6 +1265,12 @@ def _config_overrides_from_payload(
         normalized.get(FIELD_SUBTITLES_LANGUAGES, [])
     )
     _set_nested_value(overrides, FIELD_SUBTITLES_LANGUAGES, languages)
+
+    for field in _LIBRARY_MAP_FIELDS:
+        if field in normalized and normalized[field]:
+            value = str(normalized[field][0]).strip()
+            if value:
+                _set_nested_value(overrides, field, value)
 
     return overrides
 

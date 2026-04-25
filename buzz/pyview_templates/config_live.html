@@ -217,6 +217,40 @@
           </fieldset>
 
           <fieldset class="config-section">
+            <legend>Media Server</legend>
+            <div class="config-field {{ field_states.media_server_library_map_movies.css_class }}">
+              <label for="media_server.library_map.movies">movies</label>
+              <span class="config-reload-mode">{{ field_states.media_server_library_map_movies.reload_mode }}</span>
+              <input
+                type="text"
+                id="media_server.library_map.movies"
+                name="media_server.library_map.movies"
+                value="{{ values.library_map.movies }}"
+              >
+            </div>
+            <div class="config-field {{ field_states.media_server_library_map_shows.css_class }}">
+              <label for="media_server.library_map.shows">shows</label>
+              <span class="config-reload-mode">{{ field_states.media_server_library_map_shows.reload_mode }}</span>
+              <input
+                type="text"
+                id="media_server.library_map.shows"
+                name="media_server.library_map.shows"
+                value="{{ values.library_map.shows }}"
+              >
+            </div>
+            <div class="config-field {{ field_states.media_server_library_map_anime.css_class }}">
+              <label for="media_server.library_map.anime">anime</label>
+              <span class="config-reload-mode">{{ field_states.media_server_library_map_anime.reload_mode }}</span>
+              <input
+                type="text"
+                id="media_server.library_map.anime"
+                name="media_server.library_map.anime"
+                value="{{ values.library_map.anime }}"
+              >
+            </div>
+          </fieldset>
+
+          <fieldset class="config-section">
             <legend>Subtitles</legend>
             <div class="config-field checkbox-field {{ field_states.subtitles_enabled.css_class }}{% if not subtitles_credentials_ready %} config-field-disabled{% endif %}">
               <input

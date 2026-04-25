@@ -123,7 +123,7 @@ def trigger_jellyfin_selective_refresh(
     if not library_names:
         record_event(
             "Unknown categories "
-            f"{categories} (not in JELLYFIN_LIBRARY_MAP). "
+            f"{categories} (not in media_server.library_map). "
             "Falling back to full scan.",
             level="warning",
         )

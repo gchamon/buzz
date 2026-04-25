@@ -30,6 +30,7 @@ from buzz.models import (
     SubtitleConfig,
     deep_merge,
     mask_secrets,
+    to_nested_dict,
 )
 
 
@@ -2178,6 +2179,63 @@ class ConfigUITests(unittest.TestCase):
             self.assertEqual(
                 config.state_dir,
                 Path(tmpdir) / "shared-state",
+            )
+
+    def test_curator_config_loads_library_map_from_yaml(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            base_path.write_text(
+                (
+                    "provider:\n  token: testtoken\n"
+                    f"state_dir: {tmpdir}\n"
+                    "media_server:\n"
+                    "  library_map:\n"
+                    "    movies: Movies\n"
+                    "    shows: Shows\n"
+                    "    anime: Anime\n"
+                ),
+                encoding="utf-8",
+            )
+
+            config = CuratorConfig.load(str(base_path))
+
+            self.assertEqual(
+                config.jellyfin_library_map,
+                {"movies": "Movies", "shows": "Shows", "anime": "Anime"},
+            )
+
+    def test_curator_config_library_map_default_empty_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            base_path.write_text(
+                f"provider:\n  token: testtoken\nstate_dir: {tmpdir}\n",
+                encoding="utf-8",
+            )
+
+            config = CuratorConfig.load(str(base_path))
+
+            self.assertEqual(config.jellyfin_library_map, {})
+
+    def test_dav_config_round_trips_library_map(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            base_path.write_text(
+                (
+                    "provider:\n  token: testtoken\n"
+                    f"state_dir: {tmpdir}\n"
+                    "media_server:\n"
+                    "  library_map:\n"
+                    "    shows: Shows\n"
+                ),
+                encoding="utf-8",
+            )
+
+            config = Config.load(str(base_path))
+
+            self.assertEqual(config.library_map, {"shows": "Shows"})
+            nested = to_nested_dict(config)
+            self.assertEqual(
+                nested["media_server"]["library_map"], {"shows": "Shows"}
             )
 
     def test_config_load_with_overrides(self):
