@@ -1,0 +1,140 @@
+include:
+  - template: Security/Container-Scanning.gitlab-ci.yml
+  - component: gitlab.com/gabriel.chamon/ci-components/docker-build@v1
+    inputs:
+      job_name: build_security_scan_image
+      job_stage: build
+      image_name: buzz
+      image_path: .
+      dockerfile_name: buzz/Dockerfile
+      override_tag: security-scan-$CI_COMMIT_SHA
+      job_rules:
+        - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+          changes:
+            - buzz/**/*
+            - scripts/**/*
+            - pyproject.toml
+            - uv.lock
+            - buzz/Dockerfile
+            - .gitlab/ci/security.gitlab-ci.yml
+        - if: '$CI_COMMIT_BRANCH == "main"'
+          changes:
+            - buzz/**/*
+            - scripts/**/*
+            - pyproject.toml
+            - uv.lock
+            - buzz/Dockerfile
+            - .gitlab/ci/security.gitlab-ci.yml
+        - when: never
+
+python_dependency_scan:
+  stage: security
+  image:
+    name: aquasec/trivy:0.70.0@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e
+    entrypoint: [""]
+  variables:
+    TRIVY_CACHE_DIR: .trivy-cache
+  cache:
+    key: trivy
+    paths:
+      - .trivy-cache/
+  script:
+    - trivy fs --scanners vuln --pkg-types library --include-dev-deps --format json --output trivy-dependency-report.json .
+    - trivy fs --scanners vuln --pkg-types library --include-dev-deps --severity HIGH,CRITICAL --exit-code 1 .
+  artifacts:
+    when: always
+    access: developer
+    paths:
+      - trivy-dependency-report.json
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - pyproject.toml
+        - uv.lock
+        - .gitlab/ci/security.gitlab-ci.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - pyproject.toml
+        - uv.lock
+        - .gitlab/ci/security.gitlab-ci.yml
+    - when: never
+
+container_scanning:
+  stage: security
+  needs:
+    - job: build_security_scan_image
+      optional: true
+  variables:
+    GIT_STRATEGY: fetch
+    CS_IMAGE: "$CI_REGISTRY_IMAGE/buzz:security-scan-$CI_COMMIT_SHA"
+    CS_DOCKERFILE_PATH: buzz/Dockerfile
+    CS_DISABLE_LANGUAGE_VULNERABILITY_SCAN: "false"
+    CS_REGISTRY_USER: "$CI_REGISTRY_USER"
+    CS_REGISTRY_PASSWORD: "$CI_REGISTRY_PASSWORD"
+    CS_SEVERITY_THRESHOLD: HIGH
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - buzz/**/*
+        - scripts/**/*
+        - pyproject.toml
+        - uv.lock
+        - buzz/Dockerfile
+        - .gitlab/ci/security.gitlab-ci.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - buzz/**/*
+        - scripts/**/*
+        - pyproject.toml
+        - uv.lock
+        - buzz/Dockerfile
+        - .gitlab/ci/security.gitlab-ci.yml
+    - when: never
+
+.security_report_gate:
+  stage: security
+  image: alpine:3.22.2@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412
+  before_script:
+    - apk add --no-cache jq
+  script:
+    - |
+      set -euo pipefail
+      report="$SECURITY_REPORT"
+      if [ ! -s "$report" ]; then
+        echo "Security report not found: $report" >&2
+        exit 1
+      fi
+
+      count="$(jq '[.vulnerabilities[]? | select(.severity == "High" or .severity == "Critical")] | length' "$report")"
+      if [ "$count" -gt 0 ]; then
+        jq -r '.vulnerabilities[]? | select(.severity == "High" or .severity == "Critical") | "\(.severity): \(.name // .id) \(.location.dependency.package.name // .location.image // "")"' "$report"
+        exit 1
+      fi
+
+      echo "No HIGH or CRITICAL vulnerabilities found in $report"
+
+container_scanning_gate:
+  extends: .security_report_gate
+  needs:
+    - job: container_scanning
+      artifacts: true
+  variables:
+    SECURITY_REPORT: gl-container-scanning-report.json
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - buzz/**/*
+        - scripts/**/*
+        - pyproject.toml
+        - uv.lock
+        - buzz/Dockerfile
+        - .gitlab/ci/security.gitlab-ci.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - buzz/**/*
+        - scripts/**/*
+        - pyproject.toml
+        - uv.lock
+        - buzz/Dockerfile
+        - .gitlab/ci/security.gitlab-ci.yml
+    - when: never

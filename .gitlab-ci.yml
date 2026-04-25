@@ -1,6 +1,7 @@
 stages:
   - test
   - build
+  - security
   - tag
 
 include:
@@ -25,4 +26,8 @@ include:
           - .htmlhintrc
       - when: never
   - local: .gitlab/ci/image-publish.gitlab-ci.yml
-  - local: .gitlab/ci/update-major-tag.gitlab-ci.yml
+  - local: .gitlab/ci/security.gitlab-ci.yml
+
+default:
+  tags:
+    - groundstation

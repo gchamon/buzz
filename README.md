@@ -207,6 +207,33 @@ Source changes take effect immediately after restarting the service (`docker com
 For the GitLab registry image, CI components, and development override model,
 see [Deployment And CI Architecture](./docs/architecture.md#deployment-and-ci-architecture).
 
+Docker references are pinned as `tag@sha256:digest` so Renovate can propose
+reviewable image updates. To refresh the pinned images used by Compose,
+`buzz/Dockerfile`, and Buzz-owned GitLab CI jobs, run:
+
+```bash
+uv run ./maint-scripts/update_dependency_refs.py
+```
+
+Python dependencies are declared in [`pyproject.toml`](./pyproject.toml) and
+locked in [`uv.lock`](./uv.lock). To update them manually, edit the version
+ranges in `pyproject.toml` when needed, run `uv lock --upgrade`, then run
+`uv sync --group dev`, `uv run python -m unittest discover -s tests`, and
+`uvx pyright buzz tests`.
+
+You can also use Renovate locally for a dry run:
+
+```sh
+npm_config_cache=/tmp/npm-cache npx --yes --package renovate renovate \
+  --platform=local \
+  --repository-cache=enabled \
+  --dry-run=full
+```
+
+Local Renovate is useful for checking what it would propose, but the normal
+update path should still be Renovate merge requests so the seven-day release
+age gate and CI checks remain visible.
+
 Run the test suite locally with `uv run python -m unittest discover -s tests`. We also keep templates clean with `htmlhint` (configured via `.htmlhintrc` in the root):
 
 ```sh
