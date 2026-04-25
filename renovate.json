@@ -1,0 +1,27 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "dependencyDashboard": true,
+  "automerge": false,
+  "minimumReleaseAge": "7 days",
+  "prCreation": "not-pending",
+  "internalChecksFilter": "strict",
+  "enabledManagers": [
+    "pep621",
+    "dockerfile",
+    "docker-compose",
+    "gitlabci",
+    "gitlabci-include"
+  ],
+  "ignoreDeps": ["registry.gitlab.com/gabriel.chamon/buzz/buzz"],
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["patch", "minor"],
+      "groupName": "non-major dependency updates"
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "groupName": null
+    }
+  ]
+}

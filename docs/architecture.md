@@ -319,12 +319,26 @@ The GitLab pipeline is split under `.gitlab/ci/` and assembled by
   files change.
 - Image publishing reuses the shared
   `gitlab.com/gabriel.chamon/ci-components/docker-build@v1` component.
+- Security scanning uses GitLab Free-compatible jobs. Python dependency
+  scanning is a Buzz-local Trivy job over `uv.lock` because GitLab's native
+  dependency scanning is not available on the Free plan. Container scanning
+  builds a commit-scoped Buzz image and scans it with GitLab's Free container
+  scanning template. Local gate jobs parse generated GitLab security reports
+  where needed and block `HIGH` or `CRITICAL` findings.
 - Moving major tags reuses `gabriel.chamon/ci-components/release-tags.yml`.
 
 The Docker build component publishes under
 `$CI_REGISTRY_IMAGE/<image_name>:<tag>`, so this project's `image_name: buzz`
 resolves to `registry.gitlab.com/gabriel.chamon/buzz/buzz:v1` for the tracked
 major tag.
+
+Renovate proposes dependency, Dockerfile, Compose, and GitLab CI image updates.
+Normal updates wait at least seven days after upstream publication and
+automerge is disabled. Docker references are pinned by digest where practical
+so image changes are explicit merge requests. The published Buzz runtime image
+remains `registry.gitlab.com/gabriel.chamon/buzz/buzz:v1` in operator-facing
+Compose services and is excluded from Renovate update proposals to avoid
+self-update loops.
 
 ## Key Invariants
 
