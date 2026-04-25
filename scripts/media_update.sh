@@ -8,6 +8,5 @@ plex)
     ;;
 *)
     echo "Unsupported MEDIA_SERVER: $media_server" >&2
-    exit 1
     ;;
 esac
