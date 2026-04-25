@@ -9,23 +9,15 @@ include:
       dockerfile_name: buzz/Dockerfile
       override_tag: security-scan-$CI_COMMIT_SHA
       job_rules:
-        - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-          changes:
-            - buzz/**/*
-            - scripts/**/*
-            - pyproject.toml
-            - uv.lock
-            - buzz/Dockerfile
-            - .gitlab/ci/security.gitlab-ci.yml
-        - if: '$CI_COMMIT_BRANCH == "main"'
-          changes:
-            - buzz/**/*
-            - scripts/**/*
-            - pyproject.toml
-            - uv.lock
-            - buzz/Dockerfile
-            - .gitlab/ci/security.gitlab-ci.yml
-        - when: never
+        - when: always
+
+container_image_pin_check:
+  stage: test
+  image: python:3.14-alpine3.23@sha256:dd4d2bd5b53d9b25a51da13addf2be586beebd5387e289e798e4083d94ca837a
+  script:
+    - python maint-scripts/update_dependency_refs.py --check
+  rules:
+    - when: always
 
 python_dependency_scan:
   stage: security
@@ -47,17 +39,7 @@ python_dependency_scan:
     paths:
       - trivy-dependency-report.json
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - pyproject.toml
-        - uv.lock
-        - .gitlab/ci/security.gitlab-ci.yml
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - pyproject.toml
-        - uv.lock
-        - .gitlab/ci/security.gitlab-ci.yml
-    - when: never
+    - when: always
 
 container_scanning:
   stage: security
@@ -73,23 +55,7 @@ container_scanning:
     CS_REGISTRY_PASSWORD: "$CI_REGISTRY_PASSWORD"
     CS_SEVERITY_THRESHOLD: HIGH
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - buzz/**/*
-        - scripts/**/*
-        - pyproject.toml
-        - uv.lock
-        - buzz/Dockerfile
-        - .gitlab/ci/security.gitlab-ci.yml
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - buzz/**/*
-        - scripts/**/*
-        - pyproject.toml
-        - uv.lock
-        - buzz/Dockerfile
-        - .gitlab/ci/security.gitlab-ci.yml
-    - when: never
+    - when: always
 
 .security_report_gate:
   stage: security
@@ -121,20 +87,4 @@ container_scanning_gate:
   variables:
     SECURITY_REPORT: gl-container-scanning-report.json
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - buzz/**/*
-        - scripts/**/*
-        - pyproject.toml
-        - uv.lock
-        - buzz/Dockerfile
-        - .gitlab/ci/security.gitlab-ci.yml
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - buzz/**/*
-        - scripts/**/*
-        - pyproject.toml
-        - uv.lock
-        - buzz/Dockerfile
-        - .gitlab/ci/security.gitlab-ci.yml
-    - when: never
+    - when: always
