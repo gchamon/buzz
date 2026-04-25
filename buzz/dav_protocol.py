@@ -1,17 +1,124 @@
 """WebDAV XML response generation and remote media validation."""
 
+import contextlib
+import errno
 import random
+import ssl
 import threading
 import time
+from email.message import Message
 from typing import Any
-from urllib import error, parse, request
+from urllib import error, parse
 from xml.sax.saxutils import escape
 
-from .core.events import record_event
+import httpx
 
+from .core.events import record_event
 from .core.media import is_probably_media_content_type, looks_like_markup
-from .core.state import BuzzState
+from .core.state import BuzzState, HosterUnavailableError
 from .core.utils import http_date
+
+_TRANSIENT_ERRNOS = {
+    errno.ECONNRESET,
+    errno.EPIPE,
+    errno.ETIMEDOUT,
+    errno.ECONNABORTED,
+}
+
+
+def _is_transient_connection_error(exc: BaseException) -> bool:
+    """Return True if *exc* looks like a retryable TLS/TCP transient."""
+    if isinstance(exc, ssl.SSLError):
+        return True
+    if isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadError,
+            httpx.ReadTimeout,
+            httpx.WriteError,
+            httpx.RemoteProtocolError,
+            httpx.PoolTimeout,
+        ),
+    ):
+        return True
+    if isinstance(exc, OSError) and exc.errno in _TRANSIENT_ERRNOS:
+        return True
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None and cause is not exc:
+        return _is_transient_connection_error(cause)
+    return False
+
+
+def _build_upstream_ssl_context() -> ssl.SSLContext:
+    """Return a defensive default SSL context for upstream streaming."""
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    with contextlib.suppress(NotImplementedError, ssl.SSLError):
+        ctx.set_alpn_protocols(["http/1.1"])
+    return ctx
+
+
+class _HttpxStreamAdapter:
+    """Adapt an httpx streaming response to the urllib-style read/close API.
+
+    The validation and streaming code expects an object with ``.headers``,
+    ``.read(n)`` and ``.close()``. httpx exposes ``iter_raw`` instead, so we
+    bridge with a small internal buffer.
+    """
+
+    def __init__(
+        self,
+        client: httpx.Client,
+        response: httpx.Response,
+        chunk_size: int = 64 * 1024,
+    ) -> None:
+        self._client = client
+        self._response = response
+        self.headers = response.headers
+        self._iter = response.iter_raw(chunk_size)
+        self._buffer = bytearray()
+        self._exhausted = False
+        self._closed = False
+
+    def _fill(self, target: int) -> None:
+        while not self._exhausted and (
+            target < 0 or len(self._buffer) < target
+        ):
+            try:
+                chunk = next(self._iter)
+            except StopIteration:
+                self._exhausted = True
+                break
+            if not chunk:
+                continue
+            self._buffer.extend(chunk)
+
+    def read(self, amount: int = -1) -> bytes:
+        if amount is None or amount < 0:
+            self._fill(-1)
+            data = bytes(self._buffer)
+            self._buffer.clear()
+            return data
+        if amount == 0:
+            return b""
+        self._fill(amount)
+        if not self._buffer:
+            return b""
+        take = min(amount, len(self._buffer))
+        data = bytes(self._buffer[:take])
+        del self._buffer[:take]
+        return data
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._response.close()
+        finally:
+            self._client.close()
 
 
 _upstream_lock = threading.Lock()
@@ -32,7 +139,7 @@ def _get_upstream_semaphore(limit: int) -> threading.BoundedSemaphore:
 
 def _retry_sleep(attempt: int) -> None:
     """Sleep with exponential backoff and ±25% jitter before the next attempt."""
-    base = min(8.0, 0.5 * (2 ** attempt))
+    base = min(15.0, 0.5 * (2 ** attempt))
     time.sleep(base * (0.75 + random.random() * 0.5))
 
 
@@ -93,6 +200,9 @@ def _try_resolve_download_url(
 ) -> str:
     try:
         return state.resolve_download_url(source_url)
+    except HosterUnavailableError as exc:
+        state.verbose_log(f"Hoster unavailable: {exc}")
+        raise
     except Exception as exc:
         state.verbose_log(f"Failed to resolve download URL: {exc}")
         if attempt < max_attempts - 1:
@@ -107,6 +217,61 @@ def _try_resolve_download_url(
         raise
 
 
+def _open_upstream_response(
+    url: str,
+    headers: dict[str, str],
+    timeout_secs: int,
+) -> Any:
+    """Open an upstream streaming GET request.
+
+    Returns an object with a urllib-style ``.headers/.read/.close`` API. This
+    is the single seam that the streaming code relies on; tests patch this
+    function to inject fakes.
+    """
+    timeout = httpx.Timeout(
+        connect=10.0,
+        read=float(timeout_secs),
+        write=10.0,
+        pool=5.0,
+    )
+    client = httpx.Client(
+        http2=False,
+        timeout=timeout,
+        verify=_build_upstream_ssl_context(),
+        follow_redirects=True,
+    )
+    try:
+        response = client.send(
+            client.build_request("GET", url, headers=headers),
+            stream=True,
+        )
+    except BaseException:
+        client.close()
+        raise
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        try:
+            response.close()
+        finally:
+            client.close()
+        raise error.HTTPError(
+            url,
+            code,
+            exc.response.reason_phrase or "",
+            hdrs=Message(),
+            fp=None,
+        ) from exc
+    except BaseException:
+        try:
+            response.close()
+        finally:
+            client.close()
+        raise
+    return _HttpxStreamAdapter(client, response)
+
+
 def _try_open_stream(
     state: BuzzState,
     download_url: str,
@@ -115,14 +280,15 @@ def _try_open_stream(
     attempt: int,
     max_attempts: int,
 ) -> Any:
-    req = request.Request(download_url, method="GET")
+    headers: dict[str, str] = {}
     if range_header:
         start, end = range_header
-        req.add_header("Range", f"bytes={start}-{end}")
+        headers["Range"] = f"bytes={start}-{end}"
     try:
-        return request.urlopen(
-            req,
-            timeout=max(1, int(state.config.request_timeout_secs)),
+        return _open_upstream_response(
+            download_url,
+            headers,
+            max(1, int(state.config.request_timeout_secs)),
         )
     except error.HTTPError as exc:
         state.invalidate_download_url(source_url)
@@ -141,8 +307,10 @@ def _try_open_stream(
             f"upstream returned HTTP {exc.code} for {download_url}"
         ) from exc
     except Exception as exc:
+        transient = _is_transient_connection_error(exc)
         state.verbose_log(
-            f"Connection error on attempt {attempt + 1}: {exc}"
+            f"Connection error on attempt {attempt + 1} "
+            f"(transient={transient}): {exc}"
         )
         if attempt < max_attempts - 1:
             record_event(
@@ -169,16 +337,21 @@ def open_remote_media(
     last_error = "unable to resolve upstream media"
     last_exception: Exception | None = None
     state.verbose_log(f"Opening remote media from {source_url!r}")
-    max_attempts = 3
+    max_attempts = 6
+    resolution_max_attempts = 3
+    resolution_failures = 0
     for attempt in range(max_attempts):
         try:
             download_url = _try_resolve_download_url(
-                state, source_url, attempt, max_attempts
+                state, source_url, attempt, resolution_max_attempts
             )
+        except HosterUnavailableError:
+            raise
         except Exception as exc:
             last_error = str(exc)
             last_exception = exc
-            if attempt == max_attempts - 1:
+            resolution_failures += 1
+            if resolution_failures >= resolution_max_attempts:
                 raise
             continue
 
@@ -224,6 +397,13 @@ def open_remote_media(
         finally:
             if semaphore is not None:
                 semaphore.release()
+    record_event(
+        f"Real-Debrid stream exhausted retries ({max_attempts} attempts); "
+        f"last error: {last_error}",
+        level="error",
+        event="rd_stream_exhausted",
+        path=source_url,
+    )
     raise ValueError(last_error) from last_exception
 
 

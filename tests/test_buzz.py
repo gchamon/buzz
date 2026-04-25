@@ -263,6 +263,72 @@ class BuzzStateTests(unittest.TestCase):
             self.assertEqual(second, "https://cdn.example.invalid/file")
             self.assertEqual(client.calls, ["https://example.invalid/source"])
 
+    def test_resolve_download_url_negative_caches_hoster_unavailable(self):
+        from buzz.core import state as state_mod
+        from buzz.core.state import HosterUnavailableError
+
+        class HosterDownRD:
+            def __init__(self):
+                self.calls = []
+                self.unrestrict = self
+                self.torrents = None
+
+            def link(self, url):
+                self.calls.append(url)
+                return BuzzStateTests.FakeResponse(
+                    {"error": "hoster_unavailable"}
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                rd_hoster_failure_cache_secs=60,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
+            )
+            client = HosterDownRD()
+            state = BuzzState(config, client=client)
+
+            with self.assertRaises(HosterUnavailableError) as ctx:
+                state.resolve_download_url("https://example.invalid/source")
+            self.assertEqual(ctx.exception.code, "hoster_unavailable")
+
+            # Second call within TTL must short-circuit without API hit.
+            with self.assertRaises(HosterUnavailableError):
+                state.resolve_download_url("https://example.invalid/source")
+            self.assertEqual(len(client.calls), 1)
+
+            # Force-expire the negative cache and verify the API is hit again.
+            with state.lock:
+                state.resolved_urls["https://example.invalid/source"][
+                    "expires_at"
+                ] = 0.0
+            with self.assertRaises(HosterUnavailableError):
+                state.resolve_download_url("https://example.invalid/source")
+            self.assertEqual(len(client.calls), 2)
+
+            # invalidate_download_url must clear negative entries too.
+            state.invalidate_download_url("https://example.invalid/source")
+            self.assertNotIn(
+                "https://example.invalid/source", state.resolved_urls
+            )
+
+            # Regression guard: module exposes the classifier set.
+            self.assertIn(
+                "hoster_unavailable", state_mod.RD_NON_TRANSIENT_ERRORS
+            )
+
     def test_torrents_exposes_cached_realdebrid_entries(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             state_dir = Path(tmpdir)
@@ -1682,7 +1748,7 @@ class DavAppTests(unittest.TestCase):
             "etag": "etag-2",
         }
 
-        with patch("buzz.dav_protocol.request.urlopen", side_effect=response_queue):
+        with patch("buzz.dav_protocol._open_upstream_response", side_effect=response_queue):
             node = self.state.lookup(
                 "movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv"
             )
@@ -1727,13 +1793,13 @@ class DavAppTests(unittest.TestCase):
         }
 
         with patch(
-            "buzz.dav_protocol.request.urlopen",
-            side_effect=[
-                FakeResponse(b"<!DOCTYPE html>bad", "text/html"),
-                FakeResponse(b"<!DOCTYPE html>worse", "text/html"),
-                FakeResponse(b"<!DOCTYPE html>worst", "text/html"),
-            ],
-        ), self.assertRaisesRegex(ValueError, "non-media content type|markup"):
+            "buzz.dav_protocol._open_upstream_response",
+            side_effect=lambda *a, **kw: FakeResponse(
+                b"<!DOCTYPE html>bad", "text/html"
+            ),
+        ), patch("buzz.dav_protocol.time.sleep"), self.assertRaisesRegex(
+            ValueError, "non-media content type|markup"
+        ):
             open_remote_media(self.state, node, None)
 
     def test_force_download_media_payload_is_accepted(self):
@@ -1771,7 +1837,7 @@ class DavAppTests(unittest.TestCase):
         }
 
         with patch(
-            "buzz.dav_protocol.request.urlopen",
+            "buzz.dav_protocol._open_upstream_response",
             return_value=FakeResponse(
                 b"\x1a\x45\xdf\xa3media-bytes", "application/force-download"
             ),
@@ -1810,13 +1876,11 @@ class DavAppTests(unittest.TestCase):
         }
 
         with patch(
-            "buzz.dav_protocol.request.urlopen",
-            side_effect=[
-                FakeResponse(b"<!DOCTYPE html>bad", "application/force-download"),
-                FakeResponse(b"<!DOCTYPE html>worse", "application/force-download"),
-                FakeResponse(b"<!DOCTYPE html>worst", "application/force-download"),
-            ],
-        ):
+            "buzz.dav_protocol._open_upstream_response",
+            side_effect=lambda *a, **kw: FakeResponse(
+                b"<!DOCTYPE html>bad", "application/force-download"
+            ),
+        ), patch("buzz.dav_protocol.time.sleep"):
             with self.assertRaisesRegex(ValueError, "markup instead of media bytes"):
                 open_remote_media(self.state, node, None)
 
@@ -1835,7 +1899,7 @@ class DavAppTests(unittest.TestCase):
         with patch.object(
             self.state, "invalidate_download_url"
         ) as mock_invalidate, patch(
-            "buzz.dav_protocol.request.urlopen",
+            "buzz.dav_protocol._open_upstream_response",
             side_effect=OSError("Connection reset by peer"),
         ), patch("buzz.dav_protocol.time.sleep"):
             with self.assertRaisesRegex(ValueError, "failed to connect to upstream"):
@@ -1873,12 +1937,12 @@ class DavAppTests(unittest.TestCase):
         with patch.object(
             self.state, "invalidate_download_url"
         ) as mock_invalidate, patch(
-            "buzz.dav_protocol.request.urlopen", side_effect=http_error
+            "buzz.dav_protocol._open_upstream_response", side_effect=http_error
         ), patch("buzz.dav_protocol.time.sleep"):
             with self.assertRaisesRegex(ValueError, "upstream returned HTTP 503"):
                 open_remote_media(self.state, node, None)
 
-        self.assertEqual(mock_invalidate.call_count, 3)
+        self.assertEqual(mock_invalidate.call_count, 6)
 
     def test_retry_sleep_jitter_bounds(self):
         from buzz import dav_protocol
@@ -1895,8 +1959,8 @@ class DavAppTests(unittest.TestCase):
         # attempt 0: base=0.5, range [0.375, 0.625]
         self.assertAlmostEqual(recorded[0], 0.5 * 0.75, places=6)
         self.assertAlmostEqual(recorded[1], 0.5 * 1.25, places=6)
-        # attempt 5 capped at base=8.0
-        self.assertAlmostEqual(recorded[2], 8.0 * 0.75, places=6)
+        # attempt 5 capped at base=15.0 (0.5 * 2**5 = 16 -> capped)
+        self.assertAlmostEqual(recorded[2], 15.0 * 0.75, places=6)
 
     def test_open_remote_media_caps_concurrent_upstream_connections(self):
         import threading as _threading
@@ -1967,7 +2031,7 @@ class DavAppTests(unittest.TestCase):
                 errors.append(exc)
 
         with patch(
-            "buzz.dav_protocol.request.urlopen", side_effect=fake_urlopen
+            "buzz.dav_protocol._open_upstream_response", side_effect=fake_urlopen
         ):
             threads = [
                 _threading.Thread(target=worker) for _ in range(6)
@@ -2018,7 +2082,7 @@ class DavAppTests(unittest.TestCase):
         }
 
         with patch(
-            "buzz.dav_protocol.request.urlopen",
+            "buzz.dav_protocol._open_upstream_response",
             side_effect=[FakeResponse(b"first"), FakeResponse(b"second")],
         ):
             first_response, first_chunk = open_remote_media(
@@ -2076,7 +2140,7 @@ class DavAppTests(unittest.TestCase):
             real_semaphore.release()
 
         with patch(
-            "buzz.dav_protocol.request.urlopen",
+            "buzz.dav_protocol._open_upstream_response",
             side_effect=[
                 OSError("Connection reset by peer"),
                 FakeResponse(),
@@ -2089,6 +2153,78 @@ class DavAppTests(unittest.TestCase):
 
         self.assertEqual(first_chunk, b"\x1a\x45\xdf\xa3media")
         response.close()
+
+    def test_open_remote_media_short_circuits_on_hoster_unavailable(self):
+        from buzz.core.state import HosterUnavailableError
+
+        class HosterDownRD:
+            def __init__(self):
+                self.calls = []
+                self.unrestrict = self
+                self.torrents = None
+
+            def link(self, url):
+                self.calls.append(url)
+                return DavAppTests.FakeRDResponse(
+                    {"error": "hoster_unavailable"}
+                )
+
+        self.state.client = HosterDownRD()
+        node = {
+            "type": "remote",
+            "size": 14,
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-hoster",
+        }
+        with patch("buzz.dav_protocol.time.sleep") as mock_sleep:
+            with self.assertRaises(HosterUnavailableError):
+                open_remote_media(self.state, node, None)
+        # No retry sleep, exactly one API hit.
+        self.assertEqual(mock_sleep.call_count, 0)
+        self.assertEqual(len(self.state.client.calls), 1)
+
+    def test_dav_get_returns_503_with_retry_after_on_hoster_unavailable(self):
+        class HosterDownRD:
+            def __init__(self):
+                self.calls = []
+                self.unrestrict = self
+                self.torrents = None
+
+            def link(self, url):
+                self.calls.append(url)
+                return DavAppTests.FakeRDResponse(
+                    {"error": "hoster_unavailable"}
+                )
+
+        self.state.client = HosterDownRD()
+        self.state.snapshot["files"][
+            "movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv"
+        ] = {
+            "type": "remote",
+            "size": 14,
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-hoster-503",
+        }
+        response = self.client.get(
+            "/dav/movies/Little%20Shop%20%5B1986%5D%20%2B%20Extras/"
+            "Little%20Shop%20of%20Horrors%20%281986%29.mkv"
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.headers["retry-after"],
+            str(self.state.config.rd_hoster_failure_cache_secs),
+        )
+        # Second request inside TTL must not hit RD again.
+        response2 = self.client.get(
+            "/dav/movies/Little%20Shop%20%5B1986%5D%20%2B%20Extras/"
+            "Little%20Shop%20of%20Horrors%20%281986%29.mkv"
+        )
+        self.assertEqual(response2.status_code, 503)
+        self.assertEqual(len(self.state.client.calls), 1)
 
     def test_open_remote_media_fails_when_setup_slot_times_out(self):
         class BusySemaphore:

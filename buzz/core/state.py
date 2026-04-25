@@ -36,6 +36,36 @@ type ChangeClassification = dict[str, list[str]]
 type OperationResult = dict[str, Any]
 
 
+# RD application errors that don't recover within seconds: caching the
+# failure for a TTL prevents pointless API hammering on every client retry.
+RD_NON_TRANSIENT_ERRORS = frozenset({
+    "hoster_unavailable",
+    "hoster_unsupported",
+    "hoster_too_many_active_downloads",
+    "hoster_not_free",
+    "file_unavailable",
+})
+
+
+class HosterUnavailableError(ValueError):
+    """RD reported a non-transient hoster/file error.
+
+    Raised by :meth:`BuzzState.resolve_download_url` when Real-Debrid's
+    ``unrestrict.link`` endpoint returns a successful response whose
+    ``error`` field is one of :data:`RD_NON_TRANSIENT_ERRORS`. The caller
+    should not retry within seconds; a negative cache entry is stored so
+    repeat calls short-circuit without a fresh API hit.
+    """
+
+    def __init__(self, source_url: str, code: str) -> None:
+        """Build a HosterUnavailableError tagged with the upstream RD code."""
+        super().__init__(
+            f"Real-Debrid hoster unavailable for {source_url}: {code}"
+        )
+        self.source_url = source_url
+        self.code = code
+
+
 def dav_rel_path(raw_path: str) -> str:
     """Strip the /dav prefix and URL-decode a raw DAV path."""
     path = parse.urlsplit(raw_path).path
@@ -355,7 +385,7 @@ class BuzzState:
         self.hook_last_started_at = None
         self.hook_last_finished_at = None
         self.hook_last_error = None
-        self.resolved_urls: dict[str, dict[str, str]] = {}
+        self.resolved_urls: dict[str, dict[str, Any]] = {}
         self.hook_lock = threading.Lock()
         self.hook_task_active = False
         self._closed = False
@@ -1070,19 +1100,33 @@ class BuzzState:
         with self.lock:
             cached = self.resolved_urls.get(source_url)
             if cached and not force_refresh:
-                download_url = cached.get("download_url", "").strip()
+                download_url = str(cached.get("download_url", "")).strip()
                 if download_url:
                     return download_url
+                error_code = cached.get("error")
+                expires_at = cached.get("expires_at", 0.0)
+                if error_code and time.monotonic() < float(expires_at):
+                    raise HosterUnavailableError(source_url, str(error_code))
 
         try:
             res = self.client.unrestrict.link(source_url)
             data = res.json()
         except Exception as exc:
-            raise ValueError(f"Failed to unrestrict {source_url}: {exc}") from exc
+            raise ValueError(
+                f"Failed to unrestrict {source_url}: {exc}"
+            ) from exc
 
         download_url = data.get("download")
         if not download_url:
             error_msg = data.get("error") or "no download link in response"
+            if error_msg in RD_NON_TRANSIENT_ERRORS:
+                ttl = max(1, int(self.config.rd_hoster_failure_cache_secs))
+                with self.lock:
+                    self.resolved_urls[source_url] = {
+                        "error": error_msg,
+                        "expires_at": time.monotonic() + ttl,
+                    }
+                raise HosterUnavailableError(source_url, error_msg)
             raise ValueError(
                 f"Failed to resolve download link for {source_url}: {error_msg}"
             )
@@ -1092,10 +1136,9 @@ class BuzzState:
         return download_url
 
     def invalidate_download_url(self, source_url: str) -> None:
-        """Remove a cached resolved URL so the next request re-unrestricts it."""
+        """Remove any cached entry (positive or negative) for *source_url*."""
         with self.lock:
-            if source_url in self.resolved_urls:
-                del self.resolved_urls[source_url]
+            self.resolved_urls.pop(source_url, None)
 
     def verbose_log(self, message: str) -> None:
         """Log a message at debug level when verbose mode is enabled."""

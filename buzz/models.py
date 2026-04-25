@@ -256,6 +256,7 @@ _OVERRIDE_SCHEMA = {
     "directories": {"anime": {"patterns": True}},
     "compat": {"enable_all_dir": True, "enable_unplayable_dir": True},
     "request_timeout_secs": True,
+    "rd_hoster_failure_cache_secs": True,
     "user_agent": True,
     "version_label": True,
     "ui": {"poll_interval_secs": True},
@@ -370,6 +371,7 @@ def to_nested_dict(config: DavConfig) -> dict:
             "enable_unplayable_dir": config.enable_unplayable_dir,
         },
         "request_timeout_secs": config.request_timeout_secs,
+        "rd_hoster_failure_cache_secs": config.rd_hoster_failure_cache_secs,
         "user_agent": config.user_agent,
         "version_label": config.version_label,
         "ui": {"poll_interval_secs": config.ui_poll_interval_secs},
@@ -493,6 +495,7 @@ class DavConfig(BaseModel):
     enable_all_dir: bool = True
     enable_unplayable_dir: bool = True
     request_timeout_secs: int = 30
+    rd_hoster_failure_cache_secs: int = 60
     user_agent: str = DEFAULT_APP_VERSION
     version_label: str = DEFAULT_APP_VERSION
     curator_url: str = "http://buzz-curator:8400/rebuild"
@@ -557,6 +560,9 @@ class DavConfig(BaseModel):
                 compat.get("enable_unplayable_dir", True)
             ),
             request_timeout_secs=int(raw.get("request_timeout_secs", 30)),
+            rd_hoster_failure_cache_secs=max(
+                1, int(raw.get("rd_hoster_failure_cache_secs", 60))
+            ),
             user_agent=str(raw.get("user_agent", DEFAULT_APP_VERSION)),
             version_label=str(raw.get("version_label", DEFAULT_APP_VERSION)),
             verbose=bool(logging_raw.get("verbose", False)),
