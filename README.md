@@ -16,6 +16,9 @@ https://gitlab.com/gabriel.chamon/buzz.
   - `/mnt/buzz/curated`: Symbolic link library (via `buzz-curator`)
 - Media server libraries should point to subfolders of `/mnt/buzz/curated` (e.g., `movies`, `shows`, `animes`).
 
+For the full service topology and data flow, see
+[Runtime Topology](./docs/architecture.md#runtime-topology).
+
 ## Host Preparation
 
 Before starting the stack, ensure the required host directories exist and have the correct permissions (User/Group ID `1000` is the default for most containers):
@@ -65,14 +68,19 @@ docker compose restart buzz
 To inspect machine-managed state:
 
 ```bash
-sqlite3 /path/to/state_dir/buzz.sqlite ".tables"
+sqlite3 data/buzz.sqlite ".tables"
 ```
+
+For the database tables and ownership model, see
+[State Model](./docs/architecture.md#state-model).
 
 ## Configuration Reference
 
 ### `buzz.yml`
 
 This file handles the DAV server logic and RD polling.
+For config merge, masking, and reload behavior, see
+[Configuration Model](./docs/architecture.md#configuration-model).
 
 | Key | Default | Description |
 | :--- | :--- | :--- |
@@ -95,17 +103,20 @@ These settings control the automatic subtitle fetcher.
 
 | Key | Default | Description |
 | :--- | :--- | :--- |
-| `enabled` | `false` | Whether to enable automatic subtitle fetching from OpenSubtitles. |
-| `opensubtitles.api_key` | *(Required)* | Your OpenSubtitles.com API Key (needed for search and download). |
-| `opensubtitles.username` | *(Required)* | Your OpenSubtitles.com username (needed for download authentication). |
-| `opensubtitles.password` | *(Required)* | Your OpenSubtitles.com password (needed for download authentication). |
-| `languages` | `[en]` | List of language codes to download (e.g., `[en, pt-br]`). Supports regional codes like `pt-br` and `pt-pt`. |
-| `strategy` | `most-downloaded` | Ranking strategy: `best-match`, `most-downloaded`, `best-rated`, `trusted`, `latest`. |
-| `filters.hearing_impaired` | `exclude` | Handling of HI tracks: `exclude`, `include`, `prefer`. |
-| `filters.exclude_ai` | `true` | Exclude AI-translated subtitles. |
-| `filters.exclude_machine` | `true` | Exclude machine-translated subtitles. |
-| `search_delay_secs` | `0.5` | Delay between API search calls to respect rate limits. |
-| `download_delay_secs` | `1.0` | Delay between download calls. |
+| `subtitles.enabled` | `false` | Whether to enable automatic subtitle fetching from OpenSubtitles. |
+| `subtitles.opensubtitles.api_key` | *(Required)* | Your OpenSubtitles.com API Key (needed for search and download). |
+| `subtitles.opensubtitles.username` | *(Required)* | Your OpenSubtitles.com username (needed for download authentication). |
+| `subtitles.opensubtitles.password` | *(Required)* | Your OpenSubtitles.com password (needed for download authentication). |
+| `subtitles.languages` | `[en]` | List of language codes to download (e.g., `[en, pt-br]`). Supports regional codes like `pt-br` and `pt-pt`. |
+| `subtitles.strategy` | `most-downloaded` | Ranking strategy: `best-match`, `most-downloaded`, `best-rated`, `trusted`, `latest`. |
+| `subtitles.filters.hearing_impaired` | `exclude` | Handling of HI tracks: `exclude`, `include`, `prefer`. |
+| `subtitles.filters.exclude_ai` | `true` | Exclude AI-translated subtitles. |
+| `subtitles.filters.exclude_machine` | `true` | Exclude machine-translated subtitles. |
+| `subtitles.search_delay_secs` | `0.5` | Delay between API search calls to respect rate limits. |
+| `subtitles.download_delay_secs` | `1.0` | Delay between download calls. |
+
+For the subtitle overlay, metadata, and fetch pipeline, see
+[Subtitle Pipeline](./docs/architecture.md#subtitle-pipeline).
 
 Complete example:
 
@@ -170,7 +181,11 @@ This file handles the stack deployment and media-server integration.
 
 ## Architecture
 
-For a deep dive into how Buzz works, components, and data flow, see the [Architecture Documentation](./docs/architecture.md).
+For a deep dive into how Buzz works, components, and data flow, see the
+[Architecture Documentation](./docs/architecture.md), especially
+[DAV Service Internals](./docs/architecture.md#dav-service-internals),
+[Curator Service Internals](./docs/architecture.md#curator-service-internals),
+and [Media Server Refresh](./docs/architecture.md#media-server-refresh).
 
 ## Development
 
@@ -188,6 +203,8 @@ docker compose \
 ```
 
 Source changes take effect immediately after restarting the service (`docker compose restart buzz-dav`) without rebuilding the image. If you prefer an isolated environment, you can spin up a full development VM with [Incus](./docs/incus-dev-vm.md). In production, `docker compose up -d` runs the stable, immutable code baked into the image; rebuild it after changes with `docker compose up -d --build`.
+For the GitLab registry image, CI components, and development override model,
+see [Deployment And CI Architecture](./docs/architecture.md#deployment-and-ci-architecture).
 
 Run the test suite locally with `uv run python -m unittest discover -s tests`. We also keep templates clean with `htmlhint` (configured via `.htmlhintrc` in the root):
 

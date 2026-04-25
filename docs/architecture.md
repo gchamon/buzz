@@ -1,60 +1,143 @@
 # Architecture
 
-This document describes the internal architecture of Buzz, its components, and the data flow between them.
+This document describes Buzz from a maintainer's point of view: runtime
+components, state ownership, data flow, and the boundaries between the DAV
+front end, curator sidecar, operator UI, and deployment pipeline.
 
-## High-Level Overview
+For installation commands and operator-facing configuration tables, see the
+[README](../README.md).
 
-Buzz is designed to provide a stable, curated media library from a Real-Debrid account. It consists of two main services that work together to expose a virtual filesystem to your media server (Plex or Jellyfin).
+## Runtime Topology
 
-### Core Components
+Buzz turns a Real-Debrid torrent library into a stable filesystem layout for
+Jellyfin or Plex. The runtime is more than one Python process:
 
-1.  **DAV Server (`buzz-dav`)**:
-    - The entry point for the stack.
-    - Responsible for polling the Real-Debrid API for changes in the torrent list.
-    - Maintains a local SQLite database and generates "snapshots" of the virtual library.
-    - Serves the virtual library over a read-only WebDAV interface at `/dav`.
-    - Provides a lightweight Web UI for management (adding/deleting torrents, triggering syncs).
-
-2.  **Curator Service (`buzz-curator`)**:
-    - A sidecar service that watches the "raw" WebDAV mount (via `rclone`).
-    - It parses the raw torrent folders and organizes them into a clean, curated structure (e.g., `/mnt/buzz/curated/movies`, `/mnt/buzz/curated/shows`).
-    - It handles naming convention logic and ensures that your media server can easily identify content.
-    - It triggers library updates on the media server after a successful curation pass.
-
-3.  **Rclone**:
-    - Acts as the bridge between the DAV server and the filesystem.
-    - It mounts the `buzz-dav` WebDAV share as a local FUSE mount at `/mnt/buzz/raw`.
-
----
-
-## Service Interaction Diagram
-
-This diagram shows how the Docker services interact and how data flows from Real-Debrid to your media server.
+- `buzz-dav` is the front-end service. It polls Real-Debrid, stores machine
+  state in SQLite, exposes the read-only WebDAV tree at `/dav`, and hosts the
+  operator UI.
+- `rclone` mounts `buzz-dav`'s WebDAV tree at `/mnt/buzz/raw`. Media servers
+  never talk to Real-Debrid directly; they read through this mount.
+- `buzz-curator` is a sidecar service. It scans `/mnt/buzz/raw`, builds a clean
+  symlink library under `/mnt/buzz/curated`, overlays subtitles from
+  `/mnt/buzz/subs`, persists its mapping/report, and notifies media servers.
+- Jellyfin or Plex reads `/mnt/buzz/curated`. Their libraries should point at
+  category subdirectories such as `movies`, `shows`, and `anime`.
+- `buzz.sqlite` is shared machine-managed state. It lives under the configured
+  `state_dir`, which is `/app/data` in containers and `./data` on the host
+  through Compose.
 
 ```mermaid
 flowchart TD
-    RDAPI["Real-Debrid API"] <--> |Polling/Sync| BuzzDAV["buzz-dav"]
-    BuzzDAV --> |WebDAV Share| Rclone["rclone"]
-    Rclone --> |FUSE Mount| HostRaw["/mnt/buzz/raw"]
-    BuzzCurator["buzz-curator"] --> |Reads| HostRaw
-    BuzzCurator --> |Creates Symlinks| HostCurated["/mnt/buzz/curated"]
-    Plex["Plex"] --> |Reads| HostCurated
-    Jellyfin["Jellyfin"] --> |Reads| HostCurated
-    HostSubs["/mnt/buzz/subs"] --> |Overlayed into| HostCurated
-    OpenSubs["OpenSubtitles API"] <--> |Fetch| BuzzCurator
-    
-    subgraph "Host OS Filesystem"
-    HostRaw
-    HostCurated
-    HostSubs
+    RDAPI["Real-Debrid API"] <--> |poll, cache, delete, restore| BuzzDAV["buzz-dav"]
+    BuzzDAV --> |WebDAV /dav| Rclone["rclone"]
+    Rclone --> |FUSE mount| HostRaw["/mnt/buzz/raw"]
+    BuzzCurator["buzz-curator"] --> |scan| HostRaw
+    BuzzCurator --> |atomic symlink rebuild| HostCurated["/mnt/buzz/curated"]
+    HostSubs["/mnt/buzz/subs"] --> |subtitle overlay| BuzzCurator
+    HostCurated --> |library paths| Jellyfin["Jellyfin"]
+    HostCurated --> |library paths| Plex["Plex"]
+    BuzzCurator --> |library refresh| Jellyfin
+    BuzzCurator --> |library refresh| Plex
+    OpenSubs["OpenSubtitles API"] <--> |languages, search, download| BuzzDAV
+    OpenSubs <--> |login, search, download| BuzzCurator
+    SQLite["buzz.sqlite"] <--> BuzzDAV
+    SQLite <--> BuzzCurator
+
+    subgraph "Host filesystem"
+      HostRaw
+      HostCurated
+      HostSubs
     end
 ```
 
----
+## State Model
 
-## Functional Block: WebDAV and Rclone Interaction
+Machine-managed persistence lives in `buzz.sqlite`. User-edited configuration
+stays in YAML and environment files. Code should open the database through
+`buzz.core.db.connect()` and apply migrations before use.
 
-When a media server requests a file, `rclone` translates that into a WebDAV request to `buzz-dav`. `buzz-dav` then fetches the actual stream link from Real-Debrid and proxies the stream.
+The database currently contains:
+
+| Table | Owner | Purpose |
+| --- | --- | --- |
+| `schema_version` | shared | Tracks applied SQLite migrations. |
+| `torrents` | `buzz-dav` | Real-Debrid torrent signatures, API payloads, update times, and magnets. |
+| `archive` | `buzz-dav` | Deleted/archived torrent metadata used for restore and permanent delete flows. |
+| `library_snapshot` | `buzz-dav` | Canonical WebDAV tree snapshot and digest used to detect meaningful changes. |
+| `curator_mapping` | `buzz-curator` | Source-to-target symlink mapping for curated files. |
+| `curator_report` | `buzz-curator` | Last rebuild report, including counts and media-server scan scope. |
+| `subtitle_metadata` | `buzz-curator` | Downloaded subtitle file IDs and release metadata keyed by overlay path. |
+| `opensubtitles_languages` | `buzz-dav` | Cached OpenSubtitles language list for the config UI. |
+| `opensubtitles_languages_meta` | `buzz-dav` | Fetch timestamp for the cached language list. |
+
+Legacy JSON state files are imported into SQLite on first use when the target
+table is empty. Imported files are renamed with a `.migrated` suffix. New code
+should not add JSON machine state; JSON/YAML files are for user-editable
+configuration only.
+
+## Configuration Model
+
+`buzz.yml` is loaded into Pydantic models in `buzz.models`. Environment
+variables provide deployment-level defaults, while the YAML file remains the
+operator's explicit configuration source.
+
+There are three important config views:
+
+- **Saved config** is what is present in `buzz.yml`.
+- **Effective config** is the saved config merged with defaults and container
+  environment values.
+- **UI override config** is the subset of fields the config UI is allowed to
+  write back to `buzz.yml`.
+
+The config UI masks secrets before displaying YAML. Secret paths include
+`provider.token` and OpenSubtitles credentials under
+`subtitles.opensubtitles.*`.
+
+Reload behavior is field-specific:
+
+- `server.bind` and `server.port` require a service restart.
+- Hot-reloadable fields are applied in-process by `buzz-dav` and then relayed
+  to `buzz-curator` through `/api/config/reload`.
+- If curator reload fails, the DAV process records a structured event so the
+  operator sees the failure in `/logs`.
+
+## DAV Service Internals
+
+`buzz-dav` is implemented by `buzz.dav_app.DavApp` and `buzz.core.state`.
+It is both a WebDAV front end and the coordination point for operator actions.
+
+Main responsibilities:
+
+- Poll Real-Debrid on `poll_interval_secs` and compare current torrent
+  signatures against the `torrents` table.
+- Delay hook execution by `hooks.rd_update_delay_secs` after RD changes so the
+  inventory can settle before curation.
+- Generate a canonical library snapshot and store its digest in
+  `library_snapshot`.
+- Expose cache/archive/config/log pages and JSON endpoints.
+- Trigger curator rebuilds and subtitle fetches over HTTP when configured.
+- Serve WebDAV `PROPFIND`, `GET`, and `HEAD` under `/dav/{path:path}`.
+
+Important DAV routes:
+
+| Route | Role |
+| --- | --- |
+| `/`, `/cache`, `/archive`, `/logs`, `/config` | Operator UI pages. |
+| `/healthz` | Process liveness. |
+| `/readyz` | Readiness, including DAV state and curator readiness when configured. |
+| `/sync` | Manual RD sync. |
+| `/api/config`, `/api/config/restore-defaults` | Config read/write and reset. |
+| `/api/ui/notify` | Curator-to-DAV event notification. |
+| `/api/curator/rebuild` | Manual curator rebuild proxy. |
+| `/api/subtitles/fetch-torrent` | Torrent-scoped subtitle fetch proxy. |
+| `/api/logs` | Recent structured events. |
+| `/dav/{path:path}` | WebDAV tree and media streaming. |
+
+When a media server reads a file, `rclone` translates that read into a WebDAV
+request. `buzz-dav` resolves the requested virtual file to the Real-Debrid
+file entry, obtains an unrestricted stream URL, and proxies the response with
+range support. `server.stream_buffer_size` and `server.upstream_concurrency`
+control stream behavior.
 
 ```mermaid
 sequenceDiagram
@@ -63,92 +146,197 @@ sequenceDiagram
     participant BuzzDAV
     participant RealDebrid
     participant RDCDN as Real-Debrid CDN
-    MediaServer->>Rclone: Request Video Stream
-    Rclone->>BuzzDAV: HTTP GET /dav/movies/...
-    BuzzDAV->>RealDebrid: Request unrestricted stream link
-    RealDebrid-->>BuzzDAV: 302 Redirect to CDN
-    BuzzDAV->>RDCDN: HTTP GET with Range Headers
-    RDCDN-->>BuzzDAV: Video Chunks
-    BuzzDAV-->>Rclone: Video Chunks
-    Rclone-->>MediaServer: Playback
+    MediaServer->>Rclone: read /mnt/buzz/raw/...
+    Rclone->>BuzzDAV: GET /dav/...
+    BuzzDAV->>RealDebrid: request unrestricted stream link
+    RealDebrid-->>BuzzDAV: CDN URL
+    BuzzDAV->>RDCDN: GET with Range headers
+    RDCDN-->>BuzzDAV: media bytes
+    BuzzDAV-->>Rclone: media bytes
+    Rclone-->>MediaServer: media bytes
 ```
 
----
+## Curator Service Internals
 
-## Functional Block: Curator and Media Server Refresh Flow
+`buzz-curator` is implemented by `buzz.curator_app.CuratorApp` and
+`buzz.core.curator`. It receives rebuild requests, creates the curated library,
+and handles media-server refreshes.
 
-When the `buzz-dav` service detects a change in the Real-Debrid library, it triggers a post-sync hook. This hook informs the Curator to rebuild the curated library and then notifies the media server.
+Rebuild flow:
+
+1. Receive `/rebuild`, optionally with changed roots from `buzz-dav`.
+2. Read `/mnt/buzz/raw` through the rclone mount.
+3. Classify entries into movies, shows, and anime using media parsing helpers
+   and configured anime patterns.
+4. Create a temporary build tree under the target root.
+5. Apply the persistent subtitle overlay from `/mnt/buzz/subs`.
+6. Replace the curated symlink tree under `/mnt/buzz/curated`.
+7. Persist `curator_mapping` and `curator_report` in SQLite.
+8. Trigger Jellyfin refresh when credentials are configured.
+9. Optionally start background subtitle fetching if
+   `subtitles.enabled` and `subtitles.fetch_on_resync` are true.
 
 ```mermaid
 sequenceDiagram
     participant BuzzDAV
     participant HookScript
     participant Curator
-    participant RcloneMount
-    participant Jellyfin
-    BuzzDAV->>HookScript: Detects change, executes hook
+    participant Raw as /mnt/buzz/raw
+    participant Curated as /mnt/buzz/curated
+    participant Subs as /mnt/buzz/subs
+    participant MediaServer
+    BuzzDAV->>HookScript: library snapshot changed
     HookScript->>Curator: POST /rebuild
-    Curator->>RcloneMount: Read raw torrent folders
-    Curator->>Curator: Parse titles, seasons, episodes
-    Curator->>Curator: Apply Subtitle Overlay (/mnt/buzz/subs)
-    Curator->>Jellyfin: Create symlinks in /mnt/buzz/curated
-    Curator->>OpenSubs: Fetch missing subtitles (Background)
-    Curator->>Jellyfin: POST /ScheduledTasks/Running/{task_id}
-    Jellyfin-->>Curator: 204 No Content
-    Curator-->>HookScript: 200 OK
+    Curator->>Raw: scan source folders
+    Curator->>Curator: parse and classify media
+    Curator->>Subs: read persistent subtitle overlay
+    Curator->>Curated: replace symlink tree
+    Curator->>MediaServer: trigger full or selective refresh
+    Curator-->>HookScript: rebuild report
 ```
 
----
+Curator routes:
 
-## Common Workflows
+| Route | Role |
+| --- | --- |
+| `/healthz` | Process liveness. |
+| `/rebuild` | Rebuild curated symlink tree. |
+| `/api/config/reload` | Reload YAML config after DAV-side config updates. |
+| `/api/logs`, `/api/logs/count` | Curator event access. |
+| `/api/subtitles/status` | Background subtitle fetch status. |
+| `/api/subtitles/fetch` | Full-library or torrent-scoped subtitle fetch. |
 
-### 1. Adding a Torrent via the UI
-1.  The user visits the `buzz-dav` Web UI (default port 9999).
-2.  The user enters a magnet link and clicks "Add".
-3.  `buzz-dav` sends the magnet link to Real-Debrid via the API.
-4.  Real-Debrid starts caching/downloading the torrent.
-5.  The background `Poller` in `buzz-dav` detects the new torrent and waits for it to be fully cached.
-6.  Once cached, `buzz-dav` generates a new VFS snapshot and triggers the `on_library_change` hook.
+## Operator UI Architecture
 
-### 2. Perceiving Upstream Changes
-1.  The `Poller` runs every `poll_interval_secs` (default 10s).
-2.  It checks the RD torrent list and compares it with its internal database.
-3.  If a change is detected (new torrent, deleted torrent, or status change), it waits for `rd_update_delay_secs` (default 15s) to allow the RD inventory to settle.
-4.  A new snapshot is generated, updating the WebDAV view.
-5.  The refresh hook is triggered.
+FastAPI remains the outer ASGI application for WebDAV, health checks, and JSON
+endpoints. The operator pages are implemented with an embedded `PyView`
+application built in `buzz.ui_live`.
 
-### 3. Manual Sync
-1.  User clicks "Sync" in the Web UI.
-2.  `buzz-dav` immediately polls the RD API, bypassing the interval.
-3.  If changes are found, it proceeds with snapshot generation and hook execution immediately.
+The UI architecture has two boundaries:
 
-## Operator UI Integration
+- PyView owns live pages, navigation, websocket updates, and the HTML templates
+  under `buzz/pyview_templates`.
+- `DavApp` owns mutations and state access. Live views call in-process owner
+  methods instead of duplicating database or Real-Debrid logic.
 
-The operator-facing HTML pages now use a split architecture:
+The PyView websocket endpoint is mounted at `/live/websocket`. PyView's bundled
+frontend asset is mounted at `/pyview/assets/app.js`, separate from Buzz's
+static assets under `/static`.
 
-1.  FastAPI remains the outer application shell for `/dav`, health checks, and
-    machine-facing JSON endpoints such as `/api/cache/*`, `/api/config`, and
-    `/sync`.
-2.  A small embedded `PyView` application is initialized inside `DavApp` and
-    its routes are appended into the same ASGI router for `/archive`, `/logs`,
-    and `/config`.
-3.  `PyView`'s websocket endpoint lives at `/live/websocket`, and its bundled
-    frontend asset is mounted separately at `/pyview/assets/app.js` so it does
-    not collide with Buzz's existing `/static` directory.
-4.  The live views call the same in-process state and config helpers used by
-    the REST handlers, which keeps the mutation boundary shallow and makes the
-    UI layer reversible if `pyview-web` proves to be the wrong fit.
+Page responsibilities:
 
-## Subtitle Integration
+- `/cache` shows current RD cache entries and exposes add, delete, resync, and
+  torrent-scoped subtitle actions.
+- `/archive` shows archived/deleted items and exposes restore/permanent delete
+  actions.
+- `/logs` renders structured DAV and curator events.
+- `/config` edits the UI-managed subset of `buzz.yml`, marks restart-required
+  fields, masks secrets, and can refresh OpenSubtitles language metadata.
 
-Buzz integrates directly with OpenSubtitles.com REST API v2 to automatically fetch subtitles for your media.
+## Event And Log Flow
 
-### Persistent Overlay
+`buzz.core.events.EventRegistry` is a process-local, thread-safe ring buffer.
+Both services record structured log-style events through `record_event()`.
+Events are also printed to stdout for container-log visibility.
 
-To ensure that subtitles survive the curator's "wipe-and-replace" rebuild cycle, they are stored in a persistent directory: `/mnt/buzz/subs`.
+The DAV process uses events for local UI state, `/api/logs`, and the live logs
+page. The curator has its own event registry and notifies the DAV UI by posting
+to `/api/ui/notify` for important status/log changes. This keeps the two
+services independent while giving operators one place to inspect recent
+activity.
 
-1.  **Overlay Phase**: During every rebuild, the curator walks the `/mnt/buzz/subs` directory and creates symlinks in the temporary build tree that point back to these persistent `.srt` files.
-2.  **Background Fetching**: After a rebuild completes, if `subtitles.enabled` is true, a background thread is spawned. It identifies any video files in the curated library that are missing a corresponding subtitle in the overlay and attempts to download them from OpenSubtitles.
-3.  **Ranking Strategies**: The fetcher supports various strategies (e.g., `most-downloaded`, `best-match`) to ensure you get the highest quality subtitle for your specific release.
+Event producers include:
 
-The fetcher respects rate limits and follows a fallback chain if your preferred strategy yields no results.
+- RD sync and snapshot changes in `buzz.core.state`.
+- Cache/archive actions in `DavApp`.
+- Curator rebuild and mapping diffs in `buzz.core.curator`.
+- Config reloads in both services.
+- Subtitle background fetch status and errors.
+
+## Subtitle Pipeline
+
+Subtitles are stored outside the curated tree so they survive the curator's
+wipe-and-replace rebuild strategy. The persistent root is `/mnt/buzz/subs`;
+the curator symlinks matching `.srt` files into the temporary build tree during
+every rebuild.
+
+There are two OpenSubtitles integrations:
+
+- `buzz-dav` fetches and caches the language list for the config UI.
+- `buzz-curator` logs in, searches, ranks, downloads, and installs subtitles.
+
+Subtitle fetch flow:
+
+1. Build or load the current curator mapping.
+2. Restrict the mapping to one torrent when a torrent-scoped fetch is requested.
+3. For each target video and configured language, skip existing overlay files.
+4. Search OpenSubtitles using parsed media metadata and source filename hints.
+5. Filter and rank results according to `subtitles.strategy` and
+   `subtitles.filters.*`.
+6. Download the best result, write it under `/mnt/buzz/subs`, and persist
+   `subtitle_metadata`.
+7. Symlink the subtitle into the curated tree for immediate visibility.
+8. Trigger selective Jellyfin refresh for fetched subtitle targets when possible.
+
+The background fetcher exposes process state through
+`/api/subtitles/status`, including whether it is running, current item, and
+error counters.
+
+## Media Server Refresh
+
+Media-server refresh lives behind helpers in `buzz.core.media_server`.
+The curator chooses between full and selective refresh based on the rebuild
+input and available configuration.
+
+- Jellyfin supports selective refresh when changed roots can be mapped to
+  Jellyfin libraries through `media_server.library_map` or discovered library
+  paths.
+- Jellyfin full refresh uses a scan task ID when configured or discoverable.
+- Plex can read the curated library, but the current automatic refresh
+  implementation is Jellyfin-specific.
+- Subtitle downloads can trigger a selective Jellyfin refresh for the specific
+  targets that received new `.srt` files.
+
+The curator report records enough information for operators and tests to see
+whether a rebuild used full or selective scanning.
+
+## Deployment And CI Architecture
+
+GitLab is the canonical repository:
+`https://gitlab.com/gabriel.chamon/buzz`. GitHub is intended to remain a
+read-only mirror once project-level push mirroring is configured.
+
+The production Compose file pulls the published image:
+`registry.gitlab.com/gabriel.chamon/buzz/buzz:v1`. Development keeps local
+builds in `docker-compose.dev.yml`, which overlays a `build:` block and source
+mounts on top of the production Compose file.
+
+The GitLab pipeline is split under `.gitlab/ci/` and assembled by
+`.gitlab-ci.yml`:
+
+- Gitleaks runs as a direct CI job.
+- Test jobs are included only when Python, template, dependency, or lint config
+  files change.
+- Image publishing reuses the shared
+  `gitlab.com/gabriel.chamon/ci-components/docker-build@v1` component.
+- Moving major tags reuses `gabriel.chamon/ci-components/release-tags.yml`.
+
+The Docker build component publishes under
+`$CI_REGISTRY_IMAGE/<image_name>:<tag>`, so this project's `image_name: buzz`
+resolves to `registry.gitlab.com/gabriel.chamon/buzz/buzz:v1` for the tracked
+major tag.
+
+## Key Invariants
+
+- Only `buzz-dav` talks to Real-Debrid for torrent inventory and WebDAV stream
+  resolution.
+- `rclone` is the bridge between WebDAV and the host filesystem; the curator
+  reads the rclone mount, not Real-Debrid.
+- `buzz.sqlite` is machine state. `buzz.yml`, `.env`, and compose files are
+  user/operator state.
+- The curated tree can be deleted and rebuilt; persistent subtitles must live
+  under `/mnt/buzz/subs`.
+- The operator UI should call existing service methods and repository helpers
+  instead of owning separate persistence or Real-Debrid logic.
+- Cross-service coordination happens over HTTP; in-process helpers stay inside
+  one service boundary.
