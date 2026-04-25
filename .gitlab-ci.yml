@@ -6,5 +6,23 @@ stages:
 include:
   - local: .gitlab/ci/gitleaks.gitlab-ci.yml
   - local: .gitlab/ci/test.gitlab-ci.yml
+    rules:
+      - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+        changes:
+          - buzz/**/*
+          - tests/**/*
+          - pyproject.toml
+          - uv.lock
+          - pyrightconfig.json
+          - .htmlhintrc
+      - if: "$CI_COMMIT_BRANCH"
+        changes:
+          - buzz/**/*
+          - tests/**/*
+          - pyproject.toml
+          - uv.lock
+          - pyrightconfig.json
+          - .htmlhintrc
+      - when: never
   - local: .gitlab/ci/image-publish.gitlab-ci.yml
   - local: .gitlab/ci/update-major-tag.gitlab-ci.yml

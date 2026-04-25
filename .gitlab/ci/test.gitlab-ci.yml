@@ -1,9 +1,6 @@
 pytest:
   stage: test
   image: ghcr.io/astral-sh/uv:python3.14-alpine
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: "$CI_COMMIT_BRANCH"
   script:
     - uv sync --group dev
     - uv run pytest --cov=buzz --cov-report=xml --cov-report=term
@@ -16,9 +13,6 @@ pytest:
 htmlhint:
   stage: test
   image: node:alpine
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: "$CI_COMMIT_BRANCH"
   script:
     - npx --yes htmlhint "buzz/pyview_templates/*.html"
   allow_failure: true
