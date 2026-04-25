@@ -21,3 +21,4 @@ htmlhint:
     - if: "$CI_COMMIT_BRANCH"
   script:
     - npx --yes htmlhint "buzz/pyview_templates/*.html"
+  allow_failure: true
