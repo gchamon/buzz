@@ -36,34 +36,15 @@ def _retry_sleep(attempt: int) -> None:
     time.sleep(base * (0.75 + random.random() * 0.5))
 
 
-class _SemaphoreReleasingResponse:
-    """Proxy a urlopen response and release a semaphore exactly once on close."""
-
-    def __init__(
-        self,
-        response: Any,
-        semaphore: threading.BoundedSemaphore,
-    ) -> None:
-        self._response = response
-        self._semaphore = semaphore
-        self._released = False
-        self._release_lock = threading.Lock()
-
-    def _release(self) -> None:
-        with self._release_lock:
-            if self._released:
-                return
-            self._released = True
-        self._semaphore.release()
-
-    def close(self) -> None:
-        try:
-            self._response.close()
-        finally:
-            self._release()
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._response, name)
+def _acquire_upstream_slot(state: BuzzState) -> threading.BoundedSemaphore:
+    """Acquire a short-lived Real-Debrid setup slot or fail fast."""
+    semaphore = _get_upstream_semaphore(state.config.upstream_concurrency)
+    timeout = max(1, int(state.config.request_timeout_secs))
+    if semaphore.acquire(timeout=timeout):
+        return semaphore
+    raise ValueError(
+        "upstream connection limit reached while opening Real-Debrid media"
+    )
 
 
 def propfind_body(state: BuzzState, paths: list[str]) -> str:
@@ -138,54 +119,42 @@ def _try_open_stream(
     if range_header:
         start, end = range_header
         req.add_header("Range", f"bytes={start}-{end}")
-    semaphore = _get_upstream_semaphore(state.config.upstream_concurrency)
-    semaphore.acquire()
-    released = False
     try:
-        try:
-            response = request.urlopen(
-                req,
-                timeout=max(1, int(state.config.request_timeout_secs)),
+        return request.urlopen(
+            req,
+            timeout=max(1, int(state.config.request_timeout_secs)),
+        )
+    except error.HTTPError as exc:
+        state.invalidate_download_url(source_url)
+        state.verbose_log(
+            f"HTTP Error {exc.code} on attempt {attempt + 1}: {exc.reason}"
+        )
+        if attempt < max_attempts - 1:
+            record_event(
+                f"Retrying Real-Debrid stream after upstream HTTP {exc.code}",
+                level="warning",
+                event="rd_stream_retry",
+                path=source_url,
+                attempt=attempt + 1,
             )
-        except error.HTTPError as exc:
-            state.invalidate_download_url(source_url)
-            state.verbose_log(
-                f"HTTP Error {exc.code} on attempt {attempt + 1}: {exc.reason}"
+        raise ValueError(
+            f"upstream returned HTTP {exc.code} for {download_url}"
+        ) from exc
+    except Exception as exc:
+        state.verbose_log(
+            f"Connection error on attempt {attempt + 1}: {exc}"
+        )
+        if attempt < max_attempts - 1:
+            record_event(
+                f"Retrying Real-Debrid stream after connection error: {exc}",
+                level="debug",
+                event="rd_stream_retry",
+                path=source_url,
+                attempt=attempt + 1,
             )
-            if attempt < max_attempts - 1:
-                record_event(
-                    f"Retrying Real-Debrid stream after upstream HTTP {exc.code}",
-                    level="warning",
-                    event="rd_stream_retry",
-                    path=source_url,
-                    attempt=attempt + 1,
-                )
-                _retry_sleep(attempt)
-            raise ValueError(
-                f"upstream returned HTTP {exc.code} for {download_url}"
-            ) from exc
-        except Exception as exc:
-            state.verbose_log(
-                f"Connection error on attempt {attempt + 1}: {exc}"
-            )
-            if attempt < max_attempts - 1:
-                record_event(
-                    f"Retrying Real-Debrid stream after connection error: {exc}",
-                    level="debug",
-                    event="rd_stream_retry",
-                    path=source_url,
-                    attempt=attempt + 1,
-                )
-                _retry_sleep(attempt)
-            raise ValueError(
-                f"failed to connect to upstream: {exc}"
-            ) from exc
-        wrapped = _SemaphoreReleasingResponse(response, semaphore)
-        released = True
-        return wrapped
-    finally:
-        if not released:
-            semaphore.release()
+        raise ValueError(
+            f"failed to connect to upstream: {exc}"
+        ) from exc
 
 
 def open_remote_media(
@@ -216,27 +185,33 @@ def open_remote_media(
         state.verbose_log(
             f"Resolved to {download_url!r} (attempt {attempt + 1}/{max_attempts})"
         )
+        response = None
+        semaphore = None
         try:
+            semaphore = _acquire_upstream_slot(state)
             response = _try_open_stream(
                 state, download_url, source_url, range_header, attempt, max_attempts
             )
-        except ValueError as exc:
-            last_error = str(exc)
-            last_exception = exc
-            if attempt == max_attempts - 1:
-                raise
-            continue
-
-        try:
             first_chunk = validate_remote_media_response(response, range_header)
+            semaphore.release()
+            semaphore = None
             return response, first_chunk
         except ValueError as exc:
-            response.close()
-            state.invalidate_download_url(source_url)
+            if response is not None:
+                response.close()
+                state.invalidate_download_url(source_url)
+            if semaphore is not None:
+                semaphore.release()
+                semaphore = None
             last_error = str(exc)
             last_exception = exc
-            state.verbose_log(f"Validation failed on attempt {attempt + 1}: {exc}")
-            if attempt < max_attempts - 1:
+            if response is not None:
+                state.verbose_log(
+                    f"Validation failed on attempt {attempt + 1}: {exc}"
+                )
+            if attempt == max_attempts - 1:
+                raise
+            if response is not None:
                 record_event(
                     f"Retrying Real-Debrid stream after validation error: {exc}",
                     level="warning",
@@ -244,9 +219,11 @@ def open_remote_media(
                     path=source_url,
                     attempt=attempt + 1,
                 )
-                _retry_sleep(attempt)
-                continue
-            raise
+            _retry_sleep(attempt)
+            continue
+        finally:
+            if semaphore is not None:
+                semaphore.release()
     raise ValueError(last_error) from last_exception
 
 

@@ -1982,6 +1982,136 @@ class DavAppTests(unittest.TestCase):
         self.assertLessEqual(max_in_flight, 2)
         self.assertGreaterEqual(max_in_flight, 1)
 
+    def test_open_remote_media_releases_setup_slot_before_stream_close(self):
+        self.state.config = self.state.config.model_copy(
+            update={"upstream_concurrency": 1}
+        )
+        self.state.client = self.FakeRD(
+            [
+                "https://example.invalid/cdn/first",
+                "https://example.invalid/cdn/second",
+            ]
+        )
+
+        class FakeResponse:
+            def __init__(self, label: bytes):
+                self.headers = {"Content-Type": "video/x-matroska"}
+                self._body = b"\x1a\x45\xdf\xa3" + label
+
+            def read(self, amount=-1):
+                if amount is None or amount < 0:
+                    amount = len(self._body)
+                chunk = self._body[:amount]
+                self._body = self._body[amount:]
+                return chunk
+
+            def close(self):
+                return None
+
+        node = {
+            "type": "remote",
+            "size": 14,
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-release",
+        }
+
+        with patch(
+            "buzz.dav_protocol.request.urlopen",
+            side_effect=[FakeResponse(b"first"), FakeResponse(b"second")],
+        ):
+            first_response, first_chunk = open_remote_media(
+                self.state, node, None
+            )
+            second_response, second_chunk = open_remote_media(
+                self.state, node, None
+            )
+
+        self.assertEqual(first_chunk, b"\x1a\x45\xdf\xa3first")
+        self.assertEqual(second_chunk, b"\x1a\x45\xdf\xa3second")
+        first_response.close()
+        second_response.close()
+
+    def test_open_remote_media_releases_setup_slot_before_retry_sleep(self):
+        from buzz import dav_protocol
+
+        self.state.config = self.state.config.model_copy(
+            update={"upstream_concurrency": 1}
+        )
+        self.state.client = self.FakeRD(
+            [
+                "https://example.invalid/cdn/first",
+                "https://example.invalid/cdn/second",
+            ]
+        )
+
+        class FakeResponse:
+            def __init__(self):
+                self.headers = {"Content-Type": "video/x-matroska"}
+                self._body = b"\x1a\x45\xdf\xa3media"
+
+            def read(self, amount=-1):
+                if amount is None or amount < 0:
+                    amount = len(self._body)
+                chunk = self._body[:amount]
+                self._body = self._body[amount:]
+                return chunk
+
+            def close(self):
+                return None
+
+        node = {
+            "type": "remote",
+            "size": 14,
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-retry-release",
+        }
+        real_semaphore = dav_protocol._get_upstream_semaphore(1)
+
+        def sleep_asserts_slot_released(_delay):
+            self.assertTrue(real_semaphore.acquire(blocking=False))
+            real_semaphore.release()
+
+        with patch(
+            "buzz.dav_protocol.request.urlopen",
+            side_effect=[
+                OSError("Connection reset by peer"),
+                FakeResponse(),
+            ],
+        ), patch(
+            "buzz.dav_protocol.time.sleep",
+            side_effect=sleep_asserts_slot_released,
+        ):
+            response, first_chunk = open_remote_media(self.state, node, None)
+
+        self.assertEqual(first_chunk, b"\x1a\x45\xdf\xa3media")
+        response.close()
+
+    def test_open_remote_media_fails_when_setup_slot_times_out(self):
+        class BusySemaphore:
+            def acquire(self, timeout=None):
+                return False
+
+        node = {
+            "type": "remote",
+            "size": 14,
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-busy",
+        }
+
+        self.state.client = self.FakeRD(["https://example.invalid/cdn"])
+        with patch(
+            "buzz.dav_protocol._get_upstream_semaphore",
+            return_value=BusySemaphore(),
+        ), patch("buzz.dav_protocol.time.sleep"):
+            with self.assertRaisesRegex(ValueError, "connection limit reached"):
+                open_remote_media(self.state, node, None)
+
     def test_languages_refreshing_flag_set_while_fetching(self):
         config = self._config_with_credentials(self.tmpdir.name)
         with (
