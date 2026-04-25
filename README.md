@@ -203,6 +203,7 @@ docker compose \
 ```
 
 Source changes take effect immediately after restarting the service (`docker compose restart buzz-dav`) without rebuilding the image. If you prefer an isolated environment, you can spin up a full development VM with [Incus](./docs/incus-dev-vm.md). In production, `docker compose up -d` runs the stable, immutable code baked into the image; rebuild it after changes with `docker compose up -d --build`.
+
 For the GitLab registry image, CI components, and development override model,
 see [Deployment And CI Architecture](./docs/architecture.md#deployment-and-ci-architecture).
 
