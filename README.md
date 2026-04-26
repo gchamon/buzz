@@ -40,7 +40,7 @@ The following steps are used to deploy buzz with jellyfin.
 
 ```bash
 curl -fsSLO https://gitlab.com/gabriel.chamon/buzz/-/raw/main/docker-compose.yml
-curl -fsSL https://gitlab.com/gabriel.chamon/buzz/-/raw/main/buzz.dist.yml -o buzz.yml
+curl -fsSL https://gitlab.com/gabriel.chamon/buzz/-/raw/main/buzz.min.yml -o buzz.yml
 ```
 
 2. Set your Real-Debrid token in `buzz.yml`. Every other setting in
