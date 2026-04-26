@@ -1,0 +1,11 @@
+<!-- htmlhint doctype-first:false -->
+<main>
+  {% include "partials/nav.html" %}
+  {% include "partials/meta_bar.html" %}
+
+  {% if has_error %}
+  <div class="error"><span class="label-red">[ERROR]</span> {{ last_error }}</div>
+  {% endif %}
+
+  {{ page_content }}
+</main>

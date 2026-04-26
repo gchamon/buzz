@@ -76,7 +76,8 @@ main {
   transition: all 0.2s ease;
 }
 
-.nav-icon {
+.nav-icon,
+.nav-icon-emoji {
   margin-right: 0.35rem;
 }
 
@@ -325,18 +326,24 @@ td:last-of-type {
   display: block;
   overflow: hidden;
   white-space: nowrap;
-  text-overflow: ellipsis;
   width: 100%;
 }
 
 .marquee-label {
-  display: inline-block;
+  display: block;
+  max-width: 100%;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   will-change: transform;
 }
 
 tr:hover .marquee-clip[data-overflowing] .marquee-label,
 tr:focus-within .marquee-clip[data-overflowing] .marquee-label {
+  display: inline-block;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
   animation: buzz-marquee var(--marquee-duration, 6s) linear infinite;
 }
 
@@ -467,7 +474,19 @@ code {
   }
 
   .menu-options {
-    flex-direction: column;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.5rem;
+  }
+
+  .nav-label {
+    display: none;
+  }
+
+  .nav-icon,
+  .nav-icon-emoji {
+    margin-right: 0;
   }
 
   .meta-bar {
@@ -476,6 +495,30 @@ code {
   }
 
   .nav-sep {
+    display: none;
+  }
+
+  #torrent-table th:nth-child(2),
+  #torrent-table td:nth-child(2),
+  #torrent-table th:nth-child(3),
+  #torrent-table td:nth-child(3),
+  #torrent-table th:nth-child(4),
+  #torrent-table td:nth-child(4),
+  #torrent-table th:nth-child(5),
+  #torrent-table td:nth-child(5),
+  #torrent-table th:nth-child(6),
+  #torrent-table td:nth-child(6),
+  #torrent-table th:nth-child(7),
+  #torrent-table td:nth-child(7) {
+    display: none;
+  }
+
+  #trash-table th:nth-child(2),
+  #trash-table td:nth-child(2),
+  #trash-table th:nth-child(3),
+  #trash-table td:nth-child(3),
+  #trash-table th:nth-child(4),
+  #trash-table td:nth-child(4) {
     display: none;
   }
 }

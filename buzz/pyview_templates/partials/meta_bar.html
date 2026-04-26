@@ -1,0 +1,21 @@
+<!-- htmlhint doctype-first:false -->
+<div class="meta-bar">
+  <div class="meta-row">
+    {% for item in meta_items %}
+    <div class="meta-item">
+      <b class="meta-item-label">[{{ item.label }}]</b>
+      <span>{{ item.value }}</span>
+    </div>
+    {% endfor %}
+    <div class="meta-item">
+      <b id="status-ready-label" class="{{ status_class }}">{{ status_label }}</b>
+    </div>
+  </div>
+  <div class="meta-row meta-console">
+    <b class="meta-item-label">console:</b>
+    <span id="meta-console-msg" class="{{ console_class }}">{{ console_msg }}</span>
+    {% if active_page == "cache" %}
+    <button class="secondary btn-sm" phx-click="resync">RESYNC LIB</button>
+    {% endif %}
+  </div>
+</div>

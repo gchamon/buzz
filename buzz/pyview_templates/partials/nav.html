@@ -1,0 +1,34 @@
+<!-- htmlhint doctype-first:false, id-unique:false, tag-pair:false -->
+<div class="prompt">
+  <b>buzz:</b>
+  <div class="menu-options">
+    {% if nav.cache_active %}
+    <a class="nav-link active"><span class="nav-icon-emoji">🪎</span><span class="nav-label">cache</span></a>
+    {% else %}
+    <a phx-click="navigate" phx-value-to="/cache" class="nav-link"><span class="nav-icon-emoji">🪎</span><span class="nav-label">cache</span></a>
+    {% endif %}
+    <span class="nav-sep">◈</span>
+    {% if nav.archive_active %}
+    <a class="nav-link active" id="nav-archive">
+    {% else %}
+    <a phx-click="navigate" phx-value-to="/archive" class="nav-link" id="nav-archive">
+    {% endif %}
+      <i class="fa-solid fa-box-archive nav-icon" aria-hidden="true"></i>
+      <span class="nav-label">archive(<span id="nav-archive-count">{{ nav.archive_count }}</span>)</span>
+    </a>
+    <span class="nav-sep">◈</span>
+    {% if nav.logs_active %}
+    <a class="nav-link active" id="nav-logs" phx-hook="BuzzLogGlow" data-log-level="{{ nav.log_level }}">
+    {% else %}
+    <a phx-click="navigate" phx-value-to="/logs" class="nav-link" id="nav-logs" phx-hook="BuzzLogGlow" data-log-level="{{ nav.log_level }}">
+    {% endif %}
+      <span class="nav-icon-emoji">📜</span><span class="nav-label">logs(<span id="nav-log-count">{{ nav.log_count }}</span>)</span>
+    </a>
+    <span class="nav-sep">◈</span>
+    {% if nav.config_active %}
+    <a class="nav-link active"><span class="nav-icon-emoji">⚙️</span><span class="nav-label">config</span></a>
+    {% else %}
+    <a phx-click="navigate" phx-value-to="/config" class="nav-link"><span class="nav-icon-emoji">⚙️</span><span class="nav-label">config</span></a>
+    {% endif %}
+  </div>
+</div>

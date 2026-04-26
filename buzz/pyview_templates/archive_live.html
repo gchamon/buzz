@@ -1,19 +1,20 @@
+<!-- htmlhint doctype-first:false, tag-pair:false -->
 <main>
   <div class="prompt">
     <b>buzz:</b>
     <div class="menu-options">
-      <a phx-click="navigate" phx-value-to="/cache" class="nav-link">🪎 cache</a>
+      <a phx-click="navigate" phx-value-to="/cache" class="nav-link"><span class="nav-icon-emoji">🪎</span><span class="nav-label">cache</span></a>
       <span class="nav-sep">◈</span>
       <a class="nav-link active" id="nav-archive">
         <i class="fa-solid fa-box-archive nav-icon" aria-hidden="true"></i>
-        archive(<span id="nav-archive-count">{{ nav.archive_count }}</span>)
+        <span class="nav-label">archive(<span id="nav-archive-count">{{ nav.archive_count }}</span>)</span>
       </a>
       <span class="nav-sep">◈</span>
       <a phx-click="navigate" phx-value-to="/logs" class="nav-link" id="nav-logs" phx-hook="BuzzLogGlow" data-log-level="{{ nav.log_level }}">
-        📜 logs(<span id="nav-log-count">{{ nav.log_count }}</span>)
+        <span class="nav-icon-emoji">📜</span><span class="nav-label">logs(<span id="nav-log-count">{{ nav.log_count }}</span>)</span>
       </a>
       <span class="nav-sep">◈</span>
-      <a phx-click="navigate" phx-value-to="/config" class="nav-link">⚙️ config</a>
+      <a phx-click="navigate" phx-value-to="/config" class="nav-link"><span class="nav-icon-emoji">⚙️</span><span class="nav-label">config</span></a>
     </div>
   </div>
 
@@ -39,14 +40,31 @@
   <div class="error"><span class="label-red">[ERROR]</span> {{ last_error }}</div>
   {% endif %}
 
+  <!-- page-body -->
   <div class="table-container" id="archive-table-container" phx-hook="BuzzOverflowMarquee">
     <table id="trash-table">
       <thead>
         <tr>
-          <th>Name</th>
-          <th>Size</th>
-          <th>Files</th>
-          <th>Date Removed</th>
+          <th
+            phx-click="sort"
+            phx-value-col="0"
+            {% if sort_col == 0 %}class="sort-{{ sort_dir }}"{% endif %}
+          >Name</th>
+          <th
+            phx-click="sort"
+            phx-value-col="1"
+            {% if sort_col == 1 %}class="sort-{{ sort_dir }}"{% endif %}
+          >Size</th>
+          <th
+            phx-click="sort"
+            phx-value-col="2"
+            {% if sort_col == 2 %}class="sort-{{ sort_dir }}"{% endif %}
+          >Files</th>
+          <th
+            phx-click="sort"
+            phx-value-col="3"
+            {% if sort_col == 3 %}class="sort-{{ sort_dir }}"{% endif %}
+          >Date Removed</th>
           <th>Act</th>
         </tr>
       </thead>
@@ -124,4 +142,5 @@
       </tbody>
     </table>
   </div>
+  <!-- /page-body -->
 </main>

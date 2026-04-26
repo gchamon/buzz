@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, TypedDict, TypeVar, cast
+from typing import Any, Literal, TypedDict, TypeVar, cast
+from urllib.parse import ParseResult
 
 import yaml
 from markupsafe import Markup
@@ -16,6 +17,8 @@ from pyview import (
 )
 from pyview.events import InfoEvent, info
 from pyview.template import LiveRender, RenderedContent, template_file
+from pyview.vendor import ibis
+from pyview.vendor.ibis.loaders import FileReloader
 
 from .core.utils import format_bytes
 
@@ -42,6 +45,9 @@ from .models import (
 )
 
 _TEMPLATE_DIR = Path(__file__).with_name("pyview_templates")
+ibis.loader = FileReloader(str(_TEMPLATE_DIR))
+PAGE_NAMES = ("cache", "archive", "logs", "config")
+PageName = Literal["cache", "archive", "logs", "config"]
 
 _CONFIG_BOOL_FIELDS = (
     "compat.enable_all_dir",
@@ -179,6 +185,8 @@ class ArchiveContext(PageContext):
     confirm_delete_hash: str | None
     confirm_restore_hash: str | None
     has_items: bool
+    sort_col: int
+    sort_dir: str
 
 
 class LogItem(TypedDict):
@@ -251,6 +259,15 @@ class ConfigContext(PageContext):
     values: ConfigValues
 
 
+class ShellContext(PageContext):
+    active_page: PageName
+    archive: ArchiveContext
+    cache: CacheContext
+    config: ConfigContext
+    logs: LogsContext
+    page_content: Markup
+
+
 def _load_template(name: str) -> Any:
     template = template_file(str(_TEMPLATE_DIR / name))
     if template is None:
@@ -310,11 +327,11 @@ def build_ui(owner: Any) -> PyView:
     """Build the PyView application mounted into the DAV app."""
     app = PyView()
     app.rootTemplate = _build_root_template()
-    app.add_live_view("/", lambda: CacheLiveView(owner))  # pyright: ignore[reportArgumentType]
-    app.add_live_view("/cache", lambda: CacheLiveView(owner))  # pyright: ignore[reportArgumentType]
-    app.add_live_view("/archive", lambda: ArchiveLiveView(owner))  # pyright: ignore[reportArgumentType]
-    app.add_live_view("/logs", lambda: LogsLiveView(owner))  # pyright: ignore[reportArgumentType]
-    app.add_live_view("/config", lambda: ConfigLiveView(owner))  # pyright: ignore[reportArgumentType]
+    app.add_live_view("/", lambda: BuzzLiveView(owner))  # pyright: ignore[reportArgumentType]
+    app.add_live_view("/cache", lambda: BuzzLiveView(owner))  # pyright: ignore[reportArgumentType]
+    app.add_live_view("/archive", lambda: BuzzLiveView(owner))  # pyright: ignore[reportArgumentType]
+    app.add_live_view("/logs", lambda: BuzzLiveView(owner))  # pyright: ignore[reportArgumentType]
+    app.add_live_view("/config", lambda: BuzzLiveView(owner))  # pyright: ignore[reportArgumentType]
     return app
 
 
@@ -666,12 +683,23 @@ class CacheLiveView(_BaseBuzzLiveView):
         except ValueError:
             return
         if socket.context["sort_col"] == new_col:
-            socket.context["sort_dir"] = (
-                "desc" if socket.context["sort_dir"] == "asc" else "asc"
-            )
+            sort_dir = "desc" if socket.context["sort_dir"] == "asc" else "asc"
+            sort_col = new_col
         else:
-            socket.context["sort_col"] = new_col
-            socket.context["sort_dir"] = "asc"
+            sort_col = new_col
+            sort_dir = "asc"
+        socket.context = self._context(
+            console_msg=socket.context["console_msg"],
+            console_class=socket.context["console_class"],
+            confirm_delete_id=socket.context["confirm_delete_id"],
+            magnet_inputs=socket.context["magnet_inputs"],
+            analysis_results=socket.context["analysis_results"],
+            analysis_error=socket.context["analysis_error"],
+            analyzing=socket.context["analyzing"],
+            caching=socket.context["caching"],
+            sort_col=sort_col,
+            sort_dir=sort_dir,
+        )
 
     async def handle_info(
         self,
@@ -774,6 +802,7 @@ class ArchiveLiveView(_BaseBuzzLiveView):
         socket: ConnectedLiveViewSocket[ArchiveContext],
         to: str = "",
         hash: str = "",
+        col: str = "",
     ) -> None:
         if event == EVENT_NAVIGATE:
             await socket.push_navigate(to)
@@ -798,6 +827,8 @@ class ArchiveLiveView(_BaseBuzzLiveView):
             socket.context = self._context(
                 console_msg="item restored to cache",
                 console_class="service-status-green",
+                sort_col=socket.context["sort_col"],
+                sort_dir=socket.context["sort_dir"],
             )
             return
         if event == "delete":
@@ -805,6 +836,28 @@ class ArchiveLiveView(_BaseBuzzLiveView):
             socket.context = self._context(
                 console_msg="archive item deleted",
                 console_class="service-status-green",
+                sort_col=socket.context["sort_col"],
+                sort_dir=socket.context["sort_dir"],
+            )
+            return
+        if event == "sort":
+            try:
+                new_col = int(col)
+            except ValueError:
+                return
+            if socket.context["sort_col"] == new_col:
+                sort_dir = "desc" if socket.context["sort_dir"] == "asc" else "asc"
+                sort_col = new_col
+            else:
+                sort_col = new_col
+                sort_dir = "asc"
+            socket.context = self._context(
+                console_msg=socket.context["console_msg"],
+                console_class=socket.context["console_class"],
+                confirm_delete_hash=socket.context["confirm_delete_hash"],
+                confirm_restore_hash=socket.context["confirm_restore_hash"],
+                sort_col=sort_col,
+                sort_dir=sort_dir,
             )
 
     async def handle_info(
@@ -819,6 +872,8 @@ class ArchiveLiveView(_BaseBuzzLiveView):
             console_class=socket.context["console_class"],
             confirm_delete_hash=socket.context["confirm_delete_hash"],
             confirm_restore_hash=socket.context["confirm_restore_hash"],
+            sort_col=socket.context["sort_col"],
+            sort_dir=socket.context["sort_dir"],
         )
 
     async def render(
@@ -828,14 +883,32 @@ class ArchiveLiveView(_BaseBuzzLiveView):
     ) -> RenderedContent:
         return LiveRender(_load_template("archive_live.html"), assigns, meta)
 
+    def _sort_items(
+        self,
+        items: list[ArchiveItem],
+        col: int,
+        dir: str,
+    ) -> list[ArchiveItem]:
+        key_funcs = [
+            lambda i: i["name"].lower(),
+            lambda i: i["bytes"],
+            lambda i: i["file_count"],
+            lambda i: i["deleted_at"] or "",
+        ]
+        if col < 0 or col >= len(key_funcs):
+            return items
+        return sorted(items, key=key_funcs[col], reverse=dir == "desc")
+
     def _context(
         self,
         console_msg: str = "",
         console_class: str = "",
         confirm_delete_hash: str | None = None,
         confirm_restore_hash: str | None = None,
+        sort_col: int = 0,
+        sort_dir: str = "asc",
     ) -> ArchiveContext:
-        items = []
+        items: list[ArchiveItem] = []
         for torrent in self.owner.state.archive_torrents():
             items.append(
                 {
@@ -847,6 +920,7 @@ class ArchiveLiveView(_BaseBuzzLiveView):
                     "size": format_bytes(torrent["bytes"]),
                 }
             )
+        items = self._sort_items(items, sort_col, sort_dir)
 
         base = self._base_context(console_msg, console_class)
         return cast(
@@ -857,6 +931,8 @@ class ArchiveLiveView(_BaseBuzzLiveView):
                 "confirm_delete_hash": confirm_delete_hash,
                 "confirm_restore_hash": confirm_restore_hash,
                 "has_items": bool(items),
+                "sort_col": sort_col,
+                "sort_dir": sort_dir,
             },
         )
 
@@ -1138,6 +1214,327 @@ class ConfigLiveView(_BaseBuzzLiveView):
                 "values": values,
             },
         )
+
+
+def _page_from_path(path: str) -> PageName:
+    page = path.strip("/") or "cache"
+    if page in PAGE_NAMES:
+        return cast(PageName, page)
+    return "cache"
+
+
+def _page_path(page: PageName) -> str:
+    return f"/{page}"
+
+
+def _extract_page_body(html: str) -> Markup:
+    start_marker = "<!-- page-body -->"
+    end_marker = "<!-- /page-body -->"
+    start = html.find(start_marker)
+    end = html.find(end_marker)
+    if start == -1 or end == -1 or end < start:
+        return Markup(html)
+    start += len(start_marker)
+    return Markup(html[start:end].strip())
+
+
+class BuzzLiveView(_BaseBuzzLiveView):
+    page_title = "buzz"
+
+    def __init__(self, owner: Any) -> None:
+        super().__init__(owner)
+        self.cache_view = CacheLiveView(owner)
+        self.archive_view = ArchiveLiveView(owner)
+        self.logs_view = LogsLiveView(owner)
+        self.config_view = ConfigLiveView(owner)
+
+    def _nav_for_page(self, page: PageName) -> PageNav:
+        return {
+            "archive_count": len(self.owner.state.trashcan),
+            "cache_active": page == "cache",
+            "archive_active": page == "archive",
+            "logs_active": page == "logs",
+            "config_active": page == "config",
+            "log_count": self.owner.log_count(),
+            "log_level": self._highest_log_level(),
+        }
+
+    def _base_context_for_page(
+        self,
+        page: PageName,
+        console_msg: str = "",
+        console_class: str = "",
+    ) -> PageContext:
+        base = self._base_context(console_msg, console_class)
+        base["nav"] = self._nav_for_page(page)
+        return base
+
+    def _page_context(self, page: PageName, context: ShellContext) -> PageContext:
+        if page == "archive":
+            return context["archive"]
+        if page == "logs":
+            return context["logs"]
+        if page == "config":
+            return context["config"]
+        return context["cache"]
+
+    def _replace_page_context(
+        self,
+        context: ShellContext,
+        page: PageName,
+        page_context: PageContext,
+    ) -> None:
+        if page == "archive":
+            context["archive"] = cast(ArchiveContext, page_context)
+        elif page == "logs":
+            context["logs"] = cast(LogsContext, page_context)
+        elif page == "config":
+            context["config"] = cast(ConfigContext, page_context)
+        else:
+            context["cache"] = cast(CacheContext, page_context)
+
+    def _refresh_shared_context(
+        self,
+        context: ShellContext,
+        *,
+        page: PageName | None = None,
+        console_msg: str | None = None,
+        console_class: str | None = None,
+    ) -> None:
+        active_page = page or context["active_page"]
+        active_context = self._page_context(active_page, context)
+        base = self._base_context_for_page(
+            active_page,
+            active_context["console_msg"] if console_msg is None else console_msg,
+            active_context["console_class"] if console_class is None else console_class,
+        )
+        context["console_class"] = base["console_class"]
+        context["console_msg"] = base["console_msg"]
+        context["has_error"] = base["has_error"]
+        context["is_ready"] = base["is_ready"]
+        context["last_error"] = base["last_error"]
+        context["meta_items"] = base["meta_items"]
+        context["nav"] = base["nav"]
+        context["status_class"] = base["status_class"]
+        context["status_label"] = base["status_label"]
+        context["active_page"] = active_page
+        context["page_content"] = self._render_page_body(active_page, context)
+
+    def _render_page_body(self, page: PageName, context: ShellContext) -> Markup:
+        if page == "archive":
+            rendered = _load_template("archive_live.html").render(
+                context["archive"], None
+            )
+        elif page == "logs":
+            rendered = _load_template("logs_live.html").render(context["logs"], None)
+        elif page == "config":
+            rendered = _load_template("config_live.html").render(
+                context["config"], None
+            )
+        else:
+            rendered = _load_template("cache_live.html").render(context["cache"], None)
+        return _extract_page_body(rendered)
+
+    def _context(self, active_page: PageName = "cache") -> ShellContext:
+        cache = self.cache_view._context()
+        archive = self.archive_view._context()
+        logs = self.logs_view._context()
+        config = self.config_view._context()
+        active_context = {
+            "archive": archive,
+            "cache": cache,
+            "config": config,
+            "logs": logs,
+        }[active_page]
+        base = self._base_context_for_page(
+            active_page,
+            active_context["console_msg"],
+            active_context["console_class"],
+        )
+        context = cast(
+            ShellContext,
+            {
+                **base,
+                "active_page": active_page,
+                "archive": archive,
+                "cache": cache,
+                "config": config,
+                "logs": logs,
+                "page_content": Markup(""),
+            },
+        )
+        context["page_content"] = self._render_page_body(active_page, context)
+        return context
+
+    async def mount(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self,
+        socket: LiveViewSocket[ShellContext],
+        session: dict[str, Any],
+    ) -> None:
+        socket.live_title = self.page_title
+        socket.context = self._context()
+        if is_connected(socket):
+            await socket.subscribe(TOPIC_STATUS)
+            await socket.subscribe(TOPIC_ARCHIVE)
+            await socket.subscribe(TOPIC_CONFIG)
+            if socket.context["logs"]["auto_refresh"]:
+                await socket.subscribe(TOPIC_LOGS)
+
+    async def handle_params(
+        self,
+        url: ParseResult,
+        socket: LiveViewSocket[ShellContext],
+    ) -> None:
+        page = _page_from_path(url.path)
+        if not getattr(socket, "context", None):
+            socket.context = self._context(page)
+            return
+        self._refresh_shared_context(socket.context, page=page)
+        socket.live_title = {
+            "archive": "buzz: archive",
+            "cache": "buzz: cache",
+            "config": "buzz: config",
+            "logs": "buzz: system logs",
+        }[page]
+
+    async def handle_event(
+        self,
+        event: str,
+        socket: ConnectedLiveViewSocket[ShellContext],
+        payload: dict[str, Any] | None = None,
+        to: str = "",
+        hash: str = "",
+        index: str = "",
+        torrent_name: str = "",
+        torrent_id: str = "",
+        file_id: str = "",
+        mode: str = "",
+        col: str = "",
+        language_query: str = "",
+    ) -> None:
+        if event == EVENT_NAVIGATE:
+            page = _page_from_path(to)
+            self._refresh_shared_context(socket.context, page=page)
+            await socket.push_patch(_page_path(page))
+            return
+
+        page = socket.context["active_page"]
+        page_context = self._page_context(page, socket.context)
+        original_context = socket.context
+        socket.context = page_context  # type: ignore[assignment]
+        try:
+            if page == "archive":
+                await self.archive_view.handle_event(
+                    event,
+                    cast(ConnectedLiveViewSocket[ArchiveContext], socket),
+                    to=to,
+                    hash=hash,
+                    col=col,
+                )
+            elif page == "logs":
+                await self.logs_view.handle_event(
+                    event,
+                    cast(ConnectedLiveViewSocket[LogsContext], socket),
+                    to=to,
+                )
+            elif page == "config":
+                await self.config_view.handle_event(
+                    event,
+                    cast(ConnectedLiveViewSocket[ConfigContext], socket),
+                    payload=payload,
+                    to=to,
+                    language_query=language_query,
+                )
+            else:
+                await self.cache_view.handle_event(
+                    event,
+                    cast(ConnectedLiveViewSocket[CacheContext], socket),
+                    payload=payload,
+                    to=to,
+                    hash=hash,
+                    index=index,
+                    torrent_name=torrent_name,
+                    torrent_id=torrent_id,
+                    file_id=file_id,
+                    mode=mode,
+                    col=col,
+                )
+            new_page_context = cast(PageContext, socket.context)
+        finally:
+            socket.context = original_context  # type: ignore[assignment]
+        self._replace_page_context(socket.context, page, new_page_context)
+        self._refresh_shared_context(socket.context, page=page)
+
+    async def handle_info(
+        self,
+        event: InfoEvent,
+        socket: ConnectedLiveViewSocket[ShellContext],
+    ) -> None:
+        if event.name not in {TOPIC_ARCHIVE, TOPIC_CONFIG, TOPIC_LOGS, TOPIC_STATUS}:
+            return
+        context = socket.context
+        context["cache"] = self.cache_view._context(
+            console_msg=context["cache"]["console_msg"],
+            console_class=context["cache"]["console_class"],
+            confirm_delete_id=context["cache"]["confirm_delete_id"],
+            magnet_inputs=context["cache"]["magnet_inputs"],
+            analysis_results=context["cache"]["analysis_results"],
+            analysis_error=context["cache"]["analysis_error"],
+            analyzing=context["cache"]["analyzing"],
+            caching=context["cache"]["caching"],
+            sort_col=context["cache"]["sort_col"],
+            sort_dir=context["cache"]["sort_dir"],
+        )
+        context["archive"] = self.archive_view._context(
+            console_msg=context["archive"]["console_msg"],
+            console_class=context["archive"]["console_class"],
+            confirm_delete_hash=context["archive"]["confirm_delete_hash"],
+            confirm_restore_hash=context["archive"]["confirm_restore_hash"],
+            sort_col=context["archive"]["sort_col"],
+            sort_dir=context["archive"]["sort_dir"],
+        )
+        if event.name == TOPIC_LOGS or context["logs"]["auto_refresh"]:
+            context["logs"] = self.logs_view._context(
+                auto_refresh=context["logs"]["auto_refresh"]
+            )
+        else:
+            logs_base = self.logs_view._base_context(
+                context["logs"]["console_msg"],
+                context["logs"]["console_class"],
+            )
+            context["logs"] = cast(
+                LogsContext,
+                {
+                    **logs_base,
+                    "auto_refresh": context["logs"]["auto_refresh"],
+                    "log_items": context["logs"]["log_items"],
+                    "logs_loaded": context["logs"]["logs_loaded"],
+                },
+            )
+        config_console_msg = context["config"]["console_msg"]
+        config_console_class = context["config"]["console_class"]
+        if (
+            event.name == TOPIC_CONFIG
+            and isinstance(event.payload, dict)
+            and event.payload.get("languages_refresh_complete")
+        ):
+            config_console_msg = "languages updated"
+            config_console_class = CSS_STATUS_GREEN
+        context["config"] = self.config_view._context(
+            is_editing=context["config"]["is_editing"],
+            draft_payload=context["config"]["draft_payload"],
+            language_query=context["config"]["language_query"],
+            console_msg=config_console_msg,
+            console_class=config_console_class,
+        )
+        self._refresh_shared_context(context)
+
+    async def render(
+        self,
+        assigns: ShellContext,
+        meta: Any,
+    ) -> RenderedContent:
+        return LiveRender(_load_template("shell_live.html"), assigns, meta)
 
 
 def _language_rows(

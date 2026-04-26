@@ -1,19 +1,20 @@
+<!-- htmlhint doctype-first:false, tag-pair:false, attr-no-duplication:false -->
 <main>
   <div class="prompt">
     <b>buzz:</b>
     <div class="menu-options">
-      <a phx-click="navigate" phx-value-to="/cache" class="nav-link">🪎 cache</a>
+      <a phx-click="navigate" phx-value-to="/cache" class="nav-link"><span class="nav-icon-emoji">🪎</span><span class="nav-label">cache</span></a>
       <span class="nav-sep">◈</span>
       <a phx-click="navigate" phx-value-to="/archive" class="nav-link" id="nav-archive">
         <i class="fa-solid fa-box-archive nav-icon" aria-hidden="true"></i>
-        archive(<span id="nav-archive-count">{{ nav.archive_count }}</span>)
+        <span class="nav-label">archive(<span id="nav-archive-count">{{ nav.archive_count }}</span>)</span>
       </a>
       <span class="nav-sep">◈</span>
       <a phx-click="navigate" phx-value-to="/logs" class="nav-link" id="nav-logs" phx-hook="BuzzLogGlow" data-log-level="{{ nav.log_level }}">
-        📜 logs(<span id="nav-log-count">{{ nav.log_count }}</span>)
+        <span class="nav-icon-emoji">📜</span><span class="nav-label">logs(<span id="nav-log-count">{{ nav.log_count }}</span>)</span>
       </a>
       <span class="nav-sep">◈</span>
-      <a class="nav-link active">⚙️ config</a>
+      <a class="nav-link active"><span class="nav-icon-emoji">⚙️</span><span class="nav-label">config</span></a>
     </div>
   </div>
 
@@ -39,6 +40,7 @@
   <div class="error"><span class="label-red">[ERROR]</span> {{ last_error }}</div>
   {% endif %}
 
+  <!-- page-body -->
   {% if is_editing %}
   <section class="config-page-container" id="edit-overrides-section">
     <div class="config-header">
@@ -446,4 +448,5 @@
     </div>
   </section>
   {% endif %}
+  <!-- /page-body -->
 </main>
