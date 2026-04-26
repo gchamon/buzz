@@ -1,3 +1,5 @@
+# All settings in this file are also editable live from the Buzz web UI.
+# You generally don't need to hand-edit this file beyond provider.token.
 provider:
   token: yourtoken
 poll_interval_secs: 10
@@ -41,6 +43,18 @@ logging:
   verbose: false
 
 media_server:
+  # Which media server Buzz drives. Supported: jellyfin, plex.
+  # Plex support is currently UNTESTED; use at your own risk.
+  kind: jellyfin
+  jellyfin:
+    url: http://jellyfin:8096
+    api_key: ""
+    # Optional. Auto-discovered if empty.
+    scan_task_id: ""
+  plex:
+    # Plex hook is currently untested.
+    url: ""
+    token: ""
   # Map debrid category directory names to Jellyfin library names.
   # Keys must match the directory names produced by the debrid layer
   # (movies, shows, anime). Values must match the Jellyfin library
@@ -66,3 +80,5 @@ subtitles:
     exclude_machine: true
   search_delay_secs: 0.5
   download_delay_secs: 1.0
+  # Where downloaded .srt files land inside the container.
+  root: /mnt/buzz/subs

@@ -1,6 +1,6 @@
 # buzz
 
-`buzz` is a small Debrid WebDAV service for [Jellyfin](https://jellyfin.org/) and [Plex](https://watch.plex.tv).
+`buzz` is a small Debrid WebDAV service for [Jellyfin](https://jellyfin.org/). [Plex](https://watch.plex.tv) integration also exists in the codebase but is currently **untested**; use it at your own risk.
 
 The canonical repository for Buzz is
 https://gitlab.com/gabriel.chamon/buzz.
@@ -34,26 +34,37 @@ sudo chown -R 1000:1000 /mnt/buzz data cache/jellyfin config/plex config/jellyfi
 
 ## Quick Start
 
+The following steps are used to deploy buzz with jellyfin.
+
 1. Download the deployment files from the canonical repository:
 
 ```bash
 curl -fsSLO https://gitlab.com/gabriel.chamon/buzz/-/raw/main/docker-compose.yml
 curl -fsSL https://gitlab.com/gabriel.chamon/buzz/-/raw/main/buzz.dist.yml -o buzz.yml
-curl -fsSL https://gitlab.com/gabriel.chamon/buzz/-/raw/main/.env.dist -o .env
 ```
 
-2. Fill in `buzz.yml` and `.env` for your Real-Debrid token, media server,
-   and host paths.
+2. Set your Real-Debrid token in `buzz.yml`. Every other setting in
+   `buzz.yml` (Jellyfin URL/API key, subtitles, library mapping, etc.) can
+   be edited live from the Buzz web UI after first boot — you don't need to
+   hand-edit them upfront.
 
-3. Perform the **Host Preparation** steps above.
+3. *(Optional)* Download `.env.dist` as `.env` only if you need to override
+   `PUID`/`PGID`, opt into the Plex profile, or tune Plex container
+   settings. The stack defaults to Jellyfin and runs without an `.env` file.
 
-4. Start the stack:
+   ```bash
+   curl -fsSL https://gitlab.com/gabriel.chamon/buzz/-/raw/main/.env.dist -o .env
+   ```
+
+4. Perform the **Host Preparation** steps above.
+
+5. Start the stack:
 
 ```bash
 docker compose up --pull always --detach
 ```
 
-5. Verify the WebDAV mount:
+6. Verify the WebDAV mount:
 
 ```bash
 time ls -1R /mnt/buzz
@@ -78,7 +89,11 @@ For the database tables and ownership model, see
 
 ### `buzz.yml`
 
-This file handles the DAV server logic and RD polling.
+This file handles the DAV server logic, media-server integration, and
+RD polling. **Every key documented below is editable live from the Buzz
+web UI** — you generally don't need to hand-edit `buzz.yml` beyond
+`provider.token`.
+
 For config merge, masking, and reload behavior, see
 [Configuration Model](./docs/architecture.md#configuration-model).
 
@@ -98,6 +113,13 @@ For config merge, masking, and reload behavior, see
 | `directories.anime.patterns` | *(Default regex list)* | List of regex patterns used to categorize files as Anime. |
 | `request_timeout_secs` | `30` | Timeout in seconds for API requests to Real-Debrid. |
 | `logging.verbose` | `false` | Enable verbose request and debug logging. |
+| `media_server.kind` | `jellyfin` | Which media server Buzz drives. `jellyfin` or `plex` (Plex is currently **untested**). |
+| `media_server.jellyfin.url` | `http://jellyfin:8096` | URL to the Jellyfin server (must be reachable from the Buzz container). |
+| `media_server.jellyfin.api_key` | *(Empty)* | Jellyfin API Key used to trigger library scans. |
+| `media_server.jellyfin.scan_task_id` | *(Empty)* | Optional. Used if automatic Jellyfin task discovery fails. |
+| `media_server.plex.url` | *(Empty)* | URL to the Plex server, e.g. `http://127.0.0.1:32400`. *(untested)* |
+| `media_server.plex.token` | *(Empty)* | Plex Access Token for library update API calls. *(untested)* |
+| `media_server.library_map.{movies,shows,anime}` | `Movies` / `TV Shows` / `Anime` | Maps debrid category directories to Jellyfin library names. |
 
 These settings control the automatic subtitle fetcher.
 
@@ -114,6 +136,7 @@ These settings control the automatic subtitle fetcher.
 | `subtitles.filters.exclude_machine` | `true` | Exclude machine-translated subtitles. |
 | `subtitles.search_delay_secs` | `0.5` | Delay between API search calls to respect rate limits. |
 | `subtitles.download_delay_secs` | `1.0` | Delay between download calls. |
+| `subtitles.root` | `/mnt/buzz/subs` | Path inside the container where downloaded `.srt` files are stored. |
 
 For the subtitle overlay, metadata, and fetch pipeline, see
 [Subtitle Pipeline](./docs/architecture.md#subtitle-pipeline).
@@ -134,9 +157,20 @@ server:
 state_dir: "/app/data"
 
 hooks:
-  on_library_change: "sh /app/scripts/media_update.sh"
+  on_library_change: "bash /app/scripts/media_update.sh"
   curator_url: "http://buzz-curator:8400/rebuild"
   rd_update_delay_secs: 15
+
+media_server:
+  kind: jellyfin
+  jellyfin:
+    url: http://jellyfin:8096
+    api_key: "YOUR_JELLYFIN_API_KEY"
+    scan_task_id: ""
+  library_map:
+    movies: Movies
+    shows: TV Shows
+    anime: Anime
 
 subtitles:
   enabled: true
@@ -152,32 +186,27 @@ subtitles:
     hearing_impaired: exclude
     exclude_ai: true
     exclude_machine: true
+  root: /mnt/buzz/subs
 
 logging:
   verbose: false
 ```
 
-### `.env`
+### `.env` *(optional)*
 
-This file handles the stack deployment and media-server integration.
+The stack runs without an `.env` file — Jellyfin is the default media
+server profile, and `PUID`/`PGID` default to `1000`. Create an `.env`
+only if you need to override one of these values:
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `MEDIA_SERVER` | `jellyfin` | Controls which media server services are started and which update script Buzz uses (matches `COMPOSE_PROFILES`). |
-| `LIBRARY_MOUNT` | `/mnt/buzz` | Path where the library is mounted. |
-| `PUID` / `PGID` | `1000` | User and Group ID used for creating host-owned files and for running services. |
-| `PLEX_URL` | *(Empty)* | URL to the Plex server (e.g., `http://127.0.0.1:32400`). |
-| `PLEX_TOKEN` | *(Empty)* | Plex Access Token for library update API calls. |
-| `JELLYFIN_URL` | `http://jellyfin:8096` | URL to the Jellyfin server (must be reachable from the Buzz container). |
-| `JELLYFIN_API_KEY` | *(Empty)* | Jellyfin API Key used to trigger library scans. |
-| `JELLYFIN_SCAN_TASK_ID` | *(Empty)* | Optional. Used if automatic task discovery fails. |
-| `SUBTITLE_ENABLED` | `false` | Enable or disable subtitle fetching. |
-| `OPENSUBTITLES_API_KEY` | *(Empty)* | API Key for OpenSubtitles. |
-| `OPENSUBTITLES_USERNAME` | *(Empty)* | Username for OpenSubtitles. |
-| `OPENSUBTITLES_PASSWORD` | *(Empty)* | Password for OpenSubtitles. |
-| `SUBTITLE_LANGUAGES` | `en` | Comma-separated list of language codes. |
-| `SUBTITLE_STRATEGY` | `most-downloaded` | Subtitle ranking strategy. |
-| `SUBTITLE_ROOT` | `/mnt/buzz/subs` | Path where subtitles are stored. |
+| `PUID` / `PGID` | `1000` | User and Group ID used for creating host-owned files and for running services. Override only if your host UID/GID differs. |
+| `COMPOSE_PROFILES` | *(unset → Jellyfin)* | Set to `plex` to swap the Jellyfin container for the Plex container. Plex support is currently **untested**. |
+| `PLEX_VERSION` | `docker` | Plex container image version. Only consumed when the `plex` profile is active. |
+| `PLEX_CLAIM` | *(Empty)* | Plex claim token for first-time setup. Only consumed when the `plex` profile is active. |
+
+All Jellyfin/Plex/subtitle credentials and URLs now live in `buzz.yml`
+and are editable from the web UI.
 
 ## Architecture
 

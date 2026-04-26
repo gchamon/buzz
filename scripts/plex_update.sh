@@ -1,22 +1,40 @@
 #!/bin/bash
 
-# PLEX PARTIAL SCAN script or PLEX UPDATE script
-# When buzz detects changes, it can trigger this script IF your config contains
-# on_library_update: sh /app/media_update.sh "$@"
+# PLEX PARTIAL SCAN script.
+# Triggered when buzz detects library changes via hooks.on_library_change.
+# Plex support in Buzz is currently UNTESTED.
+#
+# Dependencies inside the Buzz container: bash, curl, xmllint, python3.
 
-# Dependencies inside the Buzz container: bash, curl, xmllint
+config_path="${BUZZ_CONFIG:-/app/buzz.yml}"
 
-plex_url="${PLEX_URL:-http://<url>}"
-token="${PLEX_TOKEN:-<token>}"
-library_mount="${LIBRARY_MOUNT:-/mnt/buzz}"
+read_buzz_yml() {
+    python3 -c "
+import sys, yaml
+try:
+    with open('$config_path') as f:
+        data = yaml.safe_load(f) or {}
+    plex = ((data.get('media_server') or {}).get('plex') or {})
+    print((plex.get('url') or '').rstrip('/'))
+    print(plex.get('token') or '')
+except Exception:
+    print('')
+    print('')
+"
+}
 
-if [ -z "$PLEX_TOKEN" ] || [ "$token" = "<token>" ]; then
-    echo "PLEX_TOKEN is not set, skipping Plex update"
+readarray -t plex_cfg < <(read_buzz_yml)
+plex_url="${plex_cfg[0]}"
+token="${plex_cfg[1]}"
+library_mount="/mnt/buzz"
+
+if [ -z "$token" ]; then
+    echo "media_server.plex.token is not set in buzz.yml, skipping Plex update"
     exit 0
 fi
 
-if [ -z "$PLEX_URL" ] || [ "$plex_url" = "http://<url>" ]; then
-    echo "PLEX_URL is not set, skipping Plex update"
+if [ -z "$plex_url" ]; then
+    echo "media_server.plex.url is not set in buzz.yml, skipping Plex update"
     exit 0
 fi
 

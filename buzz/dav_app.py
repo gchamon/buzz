@@ -591,12 +591,13 @@ class DavApp:
         except error.HTTPError as exc:
             return Response(status_code=exc.code, content=str(exc))
         except HosterUnavailableError as exc:
-            record_event(
-                f"Real-Debrid hoster unavailable: {exc.code}",
-                event="rd_hoster_unavailable",
-                path=rel,
-                level="warning",
-            )
+            if not exc.cached:
+                record_event(
+                    f"Real-Debrid hoster unavailable: {exc.code}",
+                    event="rd_hoster_unavailable",
+                    path=rel,
+                    level="warning",
+                )
             return Response(
                 status_code=503,
                 content=str(exc),

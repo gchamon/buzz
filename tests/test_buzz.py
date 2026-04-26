@@ -303,10 +303,12 @@ class BuzzStateTests(unittest.TestCase):
             with self.assertRaises(HosterUnavailableError) as ctx:
                 state.resolve_download_url("https://example.invalid/source")
             self.assertEqual(ctx.exception.code, "hoster_unavailable")
+            self.assertFalse(ctx.exception.cached)
 
             # Second call within TTL must short-circuit without API hit.
-            with self.assertRaises(HosterUnavailableError):
+            with self.assertRaises(HosterUnavailableError) as cached_ctx:
                 state.resolve_download_url("https://example.invalid/source")
+            self.assertTrue(cached_ctx.exception.cached)
             self.assertEqual(len(client.calls), 1)
 
             # Force-expire the negative cache and verify the API is hit again.
@@ -328,6 +330,69 @@ class BuzzStateTests(unittest.TestCase):
             self.assertIn(
                 "hoster_unavailable", state_mod.RD_NON_TRANSIENT_ERRORS
             )
+
+    def test_resolve_download_url_deduplicates_concurrent_hoster_failures(self):
+        from buzz.core.state import HosterUnavailableError
+
+        class SlowHosterDownRD:
+            def __init__(self):
+                self.calls = []
+                self.unrestrict = self
+                self.torrents = None
+                self.lock = threading.Lock()
+
+            def link(self, url):
+                with self.lock:
+                    self.calls.append(url)
+                time.sleep(0.01)
+                return BuzzStateTests.FakeResponse(
+                    {"error": "hoster_unavailable"}
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                rd_hoster_failure_cache_secs=60,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
+            )
+            client = SlowHosterDownRD()
+            state = BuzzState(config, client=client)
+            barrier = threading.Barrier(5)
+            errors: list[HosterUnavailableError] = []
+
+            def resolve() -> None:
+                barrier.wait(timeout=1)
+                try:
+                    state.resolve_download_url(
+                        "https://example.invalid/source"
+                    )
+                except HosterUnavailableError as exc:
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=resolve) for _ in range(5)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=1)
+
+            self.assertEqual(len(errors), 5)
+            self.assertEqual(len(client.calls), 1)
+            self.assertEqual(
+                sum(1 for error in errors if not error.cached), 1
+            )
+            self.assertEqual(sum(1 for error in errors if error.cached), 4)
 
     def test_torrents_exposes_cached_realdebrid_entries(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2225,6 +2290,47 @@ class DavAppTests(unittest.TestCase):
         )
         self.assertEqual(response2.status_code, 503)
         self.assertEqual(len(self.state.client.calls), 1)
+
+    def test_dav_get_logs_hoster_unavailable_once_per_cache_ttl(self):
+        class HosterDownRD:
+            def __init__(self):
+                self.calls = []
+                self.unrestrict = self
+                self.torrents = None
+
+            def link(self, url):
+                self.calls.append(url)
+                return DavAppTests.FakeRDResponse(
+                    {"error": "hoster_unavailable"}
+                )
+
+        self.state.client = HosterDownRD()
+        self.state.snapshot["files"][
+            "movies/Little Shop [1986] + Extras/Little Shop of Horrors (1986).mkv"
+        ] = {
+            "type": "remote",
+            "size": 14,
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-hoster-log-once",
+        }
+
+        with patch("buzz.dav_app.record_event") as mock_record_event:
+            for _ in range(2):
+                response = self.client.get(
+                    "/dav/movies/Little%20Shop%20%5B1986%5D%20%2B%20Extras/"
+                    "Little%20Shop%20of%20Horrors%20%281986%29.mkv"
+                )
+                self.assertEqual(response.status_code, 503)
+
+        self.assertEqual(len(self.state.client.calls), 1)
+        hoster_events = [
+            call
+            for call in mock_record_event.call_args_list
+            if call.kwargs.get("event") == "rd_hoster_unavailable"
+        ]
+        self.assertEqual(len(hoster_events), 1)
 
     def test_open_remote_media_fails_when_setup_slot_times_out(self):
         class BusySemaphore:

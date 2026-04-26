@@ -5,14 +5,6 @@ services:
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
     environment:
-      - MEDIA_SERVER=${MEDIA_SERVER:-jellyfin}
-      - PLEX_URL=${PLEX_URL:-}
-      - PLEX_TOKEN=${PLEX_TOKEN:-}
-      - LIBRARY_MOUNT=/mnt/buzz/raw
-      - JELLYFIN_URL=${JELLYFIN_URL:-http://jellyfin:8096}
-      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
-      - JELLYFIN_SCAN_TASK_ID=${JELLYFIN_SCAN_TASK_ID:-}
-      - CURATOR_BUILDER_URL=${CURATOR_BUILDER_URL:-http://buzz-curator:8400/rebuild}
       - UV_CACHE_DIR=/app/cache/uv-buzz
     ports:
       - 9999:9999
@@ -82,7 +74,6 @@ services:
     restart: unless-stopped
 
   jellyfin:
-    profiles: ["jellyfin"]
     image: jellyfin/jellyfin:latest@sha256:1694ff069f0c9dafb283c36765175606866769f5d72f2ed56b6a0f1be922fc37
     container_name: jellyfin
     depends_on:
@@ -104,7 +95,6 @@ services:
     restart: unless-stopped
 
   buzz-curator:
-    profiles: ["jellyfin", "plex"]
     image: registry.gitlab.com/gabriel.chamon/buzz/buzz:v1
     container_name: buzz-curator
     user: "${PUID:-1000}:${PGID:-1000}"
@@ -120,9 +110,6 @@ services:
       - CURATOR_TARGET_ROOT=/mnt/buzz/curated
       - CURATOR_STATE_DIR=/app/data
       - CURATOR_OVERRIDES=/config/overrides.yml
-      - JELLYFIN_URL=${JELLYFIN_URL:-http://jellyfin:8096}
-      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
-      - JELLYFIN_SCAN_TASK_ID=${JELLYFIN_SCAN_TASK_ID:-}
       - UV_CACHE_DIR=/app/cache/uv-pres
       - UV_PROJECT_ENVIRONMENT=/app/.venv-pres
     entrypoint: ["sh", "/app/scripts/curator-entrypoint.sh"]

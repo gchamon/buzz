@@ -34,11 +34,20 @@ UI_MANAGED_CONFIG_FIELDS = (
     "request_timeout_secs",
     "version_label",
     "logging.verbose",
+    "media_server.kind",
+    "media_server.jellyfin.url",
+    "media_server.jellyfin.api_key",
+    "media_server.jellyfin.scan_task_id",
+    "media_server.plex.url",
+    "media_server.plex.token",
     "media_server.library_map.movies",
     "media_server.library_map.shows",
     "media_server.library_map.anime",
     "subtitles.enabled",
     "subtitles.fetch_on_resync",
+    "subtitles.opensubtitles.api_key",
+    "subtitles.opensubtitles.username",
+    "subtitles.opensubtitles.password",
     FIELD_SUBTITLES_LANGUAGES,
     "subtitles.strategy",
     "subtitles.filters.hearing_impaired",
@@ -46,6 +55,7 @@ UI_MANAGED_CONFIG_FIELDS = (
     "subtitles.filters.exclude_machine",
     "subtitles.search_delay_secs",
     "subtitles.download_delay_secs",
+    "subtitles.root",
 )
 HOT_RELOADABLE_FIELDS = tuple(
     field for field in UI_MANAGED_CONFIG_FIELDS
@@ -458,24 +468,6 @@ class SubtitleConfig(BaseModel):
             download_delay_secs=float(raw.get("download_delay_secs", 1.0)),
         )
 
-    @classmethod
-    def from_env(cls) -> SubtitleConfig:
-        """Build a SubtitleConfig from environment variables."""
-        return cls(
-            enabled=_env_flag("SUBTITLE_ENABLED"),
-            fetch_on_resync=_env_flag("SUBTITLE_FETCH_ON_RESYNC"),
-            api_key=os.environ.get("OPENSUBTITLES_API_KEY", ""),
-            username=os.environ.get("OPENSUBTITLES_USERNAME", ""),
-            password=os.environ.get("OPENSUBTITLES_PASSWORD", ""),
-            languages=[
-                lang.strip()
-                for lang in os.environ.get("SUBTITLE_LANGUAGES", "en").split(",")
-                if lang.strip()
-            ],
-            strategy=os.environ.get("SUBTITLE_STRATEGY", "most-downloaded"),
-        )
-
-
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").lower() in {"1", "true", "yes"}
 
@@ -505,8 +497,15 @@ class DavConfig(BaseModel):
     verbose: bool = False
     log_max_entries: int = 1000
     ui_poll_interval_secs: int = 3
+    media_server_kind: str = "jellyfin"
+    jellyfin_url: str = "http://jellyfin:8096"
+    jellyfin_api_key: str = ""
+    jellyfin_scan_task_id: str = ""
+    plex_url: str = ""
+    plex_token: str = ""
     library_map: dict[str, str] = Field(default_factory=dict)
     subtitles: SubtitleConfig = Field(default_factory=SubtitleConfig)
+    subtitle_root: str = "/mnt/buzz/subs"
 
     _overrides_path: Path = PrivateAttr(
         default=Path("/app/data/buzz.overrides.yml")
@@ -553,7 +552,7 @@ class DavConfig(BaseModel):
             vfs_wait_timeout_secs=int(
                 hooks.get("vfs_wait_timeout_secs", 300)
             ),
-            library_mount=os.environ.get("LIBRARY_MOUNT", ""),
+            library_mount="/mnt/buzz/raw",
             anime_patterns=tuple(anime.get("patterns", [DEFAULT_ANIME_PATTERN])),
             enable_all_dir=bool(compat.get("enable_all_dir", True)),
             enable_unplayable_dir=bool(
@@ -570,11 +569,34 @@ class DavConfig(BaseModel):
             ui_poll_interval_secs=int(
                 ui_raw.get("poll_interval_secs", 3)
             ),
+            media_server_kind=str(
+                media_server_raw.get("kind", "jellyfin")
+            ).strip().lower() or "jellyfin",
+            jellyfin_url=str(
+                (media_server_raw.get("jellyfin") or {}).get(
+                    "url", "http://jellyfin:8096"
+                )
+            ).rstrip("/"),
+            jellyfin_api_key=str(
+                (media_server_raw.get("jellyfin") or {}).get("api_key", "")
+            ),
+            jellyfin_scan_task_id=str(
+                (media_server_raw.get("jellyfin") or {}).get("scan_task_id", "")
+            ),
+            plex_url=str(
+                (media_server_raw.get("plex") or {}).get("url", "")
+            ).rstrip("/"),
+            plex_token=str(
+                (media_server_raw.get("plex") or {}).get("token", "")
+            ),
             library_map={
                 str(k): str(v)
                 for k, v in (media_server_raw.get("library_map") or {}).items()
             },
             subtitles=SubtitleConfig.from_raw(raw.get("subtitles")),
+            subtitle_root=str(
+                (raw.get("subtitles") or {}).get("root", "/mnt/buzz/subs")
+            ),
         )
 
     @classmethod
@@ -643,19 +665,9 @@ class CuratorConfig(BaseModel):
             )
         )
     )
-    jellyfin_url: str = Field(
-        default_factory=lambda: os.environ.get(
-            "JELLYFIN_URL", "http://jellyfin:8096"
-        ).rstrip("/")
-    )
-    jellyfin_api_key: str = Field(
-        default_factory=lambda: os.environ.get("JELLYFIN_API_KEY", "")
-    )
-    jellyfin_scan_task_id: str = Field(
-        default_factory=lambda: os.environ.get(
-            "JELLYFIN_SCAN_TASK_ID", ""
-        )
-    )
+    jellyfin_url: str = "http://jellyfin:8096"
+    jellyfin_api_key: str = ""
+    jellyfin_scan_task_id: str = ""
     jellyfin_library_map: dict[str, str] = Field(default_factory=dict)
     skip_jellyfin_scan: bool = Field(
         default_factory=lambda: _env_flag(
@@ -692,11 +704,7 @@ class CuratorConfig(BaseModel):
         )
     )
     subtitles: SubtitleConfig = Field(default_factory=SubtitleConfig)
-    subtitle_root: Path = Field(
-        default_factory=lambda: Path(
-            os.environ.get("SUBTITLE_ROOT", "/mnt/buzz/subs")
-        )
-    )
+    subtitle_root: Path = Field(default_factory=lambda: Path("/mnt/buzz/subs"))
     _base_raw: dict = PrivateAttr(default_factory=dict)
     _raw_overrides: dict = PrivateAttr(default_factory=dict)
     _raw_merged: dict = PrivateAttr(default_factory=dict)
@@ -719,11 +727,19 @@ class CuratorConfig(BaseModel):
                 )
                 if "state_dir" in merged:
                     data["state_dir"] = Path(str(merged["state_dir"]))
-                if "subtitles" in merged:
-                    data["subtitles"] = SubtitleConfig.from_raw(
-                        merged["subtitles"]
-                    )
+                subtitles_raw = merged.get("subtitles")
+                if subtitles_raw is not None:
+                    data["subtitles"] = SubtitleConfig.from_raw(subtitles_raw)
+                    if isinstance(subtitles_raw, dict) and "root" in subtitles_raw:
+                        data["subtitle_root"] = Path(str(subtitles_raw["root"]))
                 media_server = merged.get("media_server") or {}
+                jellyfin = media_server.get("jellyfin") or {}
+                if "url" in jellyfin:
+                    data["jellyfin_url"] = str(jellyfin["url"]).rstrip("/")
+                if "api_key" in jellyfin:
+                    data["jellyfin_api_key"] = str(jellyfin["api_key"])
+                if "scan_task_id" in jellyfin:
+                    data["jellyfin_scan_task_id"] = str(jellyfin["scan_task_id"])
                 library_map = media_server.get("library_map") or {}
                 if library_map:
                     data["jellyfin_library_map"] = {
@@ -739,12 +755,10 @@ class CuratorConfig(BaseModel):
                 return config
             except Exception as exc:
                 print(
-                    f"Warning: Failed to load subtitles from {config_path}: "
+                    f"Warning: Failed to load buzz.yml from {config_path}: "
                     f"{exc}"
                 )
 
-        if "subtitles" not in data:
-            data["subtitles"] = SubtitleConfig.from_env()
         config = cls(**data)
         config._config_path = config_path
         return config

@@ -57,13 +57,16 @@ class HosterUnavailableError(ValueError):
     repeat calls short-circuit without a fresh API hit.
     """
 
-    def __init__(self, source_url: str, code: str) -> None:
+    def __init__(
+        self, source_url: str, code: str, *, cached: bool = False
+    ) -> None:
         """Build a HosterUnavailableError tagged with the upstream RD code."""
         super().__init__(
             f"Real-Debrid hoster unavailable for {source_url}: {code}"
         )
         self.source_url = source_url
         self.code = code
+        self.cached = cached
 
 
 def dav_rel_path(raw_path: str) -> str:
@@ -386,6 +389,7 @@ class BuzzState:
         self.hook_last_finished_at = None
         self.hook_last_error = None
         self.resolved_urls: dict[str, dict[str, Any]] = {}
+        self._resolve_locks: dict[str, threading.Lock] = {}
         self.hook_lock = threading.Lock()
         self.hook_task_active = False
         self._closed = False
@@ -1097,6 +1101,25 @@ class BuzzState:
         self, source_url: str, force_refresh: bool = False
     ) -> str:
         """Unrestrict a Real-Debrid source URL to a direct download link."""
+        resolve_lock = self._download_url_resolve_lock(source_url)
+        with resolve_lock:
+            return self._resolve_download_url_locked(
+                source_url, force_refresh=force_refresh
+            )
+
+    def _download_url_resolve_lock(self, source_url: str) -> threading.Lock:
+        """Return the per-source lock used to coordinate RD unrestrict calls."""
+        with self.lock:
+            resolve_lock = self._resolve_locks.get(source_url)
+            if resolve_lock is None:
+                resolve_lock = threading.Lock()
+                self._resolve_locks[source_url] = resolve_lock
+            return resolve_lock
+
+    def _resolve_download_url_locked(
+        self, source_url: str, *, force_refresh: bool = False
+    ) -> str:
+        """Resolve a Real-Debrid source URL while holding its source lock."""
         with self.lock:
             cached = self.resolved_urls.get(source_url)
             if cached and not force_refresh:
@@ -1106,7 +1129,9 @@ class BuzzState:
                 error_code = cached.get("error")
                 expires_at = cached.get("expires_at", 0.0)
                 if error_code and time.monotonic() < float(expires_at):
-                    raise HosterUnavailableError(source_url, str(error_code))
+                    raise HosterUnavailableError(
+                        source_url, str(error_code), cached=True
+                    )
 
         try:
             res = self.client.unrestrict.link(source_url)
