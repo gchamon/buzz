@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import subprocess
@@ -9,6 +10,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import yaml
+from fastapi import FastAPI, Response
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from buzz.core.state import (
@@ -20,6 +23,7 @@ from buzz.core.state import (
     normalize_posix_path,
 )
 from buzz.core import db
+from buzz.core.tls import ensure_tls_certificate
 from buzz.dav_app import DavApp
 from buzz.dav_protocol import open_remote_media, propfind_body
 from buzz.models import (
@@ -27,6 +31,8 @@ from buzz.models import (
 )
 from buzz.models import (
     CuratorConfig,
+    DEFAULT_TLS_CERT_PATH,
+    DEFAULT_TLS_KEY_PATH,
     SubtitleConfig,
     deep_merge,
     mask_secrets,
@@ -2950,6 +2956,315 @@ class ConfigUITests(unittest.TestCase):
             self.assertNotIn("subtitles", written)
             self.assertEqual(written["server"]["port"], 7777)
 
+class UIRedirectAppTests(unittest.TestCase):
+    """Tests for the HTTP-side UI redirect app used in TLS mode."""
+
+    def _client(self, https_port: int = 9443):
+        from buzz.dav_app import build_ui_https_redirect_app
+        app = build_ui_https_redirect_app(https_port)
+        client = TestClient(app)
+        self.addCleanup(client.close)
+        return client
+
+    def test_root_redirects(self):
+        client = self._client()
+        resp = client.get("/", follow_redirects=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("https://testserver:9443/", resp.headers["location"])
+
+    def test_ui_pages_redirect(self):
+        client = self._client()
+        for path in ("/cache", "/archive", "/logs", "/config"):
+            resp = client.get(path, follow_redirects=False)
+            self.assertEqual(resp.status_code, 302, path)
+            self.assertIn(
+                f"https://testserver:9443{path}",
+                resp.headers["location"],
+            )
+
+    def test_static_assets_redirect(self):
+        client = self._client()
+        resp = client.get("/static/buzz.css", follow_redirects=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn(
+            "https://testserver:9443/static/buzz.css",
+            resp.headers["location"],
+        )
+
+    def test_pyview_assets_redirect(self):
+        client = self._client()
+        resp = client.get("/pyview/assets/app.js", follow_redirects=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn(
+            "https://testserver:9443/pyview/assets/app.js",
+            resp.headers["location"],
+        )
+
+    def test_query_preserved_on_redirect(self):
+        client = self._client()
+        resp = client.get("/cache?filter=x", follow_redirects=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn(
+            "https://testserver:9443/cache?filter=x",
+            resp.headers["location"],
+        )
+
+    def test_api_path_returns_404(self):
+        client = self._client()
+        resp = client.get("/api/config", follow_redirects=False)
+        self.assertEqual(resp.status_code, 404)
+
+    def test_dav_path_returns_404(self):
+        client = self._client()
+        resp = client.request("PROPFIND", "/dav/movies", follow_redirects=False)
+        self.assertEqual(resp.status_code, 404)
+
+    def test_dav_path_delegates_to_owner_when_present(self):
+        from buzz.dav_app import build_ui_https_redirect_app
+
+        owner_app = FastAPI()
+
+        @owner_app.api_route("/dav/{path:path}", methods=["PROPFIND"])
+        async def propfind(path: str):
+            return Response(status_code=207)
+
+        class Owner:
+            app = owner_app
+
+        client = TestClient(build_ui_https_redirect_app(9443, Owner()))
+        self.addCleanup(client.close)
+        resp = client.request("PROPFIND", "/dav/", follow_redirects=False)
+
+        self.assertEqual(resp.status_code, 207)
+
+    def test_curator_notify_delegates_to_owner_when_present(self):
+        from buzz.dav_app import build_ui_https_redirect_app
+
+        owner_app = FastAPI()
+
+        @owner_app.post("/api/ui/notify")
+        async def notify():
+            return {"status": "ok"}
+
+        class Owner:
+            app = owner_app
+
+        client = TestClient(build_ui_https_redirect_app(9443, Owner()))
+        self.addCleanup(client.close)
+        resp = client.post("/api/ui/notify", follow_redirects=False)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"status": "ok"})
+
+    def test_rebuild_path_returns_404(self):
+        client = self._client()
+        resp = client.get("/rebuild", follow_redirects=False)
+        self.assertEqual(resp.status_code, 404)
+
+    def test_healthz_returns_ok(self):
+        client = self._client()
+        resp = client.get("/healthz", follow_redirects=False)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"status": "ok"})
+
+    def test_readyz_returns_ready(self):
+        client = self._client()
+        resp = client.get("/readyz", follow_redirects=False)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"status": "ready"})
+
+    def test_readyz_uses_dav_owner_when_present(self):
+        from buzz.dav_app import build_ui_https_redirect_app
+
+        owner_app = FastAPI()
+
+        @owner_app.get("/readyz")
+        async def readyz():
+            return JSONResponse(
+                status_code=503,
+                content={"status": "starting"},
+            )
+
+        class Owner:
+            app = owner_app
+
+        client = TestClient(build_ui_https_redirect_app(9443, Owner()))
+        self.addCleanup(client.close)
+        resp = client.get("/readyz", follow_redirects=False)
+
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.json(), {"status": "starting"})
+
+    def test_head_method_redirects(self):
+        client = self._client()
+        resp = client.head("/", follow_redirects=False)
+        self.assertEqual(resp.status_code, 302)
+
+    def test_post_to_ui_path_uses_307(self):
+        client = self._client()
+        resp = client.post("/", follow_redirects=False)
+        self.assertEqual(resp.status_code, 307)
+
+    def test_custom_https_port(self):
+        client = self._client(https_port=8443)
+        resp = client.get("/", follow_redirects=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("https://testserver:8443/", resp.headers["location"])
+
+
+class UIPathMatcherTests(unittest.TestCase):
+    """Tests for the is_ui_redirect_path helper."""
+
+    def test_exact_ui_paths(self):
+        from buzz.dav_app import is_ui_redirect_path
+        for path in ("/", "/cache", "/archive", "/logs", "/config"):
+            self.assertTrue(is_ui_redirect_path(path), path)
+
+    def test_prefix_ui_paths(self):
+        from buzz.dav_app import is_ui_redirect_path
+        self.assertTrue(is_ui_redirect_path("/static/buzz.css"))
+        self.assertTrue(is_ui_redirect_path("/pyview/live_socket.js"))
+
+    def test_non_ui_paths(self):
+        from buzz.dav_app import is_ui_redirect_path
+        for path in ("/api/config", "/dav/movies", "/rebuild", "/favicon.ico"):
+            self.assertFalse(is_ui_redirect_path(path), path)
+
+
+class HttpTlsPassthroughMatcherTests(unittest.TestCase):
+    """Tests for HTTP-side TLS passthrough routing."""
+
+    def test_exact_passthrough_paths(self):
+        from buzz.dav_app import is_http_tls_passthrough_path
+
+        for path in ("/api/ui/notify", "/healthz", "/readyz", "/dav"):
+            self.assertTrue(is_http_tls_passthrough_path(path), path)
+
+    def test_prefix_passthrough_paths(self):
+        from buzz.dav_app import is_http_tls_passthrough_path
+
+        self.assertTrue(is_http_tls_passthrough_path("/dav/"))
+        self.assertTrue(is_http_tls_passthrough_path("/dav/movies"))
+
+    def test_non_passthrough_paths(self):
+        from buzz.dav_app import is_http_tls_passthrough_path
+
+        for path in ("/", "/cache", "/api/config", "/rebuild", "/static/x"):
+            self.assertFalse(is_http_tls_passthrough_path(path), path)
+
+
+class TlsCertificateTests(unittest.TestCase):
+    """Tests for self-signed TLS certificate generation."""
+
+    def test_config_defaults_enable_tls_paths(self):
+        config = Config._from_merged_dict({"provider": {"token": "token"}})
+
+        self.assertEqual(config.tls.cert_path, DEFAULT_TLS_CERT_PATH)
+        self.assertEqual(config.tls.key_path, DEFAULT_TLS_KEY_PATH)
+
+    def test_empty_tls_paths_opt_out(self):
+        config = Config._from_merged_dict(
+            {
+                "provider": {"token": "token"},
+                "tls": {"cert_path": "", "key_path": ""},
+            }
+        )
+
+        self.assertEqual(config.tls.cert_path, "")
+        self.assertEqual(config.tls.key_path, "")
+
+    def test_generates_default_paths_relative_to_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            result = ensure_tls_certificate(cwd=cwd)
+
+            self.assertTrue(result.generated)
+            self.assertEqual(result.cert_path, cwd / "data/tls/buzz.crt")
+            self.assertEqual(result.key_path, cwd / "data/tls/buzz.key")
+            self.assertTrue(result.cert_path.exists())
+            self.assertTrue(result.key_path.exists())
+            self.assertRegex(
+                result.fingerprint,
+                r"^([0-9A-F]{2}:){31}[0-9A-F]{2}$",
+            )
+
+    def test_keeps_valid_existing_certificate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            first = ensure_tls_certificate(cwd=cwd)
+            second = ensure_tls_certificate(cwd=cwd)
+
+            self.assertFalse(second.generated)
+            self.assertEqual(second.fingerprint, first.fingerprint)
+
+    def test_renews_expiring_certificate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            first = ensure_tls_certificate(valid_days=1, cwd=cwd)
+            second = ensure_tls_certificate(cwd=cwd)
+
+            self.assertTrue(second.generated)
+            self.assertNotEqual(second.fingerprint, first.fingerprint)
+
+    def test_renews_invalid_certificate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            cert_path = cwd / "data/tls/buzz.crt"
+            key_path = cwd / "data/tls/buzz.key"
+            cert_path.parent.mkdir(parents=True)
+            cert_path.write_text("not a cert", encoding="utf-8")
+            key_path.write_text("not a key", encoding="utf-8")
+
+            result = ensure_tls_certificate(cwd=cwd)
+
+            self.assertTrue(result.generated)
+            self.assertIn(
+                "BEGIN CERTIFICATE",
+                cert_path.read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "BEGIN RSA PRIVATE KEY",
+                key_path.read_text(encoding="utf-8"),
+            )
+
+    def test_writes_private_permissions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            result = ensure_tls_certificate(cwd=cwd)
+
+            self.assertEqual(result.cert_path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(result.key_path.stat().st_mode & 0o777, 0o600)
+
+
+class TlsMaintenanceTests(unittest.TestCase):
+    """Tests for buzz-dav TLS renewal maintenance."""
+
+    def test_renewal_stops_servers(self):
+        from buzz.dav_app import _maintain_tls_certificate
+
+        class Server:
+            should_exit = False
+
+        https_server = Server()
+        http_server = Server()
+
+        async def run_check():
+            with patch("buzz.dav_app.asyncio.sleep", return_value=None):
+                with patch("buzz.dav_app.ensure_tls_certificate") as mock_ensure:
+                    mock_ensure.return_value.generated = True
+                    await _maintain_tls_certificate(
+                        "cert.pem",
+                        "key.pem",
+                        (https_server, http_server),
+                        check_interval_secs=1,
+                    )
+
+        asyncio.run(run_check())
+
+        self.assertTrue(https_server.should_exit)
+        self.assertTrue(http_server.should_exit)
 
 if __name__ == "__main__":
     unittest.main()

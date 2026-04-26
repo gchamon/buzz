@@ -13,11 +13,15 @@ DEFAULT_DAV_CONFIG_PATH = os.environ.get("BUZZ_CONFIG", "/app/buzz.yml")
 DEFAULT_DIST_CONFIG_NAME = "buzz.dist.yml"
 DEFAULT_STATE_DIR = "/app/data"
 DEFAULT_APP_VERSION = "buzz/0.1"
+DEFAULT_TLS_CERT_PATH = "data/tls/buzz.crt"
+DEFAULT_TLS_KEY_PATH = "data/tls/buzz.key"
 FIELD_ANIME_PATTERNS = "directories.anime.patterns"
 FIELD_SUBTITLES_LANGUAGES = "subtitles.languages"
 RESTART_REQUIRED_FIELDS = (
     "server.bind",
     "server.port",
+    "tls.cert_path",
+    "tls.key_path",
 )
 UI_MANAGED_CONFIG_FIELDS = (
     "poll_interval_secs",
@@ -56,6 +60,8 @@ UI_MANAGED_CONFIG_FIELDS = (
     "subtitles.search_delay_secs",
     "subtitles.download_delay_secs",
     "subtitles.root",
+    "tls.cert_path",
+    "tls.key_path",
 )
 HOT_RELOADABLE_FIELDS = tuple(
     field for field in UI_MANAGED_CONFIG_FIELDS
@@ -285,6 +291,10 @@ _OVERRIDE_SCHEMA = {
         "search_delay_secs": True,
         "download_delay_secs": True,
     },
+    "tls": {
+        "cert_path": True,
+        "key_path": True,
+    },
 }
 
 
@@ -410,6 +420,10 @@ def to_nested_dict(config: DavConfig) -> dict:
             "search_delay_secs": config.subtitles.search_delay_secs,
             "download_delay_secs": config.subtitles.download_delay_secs,
         },
+        "tls": {
+            "cert_path": config.tls.cert_path,
+            "key_path": config.tls.key_path,
+        },
     }
 
 
@@ -472,6 +486,13 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").lower() in {"1", "true", "yes"}
 
 
+class TlsConfig(BaseModel):
+    """TLS certificate and key configuration."""
+
+    cert_path: str = DEFAULT_TLS_CERT_PATH
+    key_path: str = DEFAULT_TLS_KEY_PATH
+
+
 class DavConfig(BaseModel):
     """Configuration for the WebDAV / Real-Debrid front-end."""
 
@@ -506,6 +527,7 @@ class DavConfig(BaseModel):
     library_map: dict[str, str] = Field(default_factory=dict)
     subtitles: SubtitleConfig = Field(default_factory=SubtitleConfig)
     subtitle_root: str = "/mnt/buzz/subs"
+    tls: TlsConfig = Field(default_factory=TlsConfig)
 
     _overrides_path: Path = PrivateAttr(
         default=Path("/app/data/buzz.overrides.yml")
@@ -527,6 +549,7 @@ class DavConfig(BaseModel):
         logging_raw = raw.get("logging", {})
         ui_raw = raw.get("ui", {})
         media_server_raw = raw.get("media_server", {})
+        tls_raw = raw.get("tls", {})
 
         token = provider.get("token", "").strip()
         if not token:
@@ -596,6 +619,14 @@ class DavConfig(BaseModel):
             subtitles=SubtitleConfig.from_raw(raw.get("subtitles")),
             subtitle_root=str(
                 (raw.get("subtitles") or {}).get("root", "/mnt/buzz/subs")
+            ),
+            tls=TlsConfig(
+                cert_path=str(
+                    tls_raw.get("cert_path", DEFAULT_TLS_CERT_PATH)
+                ),
+                key_path=str(
+                    tls_raw.get("key_path", DEFAULT_TLS_KEY_PATH)
+                ),
             ),
         )
 

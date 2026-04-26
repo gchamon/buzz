@@ -105,33 +105,6 @@ scans.
    docker compose restart buzz-dav buzz-curator
    ```
 
-### HTTPS UI
-
-Buzz serves the WebDAV endpoint on plain HTTP port `9999`. The browser UI
-runs on HTTPS port `9443` by default, and HTTP UI paths redirect there.
-
-The default self-signed certificate paths in `buzz.yml` are CWD-relative:
-
-```yaml
-tls:
-  cert_path: data/tls/buzz.crt
-  key_path: data/tls/buzz.key
-```
-
-Inside the container, the working directory is `/app`, so those paths land in
-`/app/data/tls`. On startup, `buzz-dav` creates missing TLS material and
-renews certs that expire within 30 days. It also checks weekly; when a runtime
-renewal happens, `buzz-dav` exits so Docker restarts it with the new
-certificate loaded.
-
-To opt out of HTTPS for the UI, set both paths to empty strings.
-
-To generate the files manually instead, run:
-
-```bash
-python3 scripts/generate_self_signed_cert.py
-```
-
 If you change `buzz.yml`, restart the service:
 
 ```bash
@@ -166,8 +139,6 @@ For config merge, masking, and reload behavior, see
 | `server.bind` | `0.0.0.0` | IP address the DAV server binds to. |
 | `server.port` | `9999` | Port for the DAV server. |
 | `server.stream_buffer_size` | `0` | Read-ahead buffer size in bytes for streaming media (e.g., 50MB: `52428800`). Set to `0` to disable. |
-| `tls.cert_path` | `data/tls/buzz.crt` | TLS certificate path for the HTTPS UI on port `9443`; relative paths resolve from the process working directory. Set both TLS paths to empty strings to opt out. |
-| `tls.key_path` | `data/tls/buzz.key` | TLS private key path. Buzz creates and renews missing or expiring certs automatically. |
 | `state_dir` | `/app/data` | Shared path used by both `buzz-dav` and `buzz-curator` for `buzz.sqlite` and related state. |
 | `hooks.on_library_change` | `sh /app/scripts/media_update.sh` | Shell command executed when a change in the library is detected. |
 | `hooks.curator_url` | `http://buzz-curator:8400/rebuild` | Internal URL to trigger the Curator rebuild. |
@@ -217,10 +188,6 @@ server:
   bind: "0.0.0.0"
   port: 9999
   stream_buffer_size: 52428800
-
-tls:
-  cert_path: data/tls/buzz.crt
-  key_path: data/tls/buzz.key
 
 state_dir: "/app/data"
 

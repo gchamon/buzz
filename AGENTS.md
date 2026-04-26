@@ -44,6 +44,19 @@ Here are the core best practices to follow when writing Python:
 
 Always use `uvx pyright {folder}` to scan projects after implementing changes.
 
+When running the test suite, prefer an ephemeral Docker container so the
+environment matches the Python version in the project and avoids local sandbox
+issues with `TestClient`:
+
+```bash
+docker run --rm \
+  -v "$PWD:/workspace" \
+  -w /workspace \
+  -e UV_CACHE_DIR=/tmp/uv-cache \
+  ghcr.io/astral-sh/uv:python3.14-alpine \
+  uv run python -m unittest discover -s tests
+```
+
 The test suite buffers stdout/stderr by default so only test progress and
 unexpected errors are shown. Output from passing tests (event-registry logs,
 subtitle fetching, curator notifications, etc.) is captured and discarded
