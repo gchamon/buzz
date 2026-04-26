@@ -8,16 +8,17 @@ services:
       - UV_CACHE_DIR=/app/cache/uv-buzz
     ports:
       - 9999:9999
+      - 9443:9443
+    volumes:
+      - ./data:/app/data
+      - /mnt/buzz/raw:/mnt/buzz/raw
+      - ./buzz.yml:/app/buzz.yml:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9999/readyz"]
       interval: 10s
       timeout: 5s
       retries: 20
       start_period: 10s
-    volumes:
-      - ./data:/app/data
-      - /mnt/buzz/raw:/mnt/buzz/raw
-      - ./buzz.yml:/app/buzz.yml:ro
     networks:
       default:
         aliases:
@@ -117,7 +118,7 @@ services:
     volumes:
       - ./presentation/overrides.yml:/config/overrides.yml:ro
       - ./data:/app/data
-      - ./buzz.yml:/app/buzz.yml:rp
+      - ./buzz.yml:/app/buzz.yml:ro
       - /mnt/buzz/curated:/mnt/buzz/curated
       - /mnt/buzz/raw:/mnt/buzz/raw:ro
       - /mnt/buzz/subs:/mnt/buzz/subs

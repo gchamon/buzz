@@ -15,6 +15,13 @@ server:
   # library scan) so the upstream CDN doesn't drop connections under load.
   # Increase if scans crawl, decrease if you still see retry storms.
   upstream_concurrency: 4
+
+# TLS is enabled by default. Relative paths resolve from the process working
+# directory, which is /app in the container. Set both paths to "" to opt out.
+tls:
+  cert_path: data/tls/buzz.crt
+  key_path: data/tls/buzz.key
+
 state_dir: /app/data
 hooks:
   on_library_change: "bash /app/scripts/media_update.sh"

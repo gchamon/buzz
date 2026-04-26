@@ -13,7 +13,12 @@ from typing import Any, cast
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pyview.live_socket import pub_sub_hub
 from pyview.pyview import liveview_container
@@ -29,6 +34,7 @@ from .core.state import (
     dav_rel_path,
     read_range_header,
 )
+from .core.tls import ensure_tls_certificate
 from .core.utils import (
     format_bytes,
     http_date,
@@ -64,6 +70,23 @@ MSG_NO_CURATOR = "No curator configured"
 MSG_INVALID_REQUEST = "Invalid request"
 TOPIC_LOGS = "buzz:logs"
 TOPIC_CONFIG = "buzz:config"
+HTTPS_PORT = 9443
+TLS_RENEWAL_CHECK_SECS = 7 * 24 * 60 * 60
+
+UI_REDIRECT_EXACT_PATHS = frozenset({
+    "/",
+    "/cache",
+    "/archive",
+    "/logs",
+    "/config",
+})
+UI_REDIRECT_PREFIXES = ("/static/", "/pyview/")
+HTTP_TLS_PASSTHROUGH_EXACT_PATHS = frozenset({
+    "/api/ui/notify",
+    "/healthz",
+    "/readyz",
+})
+HTTP_TLS_PASSTHROUGH_PREFIXES = ("/dav/",)
 
 SNAPSHOT_RELOAD_FIELDS = (
     FIELD_ANIME_PATTERNS,
@@ -71,6 +94,131 @@ SNAPSHOT_RELOAD_FIELDS = (
     "compat.enable_unplayable_dir",
     "version_label",
 )
+
+
+def is_ui_redirect_path(path: str) -> bool:
+    """Return True if a browser-facing UI route should redirect to HTTPS."""
+    return path in UI_REDIRECT_EXACT_PATHS or path.startswith(
+        UI_REDIRECT_PREFIXES
+    )
+
+
+def is_http_tls_passthrough_path(path: str) -> bool:
+    """Return True if HTTP TLS companion should pass path to DAV app."""
+    return (
+        path in HTTP_TLS_PASSTHROUGH_EXACT_PATHS
+        or path == "/dav"
+        or path.startswith(HTTP_TLS_PASSTHROUGH_PREFIXES)
+    )
+
+
+def build_http_tls_companion_app(
+    https_port: int,
+    dav_owner: Any | None = None,
+) -> Any:
+    """Build the HTTP app used while the UI runs on HTTPS."""
+    app = dav_owner.app if dav_owner is not None else None
+    return _HttpTlsCompanionApp(app, https_port)
+
+
+class _HttpTlsCompanionApp:
+    """HTTP-side ASGI app for TLS mode."""
+
+    def __init__(self, app: Any | None, https_port: int) -> None:
+        self.app = app
+        self.https_port = https_port
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "lifespan":
+            if self.app is not None:
+                await self.app(scope, receive, send)
+                return
+            while True:
+                message = await receive()
+                if message["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                    return
+                elif message["type"] == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+
+        if scope["type"] != "http":
+            if self.app is not None:
+                await self.app(scope, receive, send)
+                return
+            response = Response(status_code=HTTPStatus.NOT_FOUND)
+            await response(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if self.app is None and path in {"/healthz", "/readyz"}:
+            status = "ok" if path == "/healthz" else "ready"
+            response = JSONResponse({"status": status})
+            await response(scope, receive, send)
+            return
+
+        if self.app is not None and is_http_tls_passthrough_path(path):
+            await self.app(scope, receive, send)
+            return
+
+        if is_ui_redirect_path(path):
+            headers = {
+                key.decode("latin-1"): value.decode("latin-1")
+                for key, value in scope.get("headers", [])
+            }
+            host = headers.get("host", "localhost").split(":", 1)[0]
+            query = scope.get("query_string", b"").decode("latin-1")
+            path_and_query = f"{path}?{query}" if query else path
+            target = f"https://{host}:{self.https_port}{path_and_query}"
+            status_code = (
+                HTTPStatus.FOUND
+                if scope["method"] in ("GET", "HEAD")
+                else HTTPStatus.TEMPORARY_REDIRECT
+            )
+            response = RedirectResponse(target, status_code=status_code)
+            await response(scope, receive, send)
+            return
+
+        response = Response(status_code=HTTPStatus.NOT_FOUND)
+        await response(scope, receive, send)
+
+
+
+def build_ui_https_redirect_app(
+    https_port: int,
+    dav_owner: Any | None = None,
+) -> Any:
+    """Build the HTTP companion app for TLS mode."""
+    return build_http_tls_companion_app(https_port, dav_owner)
+
+
+async def _maintain_tls_certificate(
+    cert_path: str,
+    key_path: str,
+    servers: tuple[Any, ...],
+    check_interval_secs: int = TLS_RENEWAL_CHECK_SECS,
+) -> None:
+    """Renew TLS material periodically and stop servers when it changes."""
+    while True:
+        await asyncio.sleep(check_interval_secs)
+        try:
+            result = ensure_tls_certificate(cert_path, key_path)
+        except Exception as exc:
+            record_event(
+                f"TLS certificate renewal check failed: {exc}",
+                level="error",
+                category="error",
+            )
+            continue
+        if not result.generated:
+            continue
+        record_event(
+            "TLS certificate renewed; stopping buzz-dav so it can restart",
+            level="warning",
+        )
+        for server in servers:
+            server.should_exit = True
+        return
 
 
 def _fetch_opensubtitles_languages(api_key: str) -> list[tuple[str, str]]:
@@ -310,30 +458,11 @@ class DavApp:
 
         @self.app.get("/healthz")
         def healthz():
-            return {
-                "status": "ok",
-                "log_count": self.log_count(),
-                "archive_count": len(self.state.trashcan),
-                **self.state.status(),
-            }
+            return self.healthz_payload()
 
         @self.app.get("/readyz")
         def readyz():
-            from .core.events import registry
-
-            is_ready = self.is_service_ready()
-            status_code = HTTPStatus.OK if is_ready else HTTPStatus.SERVICE_UNAVAILABLE
-            payload_status = "ready" if is_ready else "starting"
-            return JSONResponse(
-                status_code=status_code,
-                content={
-                    "status": payload_status,
-                    "log_count": len(registry.events),
-                    "curator_ready": self.curator_ready,
-                    "ui_status": "ready" if self.is_ready() else "starting",
-                    **self.state.status(),
-                },
-            )
+            return self.readyz_response()
 
         @self.app.post("/sync")
         def sync():
@@ -859,6 +988,33 @@ class DavApp:
 
         return len(registry.events)
 
+    def healthz_payload(self) -> dict:
+        """Return the health payload used by both HTTP and HTTPS ports."""
+        return {
+            "status": "ok",
+            "log_count": self.log_count(),
+            "archive_count": len(self.state.trashcan),
+            **self.state.status(),
+        }
+
+    def readyz_response(self) -> JSONResponse:
+        """Return the readiness response used by both HTTP and HTTPS ports."""
+        from .core.events import registry
+
+        is_ready = self.is_service_ready()
+        status_code = HTTPStatus.OK if is_ready else HTTPStatus.SERVICE_UNAVAILABLE
+        payload_status = "ready" if is_ready else "starting"
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "status": payload_status,
+                "log_count": len(registry.events),
+                "curator_ready": self.curator_ready,
+                "ui_status": "ready" if self.is_ready() else "starting",
+                **self.state.status(),
+            },
+        )
+
     def _handle_recorded_event(self, event: dict) -> None:
         self._notify_ui_topic(TOPIC_LOGS, event)
         self._notify_ui_topic("buzz:status", event)
@@ -891,8 +1047,66 @@ class DavApp:
 
 
 def run_dav_server(config: DavConfig) -> None:
-    """Start the uvicorn server for the DAV application."""
+    """Start the uvicorn server for the DAV application.
+
+    When TLS is enabled, runs two servers concurrently:
+    - HTTPS server on HTTPS_PORT serving the full DAV application
+    - HTTP server on config.port serving only UI redirects
+    """
     import uvicorn
+    from uvicorn import Config, Server
 
     dav_app = DavApp(config)
-    uvicorn.run(dav_app.app, host=config.bind, port=config.port, log_level="info")
+
+    if config.tls.cert_path and config.tls.key_path:
+        tls_result = ensure_tls_certificate(
+            config.tls.cert_path,
+            config.tls.key_path,
+        )
+        if tls_result.generated:
+            record_event(
+                f"TLS certificate generated at {tls_result.cert_path}",
+                level="info",
+            )
+        redirect_app = build_ui_https_redirect_app(HTTPS_PORT, dav_app)
+
+        async def _run_dual_servers() -> None:
+            https_config = Config(
+                app=dav_app.app,
+                host=config.bind,
+                port=HTTPS_PORT,
+                ssl_certfile=str(tls_result.cert_path),
+                ssl_keyfile=str(tls_result.key_path),
+                log_level="info",
+            )
+            http_config = Config(
+                app=redirect_app,
+                host=config.bind,
+                port=config.port,
+                log_level="info",
+            )
+            https_server = Server(https_config)
+            http_server = Server(http_config)
+            renewal_task = asyncio.create_task(
+                _maintain_tls_certificate(
+                    config.tls.cert_path,
+                    config.tls.key_path,
+                    (https_server, http_server),
+                )
+            )
+            server_task = asyncio.ensure_future(
+                asyncio.gather(https_server.serve(), http_server.serve())
+            )
+            try:
+                done, _ = await asyncio.wait(
+                    {server_task, renewal_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if renewal_task in done:
+                    await server_task
+            finally:
+                renewal_task.cancel()
+
+        asyncio.run(_run_dual_servers())
+    else:
+        uvicorn.run(dav_app.app, host=config.bind, port=config.port, log_level="info")

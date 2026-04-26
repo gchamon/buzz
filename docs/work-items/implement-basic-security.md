@@ -52,10 +52,10 @@ follow-ups.
   or generate a self-signed one with the bundled helper. There is no
   "auth-over-plain-HTTP" mode, even as an opt-in.
 - **TLS material is operator-supplied with a self-signed fallback.** Two
-  paths in `buzz.yml`: `server.tls.cert_path` and `server.tls.key_path`,
+  paths in `buzz.yml`: `tls.cert_path` and `tls.key_path`,
   both pointing inside the container (typical mount: `./config/tls/`). If
   both are unset, a one-shot helper
-  (`python3 -m buzz.scripts.generate_self_signed_cert`) writes a 10-year
+  (`python3 scripts/generate_self_signed_cert.py`) writes a 10-year
   self-signed cert/key pair into `data/tls/` on first run, and the server
   uses those. Operators wanting Let's Encrypt or a corporate CA put a
   reverse proxy in front of Buzz; ACME is out of scope.
@@ -92,13 +92,13 @@ follow-ups.
     open"). This keeps existing single-host deployments working without a
     forced migration.
 - **TLS bootstrap** (`buzz/server.py` or wherever uvicorn is launched):
-  - If `server.tls.cert_path` and `server.tls.key_path` are set, hand
+  - If `tls.cert_path` and `tls.key_path` are set, hand
     them to uvicorn's `ssl_keyfile`/`ssl_certfile`.
   - If both unset and `security.username` is set, abort startup with a
     clear remediation message.
   - If both unset and `security.username` is also unset, run plain HTTP
     on port 9999 (current behavior preserved for the no-auth case).
-- **Self-signed cert helper** (`buzz/scripts/generate_self_signed_cert.py`):
+- **Self-signed cert helper** (`scripts/generate_self_signed_cert.py`):
   - Generates a 10-year RSA-2048 (or ed25519) cert/key pair using
     `cryptography`, writes to `data/tls/buzz.crt` and `data/tls/buzz.key`
     with mode 600, and prints the SHA-256 fingerprint so operators can
@@ -113,7 +113,7 @@ follow-ups.
 - **Override schema extension** (`buzz/models.py`):
   - Add `security: { username: True, password_hash: True }` to
     `_OVERRIDE_SCHEMA`.
-  - Add `server.tls.cert_path` / `server.tls.key_path` to the schema and
+  - Add `tls.cert_path` / `tls.key_path` to the schema and
     to `UI_MANAGED_CONFIG_FIELDS`.
   - `password_hash` is treated as a secret by `_strip_secrets` /
     `mask_secrets` — the YAML view shows `***`.
@@ -128,7 +128,7 @@ follow-ups.
   - Update the **Configure Jellyfin** subsection: once auth is enabled,
     secrets *can* be entered through the UI; remove the "API key must
     live in `buzz.yml`" caveat and link to the new subsection.
-  - Add `security` and `server.tls` rows to the configuration reference
+  - Add `security` and `tls` rows to the configuration reference
     table.
 - **Tests** (`tests/test_buzz_security.py`):
   - Unauthenticated requests to UI/API routes return 401 with the
