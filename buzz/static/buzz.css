@@ -65,7 +65,7 @@ main {
   width: 70px;
 }
 
-.prompt span {
+.prompt>span {
   color: var(--fg);
 }
 
@@ -74,6 +74,11 @@ main {
   text-decoration: none;
   cursor: pointer;
   transition: all 0.2s ease;
+}
+
+.nav-link span,
+.nav-link i {
+  color: inherit;
 }
 
 .nav-icon,
