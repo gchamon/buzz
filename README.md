@@ -70,6 +70,41 @@ docker compose up --pull always --detach
 time ls -1R /mnt/buzz
 ```
 
+### Configure Jellyfin
+
+The Jellyfin container starts alongside the rest of the stack but needs a
+one-time setup pass through its web UI before Buzz can drive library
+scans.
+
+1. Wait for Jellyfin to finish loading at
+   [http://localhost:8096](http://localhost:8096). The first boot may take
+   a minute while it initializes its config volume.
+2. Step through the setup wizard: pick a display language, then create the
+   admin user with a username and password of your choosing.
+3. On the **Set up media libraries** step, add one library per category
+   you want Buzz to manage, pointing each at the matching folder under
+   `/mnt/buzz/curated`:
+   - **Movies** → content type `Movies`, folder `/mnt/buzz/curated/movies`
+   - **TV Shows** → content type `Shows`, folder `/mnt/buzz/curated/shows`
+   - **Anime** → content type `Shows`, folder `/mnt/buzz/curated/anime`
+
+   The library names must match `media_server.library_map` in `buzz.yml`
+   (defaults: `Movies`, `TV Shows`, `Anime`). Finish the wizard with the
+   remaining defaults.
+4. In the Jellyfin UI, open **Dashboard → API Keys**, click the **+**
+   button, give the key an app name (e.g. `buzz`), and copy the generated
+   key.
+5. Paste the key into `buzz.yml` under
+   `media_server.jellyfin.api_key`. Secret fields aren't editable from the
+   web UI yet — they live in `buzz.yml` until HTTPS and basic auth are in
+   place (tracked in
+   [`implement-basic-security`](./docs/work-items/implement-basic-security.md)).
+6. Restart the Buzz services so the curator picks up the new key:
+
+   ```bash
+   docker compose restart buzz-dav buzz-curator
+   ```
+
 If you change `buzz.yml`, restart the service:
 
 ```bash
@@ -92,7 +127,7 @@ For the database tables and ownership model, see
 This file handles the DAV server logic, media-server integration, and
 RD polling. **Every key documented below is editable live from the Buzz
 web UI** — you generally don't need to hand-edit `buzz.yml` beyond
-`provider.token`.
+`provider.token` and opensubtitles.com credentials.
 
 For config merge, masking, and reload behavior, see
 [Configuration Model](./docs/architecture.md#configuration-model).

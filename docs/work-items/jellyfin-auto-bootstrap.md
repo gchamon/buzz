@@ -23,12 +23,14 @@ in `docker-compose.yml`, with version-pinning as part of the contract.
 
 ## Decision Changes
 
-- **Jellyfin's image tag is pinned**, not floating. The current
-  `docker-compose.yml` uses `jellyfin/jellyfin` (unpinned latest). This
-  bootstrap recipe assumes a known version, so the compose file pins to a
-  specific tag and the bootstrap is verified against that tag. Bumping
-  Jellyfin in the future requires re-verifying the bootstrap; this is an
-  acceptable maintenance cost.
+- **Jellyfin's image is already digest-pinned, but not human-readable.**
+  The current `docker-compose.yml:77` uses
+  `jellyfin/jellyfin:latest@sha256:1694ff069f0c9dafb283c36765175606866769f5d72f2ed56b6a0f1be922fc37`.
+  A digest pin is immutable (stronger than a tag pin), but `:latest` makes
+  it impossible to tell at a glance which version is in use. This work item
+  switches the tag to a named version (e.g. `10.11.8`) while keeping the
+  digest, so the pinned version is greppable. Bumping Jellyfin requires
+  re-verifying the bootstrap; that's an acceptable maintenance cost.
 - **Bootstrap runs in a one-shot init container**, `buzz-jellyfin-init`,
   with `restart: "no"`. It depends on `jellyfin: service_healthy` and exits
   after configuration completes. Re-running `docker compose up -d` is safe
@@ -37,52 +39,88 @@ in `docker-compose.yml`, with version-pinning as part of the contract.
   `data/jellyfin-admin.secret` (chmod 600). Operators can read it from there
   if they want to log into Jellyfin manually. The username is `buzz` by
   default, configurable via env var.
-- **The minted API key is written to `buzz.overrides.yml`** at
-  `media_server.api_key`. The config UI already manages this file; the
-  init container uses the same write path (atomic rename, schema
-  validation). Curator/dav reload picks up the value on next config reload
-  without a restart.
+- **The minted API key is written to `buzz.overrides.yml`** under whichever
+  path `setup-docs-truth` settles on (`media_server.api_key` if the schema
+  is flattened, otherwise `media_server.jellyfin.api_key` — today
+  `_OVERRIDE_SCHEMA` in `buzz/models.py:251-288` only accepts
+  `media_server.library_map`, so the bootstrap cannot persist until the
+  schema is extended). The config UI already manages this file; the init
+  container uses the same `save_overrides` write path (atomic rename,
+  schema validation). Curator/dav reload picks up the value on next
+  config reload without a restart.
 - **Library creation respects the same `media_server.library_map`** that
   selective-sync uses. The init container reads
   `library_map` from the merged buzz config and creates one Jellyfin
   VirtualFolder per entry, each pointed at
   `/mnt/buzz/curated/<category>`.
-- **Three-step recipe, with each step independently failure-recoverable**:
-  1. Wizard bypass (file-seeded before Jellyfin's first start).
-  2. Admin user creation (REST, before any auth is required).
-  3. API key + libraries (REST, requires admin auth).
-  Each step is idempotent and logs a single line on success. If step 2 fails
-  the container exits non-zero and the operator can rerun the bootstrap;
-  the prior step's effect is preserved.
+- **Jellyfin starts first; the init container does the entire setup over
+  REST.** The original three-step recipe assumed the init container could
+  pre-seed `config/jellyfin/system.xml` before Jellyfin's first start.
+  External evidence ([jellyfin#12961](https://github.com/jellyfin/jellyfin/issues/12961),
+  the official container docs) shows this doesn't work: Jellyfin generates
+  its config tree on first boot, and pre-seeding individual files in an
+  empty bind-mount causes mount conflicts. The viable ordering is a single
+  REST sequence after Jellyfin is healthy:
+  1. Poll `GET /health` until 200.
+  2. `POST /Startup/Configuration` (locale defaults).
+  3. `POST /Startup/User` with the generated admin credentials (no auth
+     required; protected by `FirstTimeSetupOrElevated` while the wizard is
+     incomplete).
+  4. `POST /Startup/Complete` to mark the wizard done.
+  5. `POST /Users/AuthenticateByName` to obtain a session token.
+  6. `GET /Auth/Keys` → `POST /Auth/Keys?app=buzz` if no `App=buzz` key
+     exists.
+  7. `GET /Library/VirtualFolders` → `POST /Library/VirtualFolders` for
+     each missing entry in `library_map`.
+  8. `save_overrides` writes the API key into `buzz.overrides.yml`.
+  9. `POST http://buzz-curator:8400/api/config/reload`.
+  Each step is independently idempotent (detect existing → skip vs create)
+  and logs a single line on success. Editing an already-generated
+  `system.xml` remains a documented recovery path if `POST /Startup/User`
+  ever breaks on a future major.
 
 ## Dependencies
 
-- `setup-docs-truth` should land first so that `media_server.api_key` and
-  `media_server.url` are first-class YAML fields (the bootstrap writes
-  there).
-- `gitlab-cutover` does not block this but sequencing the docs work
-  afterward is cleaner — the README's bootstrap section can describe the
-  fully-automated flow once available.
+- **`setup-docs-truth` is a hard prerequisite.** Today
+  `_OVERRIDE_SCHEMA` (`buzz/models.py:251-288`) accepts only
+  `media_server.library_map`; `save_overrides` will reject any write to
+  `media_server.api_key` (or `media_server.jellyfin.api_key`) with
+  `ValueError: Invalid override keys`. `setup-docs-truth` extends the
+  schema and decides whether the path is flattened to `media_server.api_key`
+  or kept nested under `media_server.jellyfin.*` (currently the latter; see
+  `UI_MANAGED_CONFIG_FIELDS` in `models.py:38-40`). The bootstrap cannot
+  ship until that decision lands.
+- `gitlab-cutover` is **done** and does not block this — the README's
+  bootstrap section can describe the fully-automated flow once available.
 
 ## Main Quests
 
-- **Pin the Jellyfin image** in `docker-compose.yml` to a specific tag and
-  document the pinning in the README.
-- **Wizard bypass**: the init container seeds
-  `config/jellyfin/system.xml` before Jellyfin starts the first time. The
-  bypass marker (current Jellyfin: `<IsStartupWizardCompleted>true</...>`)
-  must be confirmed against the pinned version. If the file already exists
-  with the marker set, skip seeding.
-- **Admin user creation**: poll Jellyfin's healthcheck endpoint until
-  ready, then `POST /Startup/User` with the generated credentials. If
-  Jellyfin reports the wizard is already complete, skip and read the
-  password from `data/jellyfin-admin.secret`.
-- **API key minting**: authenticate as the admin user, then
-  `POST /Auth/Keys?App=buzz` (or the version-appropriate equivalent).
-  Persist the key by writing `media_server.api_key` into
-  `buzz.overrides.yml` via the same atomic-write helper used by
-  `dav_app.py::persist_overrides`. If a key with `App=buzz` already exists,
-  reuse it.
+- **Switch the Jellyfin image to a named-version tag plus digest** in
+  `docker-compose.yml` (currently `:latest@sha256:...`). The digest pin
+  already exists; this just makes the version greppable. Document the
+  pinned version in the README and add the recovery procedure for major
+  bumps.
+- **Add a `healthcheck` to the `jellyfin` service** in `docker-compose.yml`
+  (`curl -fsS http://127.0.0.1:8096/health`) so `buzz-jellyfin-init` can
+  `depends_on: { jellyfin: { condition: service_healthy } }`.
+- **Wizard completion (no pre-seeding)**: after Jellyfin is healthy, the
+  init container completes the wizard via the REST sequence in Decision
+  Changes (`POST /Startup/Configuration` → `POST /Startup/User` →
+  `POST /Startup/Complete`). If `GET /Startup/Configuration` (or any
+  startup endpoint) returns "wizard already complete", skip steps 2–4 and
+  load the persisted password from `data/jellyfin-admin.secret`. Editing
+  the already-generated `system.xml` is documented as a recovery path
+  only.
+- **Admin user creation**: covered by `POST /Startup/User` in the REST
+  sequence above. The `FirstTimeSetupOrElevated` policy means no auth is
+  required while the wizard is incomplete.
+- **API key minting**: authenticate as the admin user
+  (`POST /Users/AuthenticateByName`), then `GET /Auth/Keys` to detect an
+  existing `App=buzz` key (idempotency); `POST /Auth/Keys?app=buzz` if
+  none. Persist the key via `save_overrides` (`buzz/models.py:308-321`) —
+  the same atomic-write helper used by `dav_app.py:788-807::persist_overrides`.
+  Verify the override path matches what `setup-docs-truth` chose before
+  implementation.
 - **Library creation**: read `media_server.library_map` from the merged
   buzz config, then for each `(category, jellyfin_name)` pair, call
   `POST /Library/VirtualFolders?name=<jellyfin_name>&collectionType=<inferred>&paths=/mnt/buzz/curated/<category>`.
@@ -141,22 +179,28 @@ in `docker-compose.yml`, with version-pinning as part of the contract.
 
 ## Open Questions
 
-- **API contract stability**: `POST /Startup/User` and `POST /Auth/Keys`
-  are the two surfaces most likely to change between Jellyfin majors.
-  Verification against the pinned tag is part of the work, but the work
-  item should also identify a fallback strategy (e.g. seeding
-  `config/jellyfin/users.json` directly if the REST surface breaks).
-  This needs investigation before promoting the work item from `backlog`
+- **Which Jellyfin version do we pin to, and who owns re-verification on
+  each major bump?** Latest stable per Docker Hub research is `10.11.8`.
+  The bootstrap is verified against whatever version is named here; a
+  Jellyfin major bump requires re-running the verification before bumping
+  the tag in `docker-compose.yml`. Decide before promoting from `backlog`
   to `planned`.
-- **Permission model**: does the buzz-jellyfin-init container need write
-  access to `config/jellyfin/` to seed `system.xml`? If so, it must run
-  before Jellyfin starts, which means depending on the volume being
-  populated rather than on Jellyfin being healthy. Two-phase start
-  (`buzz-jellyfin-init-precheck` → `jellyfin` → `buzz-jellyfin-init`).
-- **Secret handling**: persisting the admin password to disk in
-  `data/jellyfin-admin.secret` is a tradeoff. An alternative is to never
-  expose it (admin-by-API-key only), but then operators have no manual
-  fallback if the API key is lost.
+
+### Resolved (kept here for future-reader context)
+
+- ~~API contract stability~~ — `POST /Startup/User`, `POST /Auth/Keys`,
+  `POST /Library/VirtualFolders` are all present and exercised by the
+  Jellyfin web UI in 10.11.x stable OpenAPI. Not a formal contract
+  surface, but stable enough to depend on with the documented `system.xml`
+  / `users.json` recovery path as a fallback.
+- ~~Permission model / two-phase start~~ — moot under the Jellyfin-first
+  ordering adopted in Decision Changes. The init container only needs
+  network access to Jellyfin and write access to `data/`; no
+  `config/jellyfin/` write needed in the happy path.
+- ~~Secret handling~~ — keep persisting the admin password to
+  `data/jellyfin-admin.secret` (chmod 600). The admin-by-API-key-only
+  alternative leaves operators without a recovery path if overrides are
+  wiped.
 
 ## Metadata
 
