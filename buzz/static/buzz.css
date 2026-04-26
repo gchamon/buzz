@@ -81,6 +81,11 @@ main {
   color: inherit;
 }
 
+.nav-link #nav-archive-count,
+.nav-link #nav-log-count {
+  color: var(--fg);
+}
+
 .nav-icon,
 .nav-icon-emoji {
   margin-right: 0.35rem;
