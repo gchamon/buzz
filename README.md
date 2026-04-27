@@ -173,7 +173,7 @@ For config merge, masking, and reload behavior, see
 | `poll_interval_secs` | `10` | How often Buzz polls Real-Debrid for changes (seconds). |
 | `server.bind` | `0.0.0.0` | IP address the DAV server binds to. |
 | `server.port` | `9999` | Port for the DAV server (TCP port). |
-| `server.stream_buffer_size` | `0` | Read-ahead buffer size for streaming media (bytes). Set to `0` to disable. Recommended when enabled: `500000000`. |
+| `server.stream_buffer_size` | `0` | Read-ahead buffer size for streaming media (bytes). Set to `0` to disable. Recommended when enabled: `500000000` (500MiB). |
 | `tls.cert_path` | `data/tls/buzz.crt` | TLS certificate path for the HTTPS UI on port `9443` (container path); relative paths resolve from the process working directory. Set both TLS paths to empty strings to opt out. |
 | `tls.key_path` | `data/tls/buzz.key` | TLS private key path (container path). Buzz creates and renews missing or expiring certs automatically. |
 | `state_dir` | `/app/data` | Shared path used by both `buzz-dav` and `buzz-curator` for `buzz.sqlite` and related state (container path). |

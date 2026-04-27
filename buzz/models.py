@@ -154,6 +154,18 @@ def diff_fields(source: dict, target: dict, fields: tuple[str, ...]) -> list[str
     return changed
 
 
+def unknown_config_keys(user: dict, schema: dict, _prefix: str = "") -> list[str]:
+    """Return dotted paths present in *user* but absent from *schema*."""
+    unknown: list[str] = []
+    for key, value in user.items():
+        path = f"{_prefix}.{key}" if _prefix else key
+        if key not in schema:
+            unknown.append(path)
+        elif isinstance(value, dict) and isinstance(schema.get(key), dict):
+            unknown.extend(unknown_config_keys(value, schema[key], path))
+    return sorted(unknown)
+
+
 def override_field_paths(overrides: dict) -> list[str]:
     """Return flattened dotted field paths present in *overrides*."""
     results: list[str] = []
@@ -360,7 +372,7 @@ def _load_default_dist_config(path: str) -> dict:
 
 def load_base_and_overrides(
     path: str = DEFAULT_DAV_CONFIG_PATH,
-) -> tuple[dict, dict, dict, dict, Path]:
+) -> tuple[dict, dict, dict, dict, dict, Path]:
     """Load base YAML, overrides YAML, merged config, and overrides path."""
     default_dist = _load_default_dist_config(path)
     with open(path, encoding="utf-8") as handle:
@@ -381,7 +393,7 @@ def load_base_and_overrides(
             overrides = yaml.safe_load(handle) or {}
 
     merged = deep_merge(base, overrides)
-    return default_dist, base, overrides, merged, overrides_path.resolve()
+    return default_dist, file_base, base, overrides, merged, overrides_path.resolve()
 
 
 def to_nested_dict(config: DavConfig) -> dict:
@@ -528,7 +540,7 @@ class TlsConfig(BaseModel):
 class DavConfig(BaseModel):
     """Configuration for the WebDAV / Real-Debrid front-end."""
 
-    token: str
+    token: str = ""
     poll_interval_secs: int = 10
     bind: str = "0.0.0.0"
     port: int = 9999
@@ -567,6 +579,7 @@ class DavConfig(BaseModel):
     )
     _config_path: str = PrivateAttr(default=DEFAULT_DAV_CONFIG_PATH)
     _default_raw: dict = PrivateAttr(default_factory=dict)
+    _file_raw: dict = PrivateAttr(default_factory=dict)
     _base_raw: dict = PrivateAttr(default_factory=dict)
     _raw_overrides: dict = PrivateAttr(default_factory=dict)
     _raw_merged: dict = PrivateAttr(default_factory=dict)
@@ -585,8 +598,6 @@ class DavConfig(BaseModel):
         tls_raw = raw.get("tls", {})
 
         token = provider.get("token", "").strip()
-        if not token:
-            raise ValueError("provider.token is required.")
 
         return cls(
             token=token,
@@ -669,11 +680,12 @@ class DavConfig(BaseModel):
     @classmethod
     def load(cls, path: str = DEFAULT_DAV_CONFIG_PATH) -> DavConfig:
         """Load and validate configuration from a YAML file."""
-        default_raw, base, overrides, merged, overrides_path = load_base_and_overrides(path)
+        default_raw, file_raw, base, overrides, merged, overrides_path = load_base_and_overrides(path)
         config = cls._from_merged_dict(merged)
         config._config_path = path
         config._overrides_path = overrides_path
         config._default_raw = default_raw
+        config._file_raw = file_raw
         config._base_raw = base
         config._raw_overrides = overrides
         config._raw_merged = to_nested_dict(config)
@@ -786,7 +798,7 @@ class CuratorConfig(BaseModel):
 
         if config_path and os.path.exists(config_path):
             try:
-                default_raw, base, overrides, merged, overrides_path = load_base_and_overrides(
+                default_raw, _file_raw, base, overrides, merged, overrides_path = load_base_and_overrides(
                     config_path
                 )
                 if "state_dir" in merged:

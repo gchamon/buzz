@@ -138,24 +138,86 @@ def show_series_name(entry: dict) -> str:
     return sanitize_path_component(series)
 
 
+def _merge_tree(src: Path, dst: Path) -> None:
+    """Merge *src* into *dst*, preserving unchanged symlinks by inode.
+
+    Symlinks whose recorded target string is unchanged are left in place so
+    Jellyfin does not see inode/ctime churn for unmodified content.
+    Entries present in *dst* but absent from *src* are removed.
+    """
+    src_names = {item.name for item in src.iterdir()}
+
+    # Remove entries in dst that are no longer in src
+    for item in list(dst.iterdir()):
+        if item.name not in src_names:
+            if item.is_dir() and not item.is_symlink():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+
+    # Merge entries from src into dst
+    for src_item in src.iterdir():
+        dst_item = dst / src_item.name
+        if src_item.is_symlink():
+            new_target = os.readlink(src_item)
+            if dst_item.is_symlink() and os.readlink(dst_item) == new_target:
+                src_item.unlink()  # existing symlink is already correct
+            else:
+                if dst_item.exists() or dst_item.is_symlink():
+                    if dst_item.is_dir() and not dst_item.is_symlink():
+                        shutil.rmtree(dst_item)
+                    else:
+                        dst_item.unlink()
+                shutil.move(str(src_item), str(dst_item))
+        elif src_item.is_dir():
+            dst_item.mkdir(exist_ok=True)
+            _merge_tree(src_item, dst_item)
+            src_item.rmdir()
+        else:
+            if dst_item.exists() or dst_item.is_symlink():
+                dst_item.unlink()
+            shutil.move(str(src_item), str(dst_item))
+
+
 def replace_root(tmp_root: Path, target_root: Path) -> None:
-    """Swap the contents of *target_root* with those in *tmp_root*.
+    """Merge *tmp_root* into *target_root*, preserving unchanged symlinks.
 
     Operates on contents to avoid needing write permissions on
-    *target_root*'s parent.
+    *target_root*'s parent. Skips in-flight .curator-tmp-* directories.
     """
-    # 1. Remove existing contents (except the tmp_root itself)
-    for item in target_root.iterdir():
+    # Move top-level dirs/files through merge, skipping in-flight tmp dirs
+    for item in list(target_root.iterdir()):
         if item.is_dir() and item.name.startswith(".curator-tmp-"):
             continue
-        if item.is_dir():
-            shutil.rmtree(item)
-        else:
-            item.unlink()
+        if item.name not in {i.name for i in tmp_root.iterdir()}:
+            if item.is_dir() and not item.is_symlink():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
 
-    # 2. Move new contents in
-    for item in tmp_root.iterdir():
-        shutil.move(str(item), str(target_root / item.name))
+    for src_item in tmp_root.iterdir():
+        dst_item = target_root / src_item.name
+        if src_item.is_dir():
+            dst_item.mkdir(exist_ok=True)
+            _merge_tree(src_item, dst_item)
+            src_item.rmdir()
+        elif src_item.is_symlink():
+            new_target = os.readlink(src_item)
+            if dst_item.is_symlink() and os.readlink(dst_item) == new_target:
+                src_item.unlink()
+            else:
+                if dst_item.exists() or dst_item.is_symlink():
+                    if dst_item.is_dir() and not dst_item.is_symlink():
+                        shutil.rmtree(dst_item)
+                    else:
+                        dst_item.unlink()
+                shutil.move(str(src_item), str(dst_item))
+        else:
+            if dst_item.exists() or dst_item.is_symlink():
+                dst_item.unlink()
+            shutil.move(str(src_item), str(dst_item))
+
+    shutil.rmtree(tmp_root, ignore_errors=True)
 
 
 def load_previous_mapping(conn) -> list[dict]:
@@ -680,7 +742,3 @@ class Curator:
         with self.lock:
             return rebuild_and_trigger(self.config, changed_roots)
 
-    def cleanup(self) -> None:
-        """Remove the curated target directory."""
-        with self.lock:
-            shutil.rmtree(self.config.target_root, ignore_errors=True)

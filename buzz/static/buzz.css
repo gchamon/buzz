@@ -218,9 +218,11 @@ button:hover {
   filter: brightness(1.1);
 }
 
-button:disabled {
-  background: var(--comment);
+button:disabled,
+button:disabled:hover {
+  opacity: 0.35;
   cursor: not-allowed;
+  filter: none;
 }
 
 button.secondary {
@@ -435,9 +437,8 @@ code {
 .btn-r:disabled,
 .btn-s:disabled,
 .btn-x:disabled {
-  color: var(--fg);
-  background: rgba(68, 71, 90, 0.45);
-  cursor: wait;
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .btn-r:hover {

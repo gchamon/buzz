@@ -137,6 +137,7 @@ class PageContext(TypedDict):
     nav: PageNav
     status_class: str
     status_label: str
+    token_configured: bool
 
 
 class CacheFileItem(TypedDict):
@@ -444,6 +445,7 @@ class _BaseBuzzLiveView(LiveView[_TContext]):
             "has_error": bool(status.get("last_error")),
             "is_ready": self.owner.is_ready(),
             "last_error": status.get("last_error") or "",
+            "token_configured": bool(self.owner.config.token),
             "meta_items": self._meta_items(),
             "nav": self._nav(),
             "status_class": status_class,
@@ -1189,7 +1191,7 @@ class ConfigLiveView(_BaseBuzzLiveView):
         config_path = Path(effective_config._config_path)
         baseline_config = effective_config._base_raw
         if config_path.exists():
-            _, baseline_config, _, _, _ = load_base_and_overrides(
+            _, _, baseline_config, _, _, _ = load_base_and_overrides(
                 str(config_path)
             )
         baseline_values = _config_baseline_values(
@@ -1340,6 +1342,7 @@ class BuzzLiveView(_BaseBuzzLiveView):
         context["has_error"] = base["has_error"]
         context["is_ready"] = base["is_ready"]
         context["last_error"] = base["last_error"]
+        context["token_configured"] = base["token_configured"]
         context["meta_items"] = base["meta_items"]
         context["nav"] = base["nav"]
         context["status_class"] = base["status_class"]

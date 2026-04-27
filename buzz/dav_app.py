@@ -9,9 +9,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from urllib import error
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from fastapi import FastAPI, Request, Response
+from starlette.types import ASGIApp
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (
     HTMLResponse,
@@ -62,6 +63,7 @@ from .models import (
     save_overrides,
     set_nested_value,
     to_nested_dict,
+    unknown_config_keys,
 )
 from .ui_live import build_ui
 
@@ -96,6 +98,13 @@ SNAPSHOT_RELOAD_FIELDS = (
 )
 
 
+class DavOwner(Protocol):
+    """Minimal protocol the TLS HTTP companion needs from a DAV owner."""
+
+    @property
+    def app(self) -> ASGIApp: ...
+
+
 def is_ui_redirect_path(path: str) -> bool:
     """Return True if a browser-facing UI route should redirect to HTTPS."""
     return path in UI_REDIRECT_EXACT_PATHS or path.startswith(
@@ -114,8 +123,8 @@ def is_http_tls_passthrough_path(path: str) -> bool:
 
 def build_http_tls_companion_app(
     https_port: int,
-    dav_owner: Any | None = None,
-) -> Any:
+    dav_owner: DavOwner | None = None,
+) -> ASGIApp:
     """Build the HTTP app used while the UI runs on HTTPS."""
     app = dav_owner.app if dav_owner is not None else None
     return _HttpTlsCompanionApp(app, https_port)
@@ -124,7 +133,7 @@ def build_http_tls_companion_app(
 class _HttpTlsCompanionApp:
     """HTTP-side ASGI app for TLS mode."""
 
-    def __init__(self, app: Any | None, https_port: int) -> None:
+    def __init__(self, app: ASGIApp | None, https_port: int) -> None:
         self.app = app
         self.https_port = https_port
 
@@ -186,8 +195,8 @@ class _HttpTlsCompanionApp:
 
 def build_ui_https_redirect_app(
     https_port: int,
-    dav_owner: Any | None = None,
-) -> Any:
+    dav_owner: DavOwner | None = None,
+) -> ASGIApp:
     """Build the HTTP companion app for TLS mode."""
     return build_http_tls_companion_app(https_port, dav_owner)
 
@@ -257,8 +266,10 @@ class DavApp:
             "_config_path",
             os.environ.get("BUZZ_CONFIG", DEFAULT_DAV_CONFIG_PATH),
         )
+        for key in unknown_config_keys(config._file_raw, to_nested_dict(config)):
+            record_event(f"Unknown config key: {key}", level="warning")
         os.environ["RD_APITOKEN"] = config.token
-        self.client = RD()
+        self.client = RD() if config.token else None
         self.ui_loop: asyncio.AbstractEventLoop | None = None
         self.state = BuzzState(config, self.client, on_ui_change=self._notify_ui_change)
         self.curator_ready = not bool(config.curator_url)
@@ -270,16 +281,24 @@ class DavApp:
         self._curator_log_level: str = "info"
         registry.add_listener(self._handle_recorded_event)
 
+        if config.token:
+            initial_sync = InitialSync(self.state)
+            self._poller: Poller | None = Poller(self.state)
+            initial_sync.start()
+            self._poller.start()
+        else:
+            self._poller = None
+            self.state.last_error = "Real-Debrid token is not configured."
+            self.state.mark_startup_sync_complete()
+            record_event("Real-Debrid token is not configured", level="error")
+
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             self.ui_loop = asyncio.get_running_loop()
             self._load_opensubtitles_languages()
-            initial_sync = InitialSync(self.state)
-            poller = Poller(self.state)
-            initial_sync.start()
-            poller.start()
             yield
-            poller.stop()
+            if self._poller is not None:
+                self._poller.stop()
             self.ui_loop = None
             self.state.close()
 
@@ -417,7 +436,7 @@ class DavApp:
             return self.config_payload()
 
         @self.app.post("/api/config")
-        def post_config(payload: dict):
+        def post_config(payload: dict[str, Any]):
             try:
                 overrides = payload.get("overrides", {})
                 overrides = _strip_secrets(overrides)
@@ -555,7 +574,7 @@ class DavApp:
                 return JSONResponse(status_code=500, content={"error": str(exc)})
 
         @self.app.post("/api/subtitles/fetch-torrent")
-        def fetch_subs_for_torrent(payload: dict):
+        def fetch_subs_for_torrent(payload: dict[str, Any]):
             import httpx
 
             torrent_name = payload.get("torrent_name", "").strip()

@@ -91,7 +91,8 @@
                   phx-click="restore"
                   phx-value-hash="{{ torrent.hash }}"
                   phx-disable-with="..."
-                  title="Confirm Restore"
+                  title="{% if not token_configured %}Restore to cache: requires a valid Real-Debrid token{% else %}Confirm Restore{% endif %}"
+                  {% if not token_configured %}disabled{% endif %}
                 >[Y]</button>
                 <button
                   class="opt opt-n"
@@ -99,6 +100,7 @@
                   phx-value-hash="{{ torrent.hash }}"
                   phx-disable-with="..."
                   title="Cancel"
+                  {% if not token_configured %}disabled{% endif %}
                 >[N]</button>
               </div>
               {% elif confirm_delete_hash == torrent.hash %}
@@ -108,7 +110,8 @@
                   phx-click="delete"
                   phx-value-hash="{{ torrent.hash }}"
                   phx-disable-with="..."
-                  title="Confirm Permanent Delete"
+                  title="{% if not token_configured %}Delete permanently: requires a valid Real-Debrid token{% else %}Confirm Permanent Delete{% endif %}"
+                  {% if not token_configured %}disabled{% endif %}
                 >[Y]</button>
                 <button
                   class="opt opt-n"
@@ -116,6 +119,7 @@
                   phx-value-hash="{{ torrent.hash }}"
                   phx-disable-with="..."
                   title="Cancel"
+                  {% if not token_configured %}disabled{% endif %}
                 >[N]</button>
               </div>
               {% else %}
@@ -125,14 +129,16 @@
                   phx-click="prompt_restore"
                   phx-value-hash="{{ torrent.hash }}"
                   phx-disable-with="..."
-                  title="Restore to Cache"
+                  title="{% if not token_configured %}Restore to cache: requires a valid Real-Debrid token{% else %}Restore to Cache{% endif %}"
+                  {% if not token_configured %}disabled{% endif %}
                 >[R]</button>
                 <button
                   class="opt btn-x"
                   phx-click="prompt_delete"
                   phx-value-hash="{{ torrent.hash }}"
                   phx-disable-with="..."
-                  title="Delete Permanently"
+                  title="{% if not token_configured %}Delete permanently: requires a valid Real-Debrid token{% else %}Delete Permanently{% endif %}"
+                  {% if not token_configured %}disabled{% endif %}
                 >[D]</button>
               </div>
               {% endif %}

@@ -4,6 +4,7 @@ import json
 import os
 import traceback
 from contextlib import asynccontextmanager
+from typing import Any
 from urllib import request
 
 from fastapi import BackgroundTasks, FastAPI
@@ -80,10 +81,6 @@ class CuratorApp:
                 event="curator_ready",
             )
             yield
-            self.curator.cleanup()
-            record_event(
-                f"curator cleaned up {self.config.target_root}"
-            )
 
         self.app = FastAPI(lifespan=lifespan)
 
@@ -128,7 +125,7 @@ class CuratorApp:
             }
 
         @self.app.post("/api/subtitles/fetch")
-        def trigger_subtitles_fetch(payload: dict | None = None):
+        def trigger_subtitles_fetch(payload: dict[str, Any] | None = None):
             if not self.config.subtitles.enabled:
                 return JSONResponse(
                     status_code=400,

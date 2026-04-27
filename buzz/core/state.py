@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 from urllib import parse, request
 
@@ -359,7 +360,7 @@ class BuzzState:
         self,
         config: DavConfig,
         client: Any,
-        on_ui_change: Any | None = None,
+        on_ui_change: Callable[[str], None] | None = None,
     ) -> None:
         """Initialize state storage and load persisted data from disk."""
         self.config = config
@@ -493,7 +494,7 @@ class BuzzState:
         with self.conn:
             self.conn.execute("DELETE FROM archive WHERE hash = ?", (thash,))
 
-    def _load_snapshot(self) -> tuple[dict, str]:
+    def _load_snapshot(self) -> tuple[Snapshot, str]:
         row = self.conn.execute(
             "SELECT snapshot_json, digest FROM library_snapshot WHERE singleton = 1"
         ).fetchone()
@@ -503,7 +504,7 @@ class BuzzState:
         snapshot = json.loads(row["snapshot_json"])
         return snapshot, row["digest"]
 
-    def _save_snapshot(self, snapshot: dict, digest: str) -> None:
+    def _save_snapshot(self, snapshot: Snapshot, digest: str) -> None:
         with self.conn:
             self.conn.execute(
                 "INSERT OR REPLACE INTO library_snapshot"
@@ -556,12 +557,23 @@ class BuzzState:
 
     def sync(self, *, trigger_hook: bool = True) -> SyncReport:
         """Sync torrent state with Real-Debrid and rebuild the snapshot."""
+        if self.client is None:
+            raise RuntimeError("Real-Debrid token is not configured.")
         hook_paths: list[str] = []
         should_notify = False
         with self.lock:
             self.sync_in_progress = True
         try:
-            summaries = self.client.torrents.get().json()
+            response = self.client.torrents.get()
+            summaries = response.json()
+            if not isinstance(summaries, list):
+                if isinstance(summaries, dict):
+                    error = summaries.get("error") or response.text
+                else:
+                    error = summaries if isinstance(summaries, str) else response.text
+                raise RuntimeError(
+                    f"Real-Debrid API error (HTTP {response.status_code}): {error}"
+                )
             new_cache, infos = self._build_torrent_cache(summaries)
             snapshot, _current_roots = self.builder.build(infos)
             digest = stable_json(canonical_snapshot(snapshot))

@@ -33,7 +33,7 @@
     <div class="meta-row meta-console">
       <b class="meta-item-label">console:</b>
       <span id="meta-console-msg" class="{{ console_class }}">{{ console_msg }}</span>
-      <button class="secondary btn-sm" phx-click="resync">RESYNC LIB</button>
+      <button class="secondary btn-sm" phx-click="resync" {% if not token_configured %}disabled{% endif %} title="{% if not token_configured %}Resync library: requires a valid Real-Debrid token{% else %}Resync library{% endif %}">RESYNC LIB</button>
     </div>
   </div>
 
@@ -79,7 +79,8 @@
         <button
           type="submit"
           id="resolve-btn"
-          {% if analyzing %}disabled{% endif %}
+          {% if analyzing or not token_configured %}disabled{% endif %}
+          title="{% if not token_configured %}Analyze magnet: requires a valid Real-Debrid token{% endif %}"
         >{% if analyzing %}Analyzing...{% else %}Analyze{% endif %}</button>
       </div>
     </form>
@@ -134,7 +135,8 @@
         id="confirm-btn"
         phx-click="confirm_cache"
         phx-disable-with="Caching..."
-        {% if caching %}disabled{% endif %}
+        {% if caching or not token_configured %}disabled{% endif %}
+        title="{% if not token_configured %}Cache files: requires a valid Real-Debrid token{% endif %}"
       >{% if caching %}Caching...{% else %}Cache Selected Files{% endif %}</button>
       <button
         type="button"
@@ -220,7 +222,8 @@
                 class="btn-s"
                 phx-click="fetch_subs"
                 phx-value-torrent_name="{{ torrent.name }}"
-                title="Fetch subtitles"
+                title="{% if not token_configured %}Fetch subtitles: requires a valid Real-Debrid token{% else %}Fetch subtitles{% endif %}"
+                {% if not token_configured %}disabled{% endif %}
               >[S]</button>
               {% endif %}
               {% if confirm_delete_id == torrent.id %}
@@ -230,13 +233,15 @@
                   phx-click="delete"
                   phx-value-hash="{{ torrent.id }}"
                   phx-disable-with="..."
-                  title="Confirm Move to Archive"
+                  title="{% if not token_configured %}Move to archive: requires a valid Real-Debrid token{% else %}Confirm Move to Archive{% endif %}"
+                  {% if not token_configured %}disabled{% endif %}
                 >[Y]</button>
                 <button
                   class="opt opt-n"
                   phx-click="cancel_delete"
                   phx-disable-with="..."
                   title="Cancel"
+                  {% if not token_configured %}disabled{% endif %}
                 >[N]</button>
               </div>
               {% else %}
@@ -246,20 +251,23 @@
                   phx-click="delete"
                   phx-value-hash="{{ torrent.id }}"
                   phx-disable-with="..."
-                  title="Confirm Move to Archive"
+                  title="{% if not token_configured %}Move to archive: requires a valid Real-Debrid token{% else %}Confirm Move to Archive{% endif %}"
+                  {% if not token_configured %}disabled{% endif %}
                 >[Y]</button>
                 <button
                   class="opt opt-n"
                   phx-click="cancel_delete"
                   phx-disable-with="..."
                   title="Cancel"
+                  {% if not token_configured %}disabled{% endif %}
                 >[N]</button>
               </div>
               <button
                 class="btn-x"
                 phx-click="prompt_delete"
                 phx-value-hash="{{ torrent.id }}"
-                title="Move to Archive"
+                title="{% if not token_configured %}Move to archive: requires a valid Real-Debrid token{% else %}Move to Archive{% endif %}"
+                {% if not token_configured %}disabled{% endif %}
               >[X]</button>
               {% endif %}
             </div>

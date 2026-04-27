@@ -15,7 +15,7 @@
     <b class="meta-item-label">console:</b>
     <span id="meta-console-msg" class="{{ console_class }}">{{ console_msg }}</span>
     {% if active_page == "cache" %}
-    <button class="secondary btn-sm" phx-click="resync">RESYNC LIB</button>
+    <button class="secondary btn-sm" phx-click="resync" {% if not token_configured %}disabled{% endif %} title="{% if not token_configured %}Resync library: requires a valid Real-Debrid token{% else %}Resync library{% endif %}">RESYNC LIB</button>
     {% endif %}
   </div>
 </div>

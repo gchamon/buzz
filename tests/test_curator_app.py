@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -787,6 +788,65 @@ class CuratorAppTests(unittest.TestCase):
                 / "The Imaginarium Of Doctor Parnassus (2009).mp4"
             )
             self.assertTrue(curated_file.exists())
+
+
+    def test_rebuild_preserves_inode_for_unchanged_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self._create_source_tree(root / "raw")
+            config = self._config(root)
+
+            build_library(config)
+
+            curated_file = next((config.target_root / "movies").rglob("*.mkv"))
+            inode_before = curated_file.lstat().st_ino
+
+            build_library(config)
+
+            self.assertTrue(curated_file.exists())
+            inode_after = curated_file.lstat().st_ino
+            self.assertEqual(inode_before, inode_after)
+
+    def test_rebuild_removes_stale_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_root = root / "raw"
+            self._create_source_tree(source_root)
+            config = self._config(root)
+
+            build_library(config)
+
+            curated_file = next((config.target_root / "movies").rglob("*.mkv"))
+
+            (source_root / "movies" / "Movie.2026.1080p.mkv").unlink()
+
+            build_library(config)
+
+            self.assertFalse(curated_file.exists())
+
+    def test_rebuild_updates_symlink_when_target_changes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_root = root / "raw"
+            self._create_source_tree(source_root)
+            config = self._config(root)
+
+            build_library(config)
+
+            curated_file = next((config.target_root / "movies").rglob("*.mkv"))
+            old_target = os.readlink(curated_file)
+
+            # Replace with a different source file (different name → new symlink target)
+            (source_root / "movies" / "Movie.2026.1080p.mkv").unlink()
+            (source_root / "movies" / "Movie.2027.1080p.mkv").write_text(
+                "video", encoding="utf-8"
+            )
+
+            build_library(config)
+
+            new_file = next((config.target_root / "movies").rglob("*.mkv"))
+            self.assertNotEqual(os.readlink(new_file), old_target)
+
 
 
 if __name__ == "__main__":
