@@ -133,12 +133,14 @@
       <button
         id="confirm-btn"
         phx-click="confirm_cache"
+        phx-disable-with="Caching..."
         {% if caching %}disabled{% endif %}
       >{% if caching %}Caching...{% else %}Cache Selected Files{% endif %}</button>
       <button
         type="button"
         class="secondary"
         phx-click="cancel_cache"
+        phx-disable-with="..."
       >Cancel</button>
     </div>
     {% endif %}
@@ -227,11 +229,13 @@
                   class="opt opt-y"
                   phx-click="delete"
                   phx-value-hash="{{ torrent.id }}"
+                  phx-disable-with="..."
                   title="Confirm Move to Archive"
                 >[Y]</button>
                 <button
                   class="opt opt-n"
                   phx-click="cancel_delete"
+                  phx-disable-with="..."
                   title="Cancel"
                 >[N]</button>
               </div>
@@ -241,11 +245,13 @@
                   class="opt opt-y"
                   phx-click="delete"
                   phx-value-hash="{{ torrent.id }}"
+                  phx-disable-with="..."
                   title="Confirm Move to Archive"
                 >[Y]</button>
                 <button
                   class="opt opt-n"
                   phx-click="cancel_delete"
+                  phx-disable-with="..."
                   title="Cancel"
                 >[N]</button>
               </div>

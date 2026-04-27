@@ -41,6 +41,9 @@ The following steps are used to deploy buzz with jellyfin.
 ```bash
 curl -fsSLO https://gitlab.com/gabriel.chamon/buzz/-/raw/main/docker-compose.yml
 curl -fsSL https://gitlab.com/gabriel.chamon/buzz/-/raw/main/buzz.min.yml -o buzz.yml
+
+# Full annotated config, alternatively:
+# curl -fsSL https://gitlab.com/gabriel.chamon/buzz/-/raw/main/buzz.dist.yml -o buzz.yml
 ```
 
 2. Set your Real-Debrid token in `buzz.yml`. Every other setting in
@@ -91,18 +94,20 @@ scans.
    The library names must match `media_server.library_map` in `buzz.yml`
    (defaults: `Movies`, `TV Shows`, `Anime`). Finish the wizard with the
    remaining defaults.
-4. In the Jellyfin UI, open **Dashboard → API Keys**, click the **+**
+4. Optional: to let Buzz trigger Jellyfin library scans after Curator rebuilds,
+   set `media_server.trigger_lib_scan: true`. Then, in the Jellyfin UI,
+   open **Dashboard → API Keys**, click the **+**
    button, give the key an app name (e.g. `buzz`), and copy the generated
    key.
 5. Paste the key into `buzz.yml` under
-   `media_server.jellyfin.api_key`. Secret fields aren't editable from the
-   web UI yet — they live in `buzz.yml` until HTTPS and basic auth are in
-   place (tracked in
-   [`implement-basic-security`](./docs/work-items/implement-basic-security.md)).
-6. Restart the Buzz services so the curator picks up the new key:
+   `media_server.jellyfin.api_key`.
+6. Stop and start the Buzz services so the curator picks up the new key.
+   `docker compose restart` is not supported for this stack; use stop/start
+   or down/up instead.
 
    ```bash
-   docker compose restart buzz-dav buzz-curator
+   docker compose stop buzz-dav buzz-curator
+   docker compose start buzz-dav buzz-curator
    ```
 
 ### HTTPS UI
@@ -132,10 +137,12 @@ To generate the files manually instead, run:
 python3 scripts/generate_self_signed_cert.py
 ```
 
-If you change `buzz.yml`, restart the service:
+If you change `buzz.yml`, stop and start the affected services. `docker compose
+restart` is not supported for this stack.
 
 ```bash
-docker compose restart buzz
+docker compose stop buzz-dav buzz-curator
+docker compose start buzz-dav buzz-curator
 ```
 
 To inspect machine-managed state:
@@ -162,22 +169,25 @@ For config merge, masking, and reload behavior, see
 | Key | Default | Description |
 | :--- | :--- | :--- |
 | `provider.token` | *(Required)* | Your Real-Debrid API token. |
-| `poll_interval_secs` | `10` | How often Buzz polls Real-Debrid for changes. |
+| `provider.connection_concurrency` | `4` | Maximum number of concurrent upstream connections to Real-Debrid (count). |
+| `poll_interval_secs` | `10` | How often Buzz polls Real-Debrid for changes (seconds). |
 | `server.bind` | `0.0.0.0` | IP address the DAV server binds to. |
-| `server.port` | `9999` | Port for the DAV server. |
-| `server.stream_buffer_size` | `0` | Read-ahead buffer size in bytes for streaming media (e.g., 50MB: `52428800`). Set to `0` to disable. |
-| `tls.cert_path` | `data/tls/buzz.crt` | TLS certificate path for the HTTPS UI on port `9443`; relative paths resolve from the process working directory. Set both TLS paths to empty strings to opt out. |
-| `tls.key_path` | `data/tls/buzz.key` | TLS private key path. Buzz creates and renews missing or expiring certs automatically. |
-| `state_dir` | `/app/data` | Shared path used by both `buzz-dav` and `buzz-curator` for `buzz.sqlite` and related state. |
+| `server.port` | `9999` | Port for the DAV server (TCP port). |
+| `server.stream_buffer_size` | `0` | Read-ahead buffer size for streaming media (bytes). Set to `0` to disable. Recommended when enabled: `500000000`. |
+| `tls.cert_path` | `data/tls/buzz.crt` | TLS certificate path for the HTTPS UI on port `9443` (container path); relative paths resolve from the process working directory. Set both TLS paths to empty strings to opt out. |
+| `tls.key_path` | `data/tls/buzz.key` | TLS private key path (container path). Buzz creates and renews missing or expiring certs automatically. |
+| `state_dir` | `/app/data` | Shared path used by both `buzz-dav` and `buzz-curator` for `buzz.sqlite` and related state (container path). |
 | `hooks.on_library_change` | `sh /app/scripts/media_update.sh` | Shell command executed when a change in the library is detected. |
 | `hooks.curator_url` | `http://buzz-curator:8400/rebuild` | Internal URL to trigger the Curator rebuild. |
-| `hooks.rd_update_delay_secs` | `15` | Delay before triggering a hook on RD updates (allows inventory to settle). |
-| `compat.enable_all_dir` | `true` | Exposes an `__all__` directory via WebDAV containing all playable files. |
-| `compat.enable_unplayable_dir` | `true` | Exposes an `__unplayable__` directory for files that aren't video files. |
+| `hooks.rd_update_delay_secs` | `15` | Delay before triggering a hook on RD updates (seconds). |
+| `compat.enable_all_dir` | `true` | Exposes an `__all__` directory via WebDAV containing all playable files (boolean). |
+| `compat.enable_unplayable_dir` | `true` | Exposes an `__unplayable__` directory for files that aren't video files (boolean). |
 | `directories.anime.patterns` | *(Default regex list)* | List of regex patterns used to categorize files as Anime. |
-| `request_timeout_secs` | `30` | Timeout in seconds for API requests to Real-Debrid. |
-| `logging.verbose` | `false` | Enable verbose request and debug logging. |
+| `request_timeout_secs` | `30` | Timeout for API requests to Real-Debrid (seconds). |
+| `logging.verbose` | `false` | Enable verbose request and debug logging (boolean). |
+| `logging.max_entries` | `1000` | Maximum number of log entries to keep in the UI log view (count). |
 | `media_server.kind` | `jellyfin` | Which media server Buzz drives. `jellyfin` or `plex` (Plex is currently **untested**). |
+| `media_server.trigger_lib_scan` | `false` | Trigger media-server library scans after Curator rebuilds (boolean). When true for Jellyfin, `media_server.jellyfin.api_key` is required and validated on Curator startup. |
 | `media_server.jellyfin.url` | `http://jellyfin:8096` | URL to the Jellyfin server (must be reachable from the Buzz container). |
 | `media_server.jellyfin.api_key` | *(Empty)* | Jellyfin API Key used to trigger library scans. |
 | `media_server.jellyfin.scan_task_id` | *(Empty)* | Optional. Used if automatic Jellyfin task discovery fails. |
@@ -189,18 +199,18 @@ These settings control the automatic subtitle fetcher.
 
 | Key | Default | Description |
 | :--- | :--- | :--- |
-| `subtitles.enabled` | `false` | Whether to enable automatic subtitle fetching from OpenSubtitles. |
-| `subtitles.opensubtitles.api_key` | *(Required)* | Your OpenSubtitles.com API Key (needed for search and download). |
-| `subtitles.opensubtitles.username` | *(Required)* | Your OpenSubtitles.com username (needed for download authentication). |
-| `subtitles.opensubtitles.password` | *(Required)* | Your OpenSubtitles.com password (needed for download authentication). |
-| `subtitles.languages` | `[en]` | List of language codes to download (e.g., `[en, pt-br]`). Supports regional codes like `pt-br` and `pt-pt`. |
+| `subtitles.enabled` | `false` | Whether to enable automatic subtitle fetching from OpenSubtitles (boolean). |
+| `subtitles.opensubtitles.api_key` | *(Required)* | Your OpenSubtitles.com API Key. |
+| `subtitles.opensubtitles.username` | *(Required)* | Your OpenSubtitles.com username. |
+| `subtitles.opensubtitles.password` | *(Required)* | Your OpenSubtitles.com password. |
+| `subtitles.languages` | `[en]` | List of language codes to download (e.g., `[en, pt-br]`). |
 | `subtitles.strategy` | `most-downloaded` | Ranking strategy: `best-match`, `most-downloaded`, `best-rated`, `trusted`, `latest`. |
 | `subtitles.filters.hearing_impaired` | `exclude` | Handling of HI tracks: `exclude`, `include`, `prefer`. |
-| `subtitles.filters.exclude_ai` | `true` | Exclude AI-translated subtitles. |
-| `subtitles.filters.exclude_machine` | `true` | Exclude machine-translated subtitles. |
-| `subtitles.search_delay_secs` | `0.5` | Delay between API search calls to respect rate limits. |
-| `subtitles.download_delay_secs` | `1.0` | Delay between download calls. |
-| `subtitles.root` | `/mnt/buzz/subs` | Path inside the container where downloaded `.srt` files are stored. |
+| `subtitles.filters.exclude_ai` | `true` | Exclude AI-translated subtitles (boolean). |
+| `subtitles.filters.exclude_machine` | `true` | Exclude machine-translated subtitles (boolean). |
+| `subtitles.search_delay_secs` | `0.5` | Delay between API search calls (seconds). |
+| `subtitles.download_delay_secs` | `1.0` | Delay between download calls (seconds). |
+| `subtitles.root` | `/mnt/buzz/subs` | Path inside the container where downloaded `.srt` files are stored (container path). |
 
 For the subtitle overlay, metadata, and fetch pipeline, see
 [Subtitle Pipeline](./docs/architecture.md#subtitle-pipeline).
@@ -210,13 +220,14 @@ Complete example:
 ```yaml
 provider:
   token: "YOUR_RD_TOKEN"
+  connection_concurrency: 4
 
 poll_interval_secs: 10
 
 server:
   bind: "0.0.0.0"
   port: 9999
-  stream_buffer_size: 52428800
+  stream_buffer_size: 0
 
 tls:
   cert_path: data/tls/buzz.crt
@@ -231,6 +242,7 @@ hooks:
 
 media_server:
   kind: jellyfin
+  trigger_lib_scan: true
   jellyfin:
     url: http://jellyfin:8096
     api_key: "YOUR_JELLYFIN_API_KEY"
@@ -299,7 +311,12 @@ docker compose \
   --build
 ```
 
-Source changes take effect immediately after restarting the service (`docker compose restart buzz-dav`) without rebuilding the image. If you prefer an isolated environment, you can spin up a full development VM with [Incus](./docs/incus-dev-vm.md). In production, `docker compose up -d` runs the stable, immutable code baked into the image; rebuild it after changes with `docker compose up -d --build`.
+Source changes take effect immediately after stopping and starting the service
+(`docker compose stop buzz-dav && docker compose start buzz-dav`) without
+rebuilding the image. If you prefer an isolated environment, you can spin up a
+full development VM with [Incus](./docs/incus-dev-vm.md). In production,
+`docker compose up -d` runs the stable, immutable code baked into the image;
+rebuild it after changes with `docker compose up -d --build`.
 
 For the GitLab registry image, CI components, and development override model,
 see [Deployment And CI Architecture](./docs/architecture.md#deployment-and-ci-architecture).

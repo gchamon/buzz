@@ -816,7 +816,9 @@ class BuzzState:
                     raise ValueError(f"Curator returned HTTP {response.status}")
                 self.verbose_log("Curator rebuild triggered successfully")
         except Exception as exc:
-            record_event(f"Failed to trigger curator rebuild: {exc}", level="error")
+            msg = f"Failed to trigger curator rebuild: {exc}"
+            record_event(msg, level="error")
+            raise RuntimeError(msg) from exc
 
     def _run_hook(self, changed_roots: list[str]) -> None:
         if not self.config.hook_command:
@@ -993,15 +995,41 @@ class BuzzState:
                     self._add_to_archive(info, magnet=cached.get("magnet"))
 
         res = self.client.torrents.delete(torrent_id)
+        warning = None
         if res.status_code not in (200, 204):
-            raise ValueError(f"Failed to delete torrent: {res.text}")
+            if self._is_already_deleted_response(res):
+                warning = (
+                    "torrent already missing from Real-Debrid; "
+                    "archived locally"
+                )
+                record_event(warning, level="warning")
+            else:
+                raise ValueError(f"Failed to delete torrent: {res.text}")
 
         with self.lock:
             if torrent_id in self.cache:
                 del self.cache[torrent_id]
                 self._delete_cache_entry(torrent_id)
         self._notify_ui_change("archive")
+        if warning:
+            return {"status": "success", "warning": warning}
         return {"status": "success"}
+
+    def _is_already_deleted_response(self, response: object) -> bool:
+        status_code = getattr(response, "status_code", None)
+        if status_code in (404, 410):
+            return True
+        text = str(getattr(response, "text", "")).lower()
+        return any(
+            phrase in text
+            for phrase in (
+                "not found",
+                "not_found",
+                "does not exist",
+                "unknown torrent",
+                "invalid torrent id",
+            )
+        )
 
     def _add_to_archive(self, info: TorrentInfo, magnet: str | None = None) -> None:
         thash = info.get("hash")

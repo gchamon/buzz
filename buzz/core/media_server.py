@@ -1,11 +1,22 @@
 """Jellyfin media server integration helpers."""
 
 import json
+from dataclasses import dataclass
 from urllib import error, request
 
 from ..models import CuratorConfig
 from .events import record_event
 from .state import is_internal_category
+
+
+@dataclass(frozen=True)
+class JellyfinAuthProbe:
+    """Result of a Jellyfin API auth/reachability probe."""
+
+    valid: bool
+    invalid_token: bool = False
+    unreachable: bool = False
+    error: str = ""
 
 
 def discover_scan_task_id(config: CuratorConfig) -> str:
@@ -37,6 +48,11 @@ def discover_scan_task_id(config: CuratorConfig) -> str:
 
 def validate_jellyfin_auth(config: CuratorConfig) -> bool:
     """Verify that the Jellyfin API key is valid."""
+    return probe_jellyfin_auth(config).valid
+
+
+def probe_jellyfin_auth(config: CuratorConfig) -> JellyfinAuthProbe:
+    """Check Jellyfin API auth while preserving failure type."""
     req = request.Request(
         f"{config.jellyfin_url}/System/Info",
         headers={
@@ -45,13 +61,23 @@ def validate_jellyfin_auth(config: CuratorConfig) -> bool:
     )
     try:
         with request.urlopen(req, timeout=10):
-            return True
+            return JellyfinAuthProbe(valid=True)
     except error.HTTPError as exc:
         if exc.code in (401, 403):
-            return False
-        raise
-    except Exception:
-        return False
+            return JellyfinAuthProbe(
+                valid=False,
+                invalid_token=True,
+                error="Jellyfin API Token is invalid or unauthorized",
+            )
+        return JellyfinAuthProbe(valid=False, error=str(exc))
+    except error.URLError as exc:
+        return JellyfinAuthProbe(
+            valid=False,
+            unreachable=True,
+            error=str(exc.reason),
+        )
+    except Exception as exc:
+        return JellyfinAuthProbe(valid=False, error=str(exc))
 
 
 def discover_jellyfin_libraries(config: CuratorConfig) -> dict[str, str]:
@@ -74,6 +100,7 @@ def discover_jellyfin_libraries(config: CuratorConfig) -> dict[str, str]:
 def trigger_jellyfin_scan(config: CuratorConfig) -> None:
     """Trigger a full Jellyfin media library scan."""
     task_id = discover_scan_task_id(config)
+    record_event("Triggering full Jellyfin media library scan...", level="info")
     req = request.Request(
         f"{config.jellyfin_url}/ScheduledTasks/Running/{task_id}",
         method="POST",
@@ -163,7 +190,6 @@ def trigger_jellyfin_selective_refresh(
             with request.urlopen(req, timeout=30) as resp:
                 _ = resp.read()
         except Exception as exc:
-            record_event(
-                f"Failed to refresh Jellyfin library '{name}': {exc}",
-                level="error",
-            )
+            msg = f"Failed to refresh Jellyfin library '{name}': {exc}"
+            record_event(msg, level="error")
+            raise RuntimeError(msg) from exc

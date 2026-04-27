@@ -145,7 +145,7 @@ def _retry_sleep(attempt: int) -> None:
 
 def _acquire_upstream_slot(state: BuzzState) -> threading.BoundedSemaphore:
     """Acquire a short-lived Real-Debrid setup slot or fail fast."""
-    semaphore = _get_upstream_semaphore(state.config.upstream_concurrency)
+    semaphore = _get_upstream_semaphore(state.config.connection_concurrency)
     timeout = max(1, int(state.config.request_timeout_secs))
     if semaphore.acquire(timeout=timeout):
         return semaphore

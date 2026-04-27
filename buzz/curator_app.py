@@ -9,7 +9,12 @@ from urllib import request
 from fastapi import BackgroundTasks, FastAPI
 from fastapi.responses import JSONResponse
 
-from .core.curator import Curator, RebuildError, build_library
+from .core.curator import (
+    Curator,
+    RebuildError,
+    build_library,
+    validate_media_server_startup_auth,
+)
 from .core.events import record_event
 from .core.subtitles import (
     background_fetch_subtitles,
@@ -41,6 +46,21 @@ class CuratorApp:
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
+            try:
+                validate_media_server_startup_auth(self.config)
+                if (
+                    self.config.trigger_lib_scan
+                    and self.config.media_server_kind.strip().lower() == "jellyfin"
+                ):
+                    record_event(
+                        "Jellyfin API token validated",
+                        event="jellyfin_auth_validated",
+                    )
+            except Exception as exc:
+                record_event(
+                    f"curator startup failed: {exc}",
+                    level="error",
+                )
             if self.config.build_on_start:
                 try:
                     startup_report = build_library(self.config)

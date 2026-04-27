@@ -431,6 +431,15 @@ code {
   font-family: inherit;
 }
 
+.opt:disabled,
+.btn-r:disabled,
+.btn-s:disabled,
+.btn-x:disabled {
+  color: var(--fg);
+  background: rgba(68, 71, 90, 0.45);
+  cursor: wait;
+}
+
 .btn-r:hover {
   color: var(--green);
   background: rgba(80, 250, 123, 0.1);
@@ -1148,6 +1157,12 @@ div.code-toolbar>.toolbar {
   font-size: 0.8rem;
 }
 
+.config-baseline {
+  color: var(--comment);
+  font-size: 0.75rem;
+  margin-left: 8px;
+}
+
 .config-reload-mode {
   color: var(--comment);
   font-size: 0.72rem;
@@ -1167,12 +1182,14 @@ div.code-toolbar>.toolbar {
 
 .config-field input[type="text"],
 .config-field input[type="number"],
+.config-field input[type="url"],
+.config-field input[type="password"],
 .config-field select,
 .config-field textarea {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--comment);
-  border-radius: 3px;
+  border-radius: 4px;
   padding: 6px 8px;
   font-family: inherit;
   font-size: 0.85rem;
@@ -1180,6 +1197,8 @@ div.code-toolbar>.toolbar {
 
 .config-field input[type="text"]:focus,
 .config-field input[type="number"]:focus,
+.config-field input[type="url"]:focus,
+.config-field input[type="password"]:focus,
 .config-field select:focus,
 .config-field textarea:focus {
   outline: none;

@@ -217,7 +217,8 @@ class SubtitleTests(unittest.TestCase):
                 state_dir=root / "state",
                 subtitles=SubtitleConfig(enabled=True, api_key="key"),
                 subtitle_root=root / "subs",
-                jellyfin_api_key="jf_key"
+                jellyfin_api_key="jf_key",
+                trigger_lib_scan=True,
             )
 
             mapping = [

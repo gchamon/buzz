@@ -90,12 +90,14 @@
                   class="opt opt-y"
                   phx-click="restore"
                   phx-value-hash="{{ torrent.hash }}"
+                  phx-disable-with="..."
                   title="Confirm Restore"
                 >[Y]</button>
                 <button
                   class="opt opt-n"
                   phx-click="cancel_restore"
                   phx-value-hash="{{ torrent.hash }}"
+                  phx-disable-with="..."
                   title="Cancel"
                 >[N]</button>
               </div>
@@ -105,12 +107,14 @@
                   class="opt opt-y"
                   phx-click="delete"
                   phx-value-hash="{{ torrent.hash }}"
+                  phx-disable-with="..."
                   title="Confirm Permanent Delete"
                 >[Y]</button>
                 <button
                   class="opt opt-n"
                   phx-click="cancel_delete"
                   phx-value-hash="{{ torrent.hash }}"
+                  phx-disable-with="..."
                   title="Cancel"
                 >[N]</button>
               </div>
@@ -120,12 +124,14 @@
                   class="opt btn-r"
                   phx-click="prompt_restore"
                   phx-value-hash="{{ torrent.hash }}"
+                  phx-disable-with="..."
                   title="Restore to Cache"
                 >[R]</button>
                 <button
                   class="opt btn-x"
                   phx-click="prompt_delete"
                   phx-value-hash="{{ torrent.hash }}"
+                  phx-disable-with="..."
                   title="Delete Permanently"
                 >[D]</button>
               </div>

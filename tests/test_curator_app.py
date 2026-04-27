@@ -8,7 +8,14 @@ from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 from buzz.core import db
-from buzz.core.curator import RebuildError, build_library, rebuild_and_trigger
+from buzz.core.curator import (
+    MediaServerAuthError,
+    RebuildError,
+    build_library,
+    rebuild_and_trigger,
+    validate_media_server_startup_auth,
+)
+from buzz.core.media_server import JellyfinAuthProbe
 from buzz.curator_app import CuratorApp
 from buzz.models import CuratorConfig
 
@@ -20,7 +27,7 @@ class CuratorAppTests(unittest.TestCase):
             "target_root": root / "curated",
             "state_dir": root / "state",
             "overrides_path": root / "overrides.yml",
-            "skip_jellyfin_scan": True,
+            "trigger_lib_scan": False,
             "build_on_start": False,
         }
         defaults.update(overrides)
@@ -125,6 +132,167 @@ class CuratorAppTests(unittest.TestCase):
                     for payload in payloads
                 )
             )
+
+    def test_curator_lifespan_logs_startup_auth_error_and_stays_up(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "raw" / "movies").mkdir(parents=True)
+            (root / "raw" / "shows").mkdir(parents=True)
+            (root / "raw" / "anime").mkdir(parents=True)
+
+            app = CuratorApp(self._config(root))
+            stdout = io.StringIO()
+            with patch(
+                "buzz.curator_app.validate_media_server_startup_auth",
+                side_effect=MediaServerAuthError("bad auth"),
+            ):
+                with patch("sys.stdout", stdout):
+                    with TestClient(app.app) as client:
+                        response = client.get("/healthz")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("curator startup failed: bad auth", stdout.getvalue())
+            self.assertIn("curator startup complete", stdout.getvalue())
+
+    def test_curator_lifespan_logs_startup_auth_success(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "raw" / "movies").mkdir(parents=True)
+            (root / "raw" / "shows").mkdir(parents=True)
+            (root / "raw" / "anime").mkdir(parents=True)
+
+            config = self._config(
+                root,
+                trigger_lib_scan=True,
+                jellyfin_api_key="token",
+            )
+            app = CuratorApp(config)
+            stdout = io.StringIO()
+            with patch(
+                "buzz.curator_app.validate_media_server_startup_auth"
+            ) as validate:
+                with patch("sys.stdout", stdout):
+                    with TestClient(app.app) as client:
+                        response = client.get("/healthz")
+
+            self.assertEqual(response.status_code, 200)
+            validate.assert_called_once_with(config)
+            self.assertIn("Jellyfin API token validated", stdout.getvalue())
+
+    def test_startup_auth_allows_missing_token_when_scan_trigger_disabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(
+                root, trigger_lib_scan=False, jellyfin_api_key=""
+            )
+
+            with patch("buzz.core.curator.probe_jellyfin_auth") as probe:
+                validate_media_server_startup_auth(config)
+
+            probe.assert_not_called()
+
+    def test_startup_auth_requires_token_when_scan_trigger_enabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(
+                root, trigger_lib_scan=True, jellyfin_api_key=""
+            )
+
+            with self.assertRaisesRegex(
+                MediaServerAuthError, "media_server.jellyfin.api_key"
+            ):
+                validate_media_server_startup_auth(config)
+
+    def test_startup_auth_rejects_invalid_token_immediately(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(
+                root, trigger_lib_scan=True, jellyfin_api_key="bad-token"
+            )
+
+            with patch(
+                "buzz.core.curator.probe_jellyfin_auth",
+                return_value=JellyfinAuthProbe(
+                    valid=False,
+                    invalid_token=True,
+                    error="unauthorized",
+                ),
+            ) as probe:
+                with self.assertRaisesRegex(
+                    MediaServerAuthError, "invalid or unauthorized"
+                ):
+                    validate_media_server_startup_auth(config)
+
+            probe.assert_called_once_with(config)
+
+    def test_startup_auth_retries_until_jellyfin_is_reachable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(
+                root, trigger_lib_scan=True, jellyfin_api_key="token"
+            )
+            now = [0.0]
+
+            def monotonic():
+                return now[0]
+
+            def sleep(seconds: float) -> None:
+                now[0] += seconds
+
+            with patch(
+                "buzz.core.curator.probe_jellyfin_auth",
+                side_effect=[
+                    JellyfinAuthProbe(
+                        valid=False,
+                        unreachable=True,
+                        error="connection refused",
+                    ),
+                    JellyfinAuthProbe(valid=True),
+                ],
+            ) as probe:
+                validate_media_server_startup_auth(
+                    config,
+                    timeout_secs=300,
+                    retry_interval_secs=5,
+                    sleep=sleep,
+                    monotonic=monotonic,
+                )
+
+            self.assertEqual(probe.call_count, 2)
+            self.assertEqual(now[0], 5)
+
+    def test_startup_auth_fails_when_jellyfin_stays_unreachable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(
+                root, trigger_lib_scan=True, jellyfin_api_key="token"
+            )
+            now = [0.0]
+
+            def monotonic():
+                return now[0]
+
+            def sleep(seconds: float) -> None:
+                now[0] += seconds
+
+            with patch(
+                "buzz.core.curator.probe_jellyfin_auth",
+                return_value=JellyfinAuthProbe(
+                    valid=False,
+                    unreachable=True,
+                    error="connection refused",
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    MediaServerAuthError, "Jellyfin is unreachable"
+                ):
+                    validate_media_server_startup_auth(
+                        config,
+                        timeout_secs=10,
+                        retry_interval_secs=5,
+                        sleep=sleep,
+                        monotonic=monotonic,
+                    )
 
     def test_curator_subtitle_fetch_uses_consistent_torrent_name(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -295,7 +463,7 @@ class CuratorAppTests(unittest.TestCase):
     def test_rebuild_and_trigger_skips_scan_when_configured(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config = self._config(root, skip_jellyfin_scan=True)
+            config = self._config(root, trigger_lib_scan=False)
             self._create_source_tree(config.source_root)
 
             report = rebuild_and_trigger(config)
@@ -311,7 +479,7 @@ class CuratorAppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config = self._config(
-                root, skip_jellyfin_scan=False, jellyfin_api_key=""
+                root, trigger_lib_scan=True, jellyfin_api_key=""
             )
             self._create_source_tree(config.source_root)
 
@@ -325,8 +493,35 @@ class CuratorAppTests(unittest.TestCase):
                 report["jellyfin_scan_status"], "skipped_missing_auth"
             )
             self.assertIsNone(report["jellyfin_scan_error"])
+            self.assertIn(
+                "media_server.jellyfin.api_key is empty",
+                stdout.getvalue(),
+            )
             # The curator now always logs mapping events
             self.assertIn("Curator mapping updated", stdout.getvalue())
+
+    def test_rebuild_and_trigger_warns_when_plex_token_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(
+                root,
+                media_server_kind="plex",
+                plex_token="",
+                trigger_lib_scan=True,
+            )
+            self._create_source_tree(config.source_root)
+
+            stdout = io.StringIO()
+            with patch("sys.stdout", stdout):
+                report = rebuild_and_trigger(config)
+
+            self.assertEqual(report["movies"], 1)
+            self.assertFalse(report["jellyfin_scan_triggered"])
+            self.assertEqual(
+                report["jellyfin_scan_status"], "skipped_missing_auth"
+            )
+            self.assertIsNone(report["jellyfin_scan_error"])
+            self.assertIn("media_server.plex.token is empty", stdout.getvalue())
 
     def test_rebuild_logs_mapping_when_verbose_is_enabled(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -390,7 +585,7 @@ class CuratorAppTests(unittest.TestCase):
             root = Path(tmpdir)
             config = self._config(
                 root,
-                skip_jellyfin_scan=False,
+                trigger_lib_scan=True,
                 jellyfin_api_key="token",
                 jellyfin_scan_task_id="scan-task",
             )
@@ -414,7 +609,7 @@ class CuratorAppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config = self._config(
-                root, skip_jellyfin_scan=False, jellyfin_api_key="token"
+                root, trigger_lib_scan=True, jellyfin_api_key="token"
             )
             self._create_source_tree(config.source_root)
 
@@ -462,6 +657,35 @@ class CuratorAppTests(unittest.TestCase):
                 )
             )
 
+    @patch("buzz.core.media_server.discover_jellyfin_libraries")
+    @patch("urllib.request.urlopen")
+    def test_selective_refresh_failure_marks_rebuild_scan_failed(
+        self, mock_urlopen, mock_discover
+    ):
+        mock_discover.return_value = {"Movies": "movie-id-123"}
+        mock_urlopen.side_effect = RuntimeError("refresh failed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(
+                root,
+                trigger_lib_scan=True,
+                jellyfin_api_key="token",
+                jellyfin_library_map={"movies": "Movies"},
+            )
+            self._create_source_tree(config.source_root)
+
+            with patch(
+                "buzz.core.curator.validate_jellyfin_auth",
+                return_value=True,
+            ):
+                report = rebuild_and_trigger(
+                    config, changed_roots=["movies/MyMovie"]
+                )
+
+            self.assertFalse(report["jellyfin_scan_triggered"])
+            self.assertEqual(report["jellyfin_scan_status"], "failed")
+            self.assertIn("refresh failed", report["jellyfin_scan_error"])
+
     @patch("buzz.core.curator.validate_jellyfin_auth")
     def test_rebuild_and_trigger_logs_error_and_returns_report_for_scan_failure(
         self, mock_validate
@@ -471,7 +695,7 @@ class CuratorAppTests(unittest.TestCase):
             root = Path(tmpdir)
             config = self._config(
                 root,
-                skip_jellyfin_scan=False,
+                trigger_lib_scan=True,
                 jellyfin_api_key="token",
                 jellyfin_scan_task_id="scan-task",
             )

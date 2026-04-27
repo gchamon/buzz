@@ -62,10 +62,26 @@
 
         <form id="config-form" class="config-form" phx-submit="save" phx-change="preview">
           <fieldset class="config-section">
+            <legend>Provider</legend>
+            <div class="config-field {{ field_states.provider_connection_concurrency.css_class }}">
+              <label for="provider.connection_concurrency">connection_concurrency</label>
+              <span class="config-reload-mode">{{ field_states.provider_connection_concurrency.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.provider_connection_concurrency.baseline_value }}</span>
+              <input
+                type="number"
+                id="provider.connection_concurrency"
+                name="provider.connection_concurrency"
+                value="{{ values.connection_concurrency }}"
+              >
+            </div>
+          </fieldset>
+
+          <fieldset class="config-section">
             <legend>Polling</legend>
             <div class="config-field {{ field_states.poll_interval_secs.css_class }}">
               <label for="poll_interval_secs">poll_interval_secs</label>
               <span class="config-reload-mode">{{ field_states.poll_interval_secs.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.poll_interval_secs.baseline_value }}</span>
               <input
                 type="number"
                 id="poll_interval_secs"
@@ -80,6 +96,7 @@
             <div class="config-field {{ field_states.server_bind.css_class }}">
               <label for="server.bind">bind</label>
               <span class="config-reload-mode">{{ field_states.server_bind.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.server_bind.baseline_value }}</span>
               <input
                 type="text"
                 id="server.bind"
@@ -90,6 +107,7 @@
             <div class="config-field {{ field_states.server_port.css_class }}">
               <label for="server.port">port</label>
               <span class="config-reload-mode">{{ field_states.server_port.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.server_port.baseline_value }}</span>
               <input
                 type="number"
                 id="server.port"
@@ -100,6 +118,7 @@
             <div class="config-field {{ field_states.server_stream_buffer_size.css_class }}">
               <label for="server.stream_buffer_size">stream_buffer_size</label>
               <span class="config-reload-mode">{{ field_states.server_stream_buffer_size.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.server_stream_buffer_size.baseline_value }}</span>
               <input
                 type="number"
                 id="server.stream_buffer_size"
@@ -114,6 +133,7 @@
             <div class="config-field {{ field_states.hooks_on_library_change.css_class }}">
               <label for="hooks.on_library_change">on_library_change</label>
               <span class="config-reload-mode">{{ field_states.hooks_on_library_change.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.hooks_on_library_change.baseline_value }}</span>
               <input
                 type="text"
                 id="hooks.on_library_change"
@@ -124,6 +144,7 @@
             <div class="config-field {{ field_states.hooks_curator_url.css_class }}">
               <label for="hooks.curator_url">curator_url</label>
               <span class="config-reload-mode">{{ field_states.hooks_curator_url.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.hooks_curator_url.baseline_value }}</span>
               <input
                 type="text"
                 id="hooks.curator_url"
@@ -134,6 +155,7 @@
             <div class="config-field {{ field_states.hooks_rd_update_delay_secs.css_class }}">
               <label for="hooks.rd_update_delay_secs">rd_update_delay_secs</label>
               <span class="config-reload-mode">{{ field_states.hooks_rd_update_delay_secs.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.hooks_rd_update_delay_secs.baseline_value }}</span>
               <input
                 type="number"
                 id="hooks.rd_update_delay_secs"
@@ -154,6 +176,7 @@
               >
               <label for="compat.enable_all_dir">enable_all_dir</label>
               <span class="config-reload-mode">{{ field_states.compat_enable_all_dir.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.compat_enable_all_dir.baseline_value }}</span>
             </div>
             <div class="config-field checkbox-field {{ field_states.compat_enable_unplayable_dir.css_class }}">
               <input
@@ -164,6 +187,7 @@
               >
               <label for="compat.enable_unplayable_dir">enable_unplayable_dir</label>
               <span class="config-reload-mode">{{ field_states.compat_enable_unplayable_dir.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.compat_enable_unplayable_dir.baseline_value }}</span>
             </div>
           </fieldset>
 
@@ -172,6 +196,7 @@
             <div class="config-field {{ field_states.directories_anime_patterns.css_class }}">
               <label for="directories.anime.patterns">patterns (one per line)</label>
               <span class="config-reload-mode">{{ field_states.directories_anime_patterns.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.directories_anime_patterns.baseline_value }}</span>
               <textarea
                 id="directories.anime.patterns"
                 name="directories.anime.patterns"
@@ -185,6 +210,7 @@
             <div class="config-field {{ field_states.request_timeout_secs.css_class }}">
               <label for="request_timeout_secs">request_timeout_secs</label>
               <span class="config-reload-mode">{{ field_states.request_timeout_secs.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.request_timeout_secs.baseline_value }}</span>
               <input
                 type="number"
                 id="request_timeout_secs"
@@ -195,6 +221,7 @@
             <div class="config-field {{ field_states.version_label.css_class }}">
               <label for="version_label">version_label</label>
               <span class="config-reload-mode">{{ field_states.version_label.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.version_label.baseline_value }}</span>
               <input
                 type="text"
                 id="version_label"
@@ -215,14 +242,93 @@
               >
               <label for="logging.verbose">verbose</label>
               <span class="config-reload-mode">{{ field_states.logging_verbose.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.logging_verbose.baseline_value }}</span>
             </div>
           </fieldset>
 
           <fieldset class="config-section">
             <legend>Media Server</legend>
+            <div class="config-field {{ field_states.media_server_kind.css_class }}">
+              <label for="media_server.kind">kind</label>
+              <span class="config-reload-mode">{{ field_states.media_server_kind.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_kind.baseline_value }}</span>
+              <select id="media_server.kind" name="media_server.kind">
+                <option value="jellyfin" {% if values.media_server_kind == "jellyfin" %}selected{% endif %}>jellyfin</option>
+                <option value="plex" {% if values.media_server_kind == "plex" %}selected{% endif %}>plex</option>
+              </select>
+            </div>
+            <div class="config-field checkbox-field {{ field_states.media_server_trigger_lib_scan.css_class }}">
+              <input
+                type="checkbox"
+                id="media_server.trigger_lib_scan"
+                name="media_server.trigger_lib_scan"
+                {% if values.trigger_lib_scan %}checked{% endif %}
+              >
+              <label for="media_server.trigger_lib_scan">trigger_lib_scan</label>
+              <span class="config-reload-mode">{{ field_states.media_server_trigger_lib_scan.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_trigger_lib_scan.baseline_value }}</span>
+            </div>
+            <div class="config-field {{ field_states.media_server_jellyfin_url.css_class }}">
+              <label for="media_server.jellyfin.url">jellyfin url</label>
+              <span class="config-reload-mode">{{ field_states.media_server_jellyfin_url.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_jellyfin_url.baseline_value }}</span>
+              <input
+                type="url"
+                id="media_server.jellyfin.url"
+                name="media_server.jellyfin.url"
+                value="{{ values.jellyfin_url }}"
+              >
+            </div>
+            <div class="config-field {{ field_states.media_server_jellyfin_api_key.css_class }}">
+              <label for="media_server.jellyfin.api_key">jellyfin api_key</label>
+              <span class="config-reload-mode">{{ field_states.media_server_jellyfin_api_key.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_jellyfin_api_key.baseline_value }}</span>
+              <input
+                type="password"
+                id="media_server.jellyfin.api_key"
+                name="media_server.jellyfin.api_key"
+                value="{{ values.jellyfin_api_key }}"
+                autocomplete="off"
+              >
+            </div>
+            <div class="config-field {{ field_states.media_server_jellyfin_scan_task_id.css_class }}">
+              <label for="media_server.jellyfin.scan_task_id">jellyfin scan_task_id</label>
+              <span class="config-reload-mode">{{ field_states.media_server_jellyfin_scan_task_id.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_jellyfin_scan_task_id.baseline_value }}</span>
+              <input
+                type="text"
+                id="media_server.jellyfin.scan_task_id"
+                name="media_server.jellyfin.scan_task_id"
+                value="{{ values.jellyfin_scan_task_id }}"
+              >
+            </div>
+            <div class="config-field {{ field_states.media_server_plex_url.css_class }}">
+              <label for="media_server.plex.url">plex url</label>
+              <span class="config-reload-mode">{{ field_states.media_server_plex_url.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_plex_url.baseline_value }}</span>
+              <input
+                type="url"
+                id="media_server.plex.url"
+                name="media_server.plex.url"
+                value="{{ values.plex_url }}"
+              >
+            </div>
+            <div class="config-field {{ field_states.media_server_plex_token.css_class }}">
+              <label for="media_server.plex.token">plex token</label>
+              <span class="config-reload-mode">{{ field_states.media_server_plex_token.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_plex_token.baseline_value }}</span>
+              <input
+                type="password"
+                id="media_server.plex.token"
+                name="media_server.plex.token"
+                value="{{ values.plex_token }}"
+                autocomplete="off"
+              >
+            </div>
             <div class="config-field {{ field_states.media_server_library_map_movies.css_class }}">
               <label for="media_server.library_map.movies">movies</label>
               <span class="config-reload-mode">{{ field_states.media_server_library_map_movies.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_library_map_movies.baseline_value }}</span>
               <input
                 type="text"
                 id="media_server.library_map.movies"
@@ -233,6 +339,7 @@
             <div class="config-field {{ field_states.media_server_library_map_shows.css_class }}">
               <label for="media_server.library_map.shows">shows</label>
               <span class="config-reload-mode">{{ field_states.media_server_library_map_shows.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_library_map_shows.baseline_value }}</span>
               <input
                 type="text"
                 id="media_server.library_map.shows"
@@ -243,6 +350,7 @@
             <div class="config-field {{ field_states.media_server_library_map_anime.css_class }}">
               <label for="media_server.library_map.anime">anime</label>
               <span class="config-reload-mode">{{ field_states.media_server_library_map_anime.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_library_map_anime.baseline_value }}</span>
               <input
                 type="text"
                 id="media_server.library_map.anime"
@@ -264,6 +372,7 @@
               >
               <label for="subtitles.enabled">enabled</label>
               <span class="config-reload-mode">{{ field_states.subtitles_enabled.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.subtitles_enabled.baseline_value }}</span>
             </div>
             {% if not subtitles_credentials_ready %}
             <div class="config-credentials-hint">
@@ -279,11 +388,13 @@
               >
               <label for="subtitles.fetch_on_resync">fetch_on_resync</label>
               <span class="config-reload-mode">{{ field_states.subtitles_fetch_on_resync.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.subtitles_fetch_on_resync.baseline_value }}</span>
             </div>
             <div class="config-field {{ field_states.subtitles_languages.css_class }}">
               <div class="lang-header">
                 <label for="lang-list">languages</label>
                 <span class="config-reload-mode">{{ field_states.subtitles_languages.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.subtitles_languages.baseline_value }}</span>
                 {% if languages_refreshing %}
                 <span class="lang-processing-label">processing…</span>
                 {% endif %}
@@ -324,6 +435,7 @@
             <div class="config-field {{ field_states.subtitles_strategy.css_class }}">
               <label for="subtitles.strategy">strategy</label>
               <span class="config-reload-mode">{{ field_states.subtitles_strategy.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.subtitles_strategy.baseline_value }}</span>
               <select
                 id="subtitles.strategy"
                 name="subtitles.strategy"
@@ -355,6 +467,7 @@
                 hearing_impaired
               </label>
               <span class="config-reload-mode">{{ field_states.subtitles_filters_hearing_impaired.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.subtitles_filters_hearing_impaired.baseline_value }}</span>
               <select
                 id="subtitles.filters.hearing_impaired"
                 name="subtitles.filters.hearing_impaired"
@@ -382,6 +495,7 @@
               >
               <label for="subtitles.filters.exclude_ai">exclude_ai</label>
               <span class="config-reload-mode">{{ field_states.subtitles_filters_exclude_ai.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.subtitles_filters_exclude_ai.baseline_value }}</span>
             </div>
             <div class="config-field checkbox-field {{ field_states.subtitles_filters_exclude_machine.css_class }}">
               <input
@@ -392,10 +506,12 @@
               >
               <label for="subtitles.filters.exclude_machine">exclude_machine</label>
               <span class="config-reload-mode">{{ field_states.subtitles_filters_exclude_machine.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.subtitles_filters_exclude_machine.baseline_value }}</span>
             </div>
             <div class="config-field {{ field_states.subtitles_search_delay_secs.css_class }}">
               <label for="subtitles.search_delay_secs">search_delay_secs</label>
               <span class="config-reload-mode">{{ field_states.subtitles_search_delay_secs.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.subtitles_search_delay_secs.baseline_value }}</span>
               <input
                 type="number"
                 id="subtitles.search_delay_secs"
@@ -408,6 +524,7 @@
                 download_delay_secs
               </label>
               <span class="config-reload-mode">{{ field_states.subtitles_download_delay_secs.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.subtitles_download_delay_secs.baseline_value }}</span>
               <input
                 type="number"
                 id="subtitles.download_delay_secs"

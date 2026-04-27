@@ -1,0 +1,29 @@
+provider:
+  token: your_rd_token
+
+server:
+  stream_buffer_size: 0
+
+media_server:
+  kind: jellyfin
+  trigger_lib_scan: true
+  jellyfin:
+    api_key: ""
+  library_map:
+    movies: Movies
+    shows: TV Shows
+    anime: Anime
+
+subtitles:
+  enabled: true
+  opensubtitles:
+    api_key: ""
+    username: ""
+    password: ""
+  languages:
+    - en
+  strategy: most-downloaded
+  filters:
+    hearing_impaired: exclude
+    exclude_ai: true
+    exclude_machine: true

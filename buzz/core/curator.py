@@ -9,7 +9,8 @@ import os
 import shutil
 import tempfile
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import yaml
@@ -24,6 +25,7 @@ from .media import (
     parse_show,
 )
 from .media_server import (
+    probe_jellyfin_auth,
     trigger_jellyfin_scan,
     trigger_jellyfin_selective_refresh,
     validate_jellyfin_auth,
@@ -41,6 +43,10 @@ class RebuildError(RuntimeError):
         """Initialize with an error message and structured payload."""
         super().__init__(message)
         self.payload = payload
+
+
+class MediaServerAuthError(RuntimeError):
+    """Raised when startup media server auth validation fails."""
 
 
 def load_overrides(path: Path) -> dict:
@@ -533,20 +539,74 @@ def build_anime(
         report["anime_files"] += 1
 
 
+def validate_media_server_startup_auth(
+    config: CuratorConfig,
+    timeout_secs: float = 300,
+    retry_interval_secs: float = 5,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> None:
+    """Validate startup media server auth when scan triggering is enabled."""
+    if not config.trigger_lib_scan or _media_server_kind(config) != "jellyfin":
+        return
+    if not config.jellyfin_api_key:
+        raise MediaServerAuthError(
+            "media_server.jellyfin.api_key is required when "
+            "media_server.trigger_lib_scan is true."
+        )
+
+    deadline = monotonic() + timeout_secs
+    last_error = ""
+    while True:
+        probe = probe_jellyfin_auth(config)
+        if probe.valid:
+            return
+        if probe.invalid_token:
+            raise MediaServerAuthError(
+                "Jellyfin API Token is invalid or unauthorized"
+            )
+
+        last_error = probe.error
+        now = monotonic()
+        if now >= deadline:
+            if probe.unreachable:
+                raise MediaServerAuthError(
+                    f"Jellyfin is unreachable at {config.jellyfin_url}."
+                )
+            detail = f": {last_error}" if last_error else "."
+            raise MediaServerAuthError(
+                f"Could not validate Jellyfin API token{detail}"
+            )
+        sleep(min(retry_interval_secs, max(0, deadline - now)))
+
+
 def rebuild_and_trigger(
     config: CuratorConfig,
     changed_roots: list[str] | None = None,
 ) -> dict:
     """Rebuild the library and optionally trigger a Jellyfin scan."""
     report = build_library(config)
-    if config.skip_jellyfin_scan:
+    if not config.trigger_lib_scan:
         report["jellyfin_scan_triggered"] = False
         report["jellyfin_scan_status"] = "skipped_configured"
         report["jellyfin_scan_error"] = None
         return report
-    if not config.jellyfin_api_key:
+    missing_token_warning = _missing_media_server_token_warning(config)
+    if missing_token_warning:
+        record_event(missing_token_warning, level="warning")
         report["jellyfin_scan_triggered"] = False
         report["jellyfin_scan_status"] = "skipped_missing_auth"
+        report["jellyfin_scan_error"] = None
+        return report
+    media_server_kind = _media_server_kind(config)
+    if media_server_kind != "jellyfin":
+        msg = (
+            f"Media server kind '{media_server_kind}' refresh is not "
+            "implemented by curator."
+        )
+        record_event(msg, level="warning")
+        report["jellyfin_scan_triggered"] = False
+        report["jellyfin_scan_status"] = "skipped_unsupported"
         report["jellyfin_scan_error"] = None
         return report
 
@@ -583,6 +643,25 @@ def rebuild_and_trigger(
         background_fetch_subtitles(config)
 
     return report
+
+
+def _missing_media_server_token_warning(config: CuratorConfig) -> str:
+    kind = _media_server_kind(config)
+    if kind == "jellyfin" and not config.jellyfin_api_key:
+        return (
+            "Jellyfin scan skipped: media_server.jellyfin.api_key is empty "
+            "for media_server.kind jellyfin."
+        )
+    if kind == "plex" and not config.plex_token:
+        return (
+            "Plex refresh skipped: media_server.plex.token is empty "
+            "for media_server.kind plex."
+        )
+    return ""
+
+
+def _media_server_kind(config: CuratorConfig) -> str:
+    return config.media_server_kind.strip().lower() or "jellyfin"
 
 
 class Curator:
