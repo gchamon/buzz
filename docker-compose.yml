@@ -6,6 +6,7 @@ services:
     user: "${PUID:-1000}:${PGID:-1000}"
     environment:
       - UV_CACHE_DIR=/app/cache/uv-buzz
+      - TZ=${TZ:-UTC}
     ports:
       - 9999:9999
       - 9443:9443
@@ -30,9 +31,9 @@ services:
     container_name: rclone
     restart: unless-stopped
     environment:
-      TZ: Europe/Berlin
-      PUID: 1000
-      PGID: 1000
+      TZ: ${TZ:-UTC}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
     volumes:
       - /mnt/buzz/raw:/data:shared
       - ./rclone.conf:/config/rclone/rclone.conf
@@ -45,7 +46,7 @@ services:
     depends_on:
       buzz-dav:
         condition: service_healthy
-    command: "mount buzz: /data --allow-other --allow-non-empty --dir-cache-time 10s --vfs-cache-mode full --default-permissions --uid 1000 --gid 1000"
+    command: "mount buzz: /data --allow-other --allow-non-empty --default-permissions --uid ${PUID:-1000} --gid ${PGID:-1000}"
     healthcheck:
       test: ["CMD-SHELL", "ls /data/movies >/dev/null 2>&1"]
       interval: 10s
@@ -62,9 +63,9 @@ services:
       rclone:
         condition: service_healthy
     environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=America/Sao_Paulo
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
       - VERSION=${PLEX_VERSION:-docker} # Plex only
       - PLEX_CLAIM=${PLEX_CLAIM:-} # Plex only
     volumes:
@@ -81,7 +82,7 @@ services:
       rclone:
         condition: service_healthy
     environment:
-      - TZ=America/Sao_Paulo
+      - TZ=${TZ:-UTC}
     ports:
       - 8096:8096/tcp
       - 7359:7359/udp
@@ -113,6 +114,7 @@ services:
       - CURATOR_OVERRIDES=/config/overrides.yml
       - UV_CACHE_DIR=/app/cache/uv-pres
       - UV_PROJECT_ENVIRONMENT=/app/.venv-pres
+      - TZ=${TZ:-UTC}
     entrypoint: ["sh", "/app/scripts/curator-entrypoint.sh"]
     command: ["curator", "server"]
     volumes:

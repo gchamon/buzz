@@ -28,7 +28,7 @@ UI_MANAGED_CONFIG_FIELDS = (
     "server.bind",
     "server.port",
     "server.stream_buffer_size",
-    "server.upstream_concurrency",
+    "provider.connection_concurrency",
     "hooks.on_library_change",
     "hooks.curator_url",
     "hooks.rd_update_delay_secs",
@@ -39,6 +39,7 @@ UI_MANAGED_CONFIG_FIELDS = (
     "version_label",
     "logging.verbose",
     "media_server.kind",
+    "media_server.trigger_lib_scan",
     "media_server.jellyfin.url",
     "media_server.jellyfin.api_key",
     "media_server.jellyfin.scan_task_id",
@@ -192,6 +193,8 @@ def filter_paths(source: dict, paths: tuple[str, ...]) -> dict:
 
 _SECRET_PATHS = [
     ("provider", "token"),
+    ("media_server", "jellyfin", "api_key"),
+    ("media_server", "plex", "token"),
     ("subtitles", "opensubtitles", "api_key"),
     ("subtitles", "opensubtitles", "username"),
     ("subtitles", "opensubtitles", "password"),
@@ -256,11 +259,14 @@ def _strip_secrets(d: dict) -> dict:
 
 _OVERRIDE_SCHEMA = {
     "poll_interval_secs": True,
+    "provider": {
+        "token": True,
+        "connection_concurrency": True,
+    },
     "server": {
         "bind": True,
         "port": True,
         "stream_buffer_size": True,
-        "upstream_concurrency": True,
     },
     "state_dir": True,
     "hooks": {
@@ -277,7 +283,20 @@ _OVERRIDE_SCHEMA = {
     "version_label": True,
     "ui": {"poll_interval_secs": True},
     "logging": {"verbose": True, "max_entries": True},
-    "media_server": {"library_map": True},
+    "media_server": {
+        "kind": True,
+        "trigger_lib_scan": True,
+        "jellyfin": {
+            "url": True,
+            "api_key": True,
+            "scan_task_id": True,
+        },
+        "plex": {
+            "url": True,
+            "token": True,
+        },
+        "library_map": True,
+    },
     "subtitles": {
         "enabled": True,
         "fetch_on_resync": True,
@@ -368,13 +387,15 @@ def load_base_and_overrides(
 def to_nested_dict(config: DavConfig) -> dict:
     """Serialize a DavConfig to the nested dict structure used in buzz.yml."""
     return {
-        "provider": {"token": config.token},
+        "provider": {
+            "token": config.token,
+            "connection_concurrency": config.connection_concurrency,
+        },
         "poll_interval_secs": config.poll_interval_secs,
         "server": {
             "bind": config.bind,
             "port": config.port,
             "stream_buffer_size": config.stream_buffer_size,
-            "upstream_concurrency": config.upstream_concurrency,
         },
         "state_dir": config.state_dir,
         "hooks": {
@@ -400,6 +421,17 @@ def to_nested_dict(config: DavConfig) -> dict:
             "max_entries": config.log_max_entries,
         },
         "media_server": {
+            "kind": config.media_server_kind,
+            "trigger_lib_scan": config.trigger_lib_scan,
+            "jellyfin": {
+                "url": config.jellyfin_url,
+                "api_key": config.jellyfin_api_key,
+                "scan_task_id": config.jellyfin_scan_task_id,
+            },
+            "plex": {
+                "url": config.plex_url,
+                "token": config.plex_token,
+            },
             "library_map": dict(config.library_map),
         },
         "subtitles": {
@@ -501,7 +533,7 @@ class DavConfig(BaseModel):
     bind: str = "0.0.0.0"
     port: int = 9999
     stream_buffer_size: int = 0
-    upstream_concurrency: int = 4
+    connection_concurrency: int = 4
     state_dir: str = DEFAULT_STATE_DIR
     hook_command: str = ""
     anime_patterns: tuple[str, ...] = (DEFAULT_ANIME_PATTERN,)
@@ -519,6 +551,7 @@ class DavConfig(BaseModel):
     log_max_entries: int = 1000
     ui_poll_interval_secs: int = 3
     media_server_kind: str = "jellyfin"
+    trigger_lib_scan: bool = False
     jellyfin_url: str = "http://jellyfin:8096"
     jellyfin_api_key: str = ""
     jellyfin_scan_task_id: str = ""
@@ -561,8 +594,8 @@ class DavConfig(BaseModel):
             bind=str(server.get("bind", "0.0.0.0")),
             port=int(server.get("port", 9999)),
             stream_buffer_size=int(server.get("stream_buffer_size", 0)),
-            upstream_concurrency=max(
-                1, int(server.get("upstream_concurrency", 4))
+            connection_concurrency=max(
+                1, int(provider.get("connection_concurrency", 4))
             ),
             state_dir=str(raw.get("state_dir", DEFAULT_STATE_DIR)),
             hook_command=str(hooks.get("on_library_change", "")).strip(),
@@ -595,6 +628,9 @@ class DavConfig(BaseModel):
             media_server_kind=str(
                 media_server_raw.get("kind", "jellyfin")
             ).strip().lower() or "jellyfin",
+            trigger_lib_scan=bool(
+                media_server_raw.get("trigger_lib_scan", False)
+            ),
             jellyfin_url=str(
                 (media_server_raw.get("jellyfin") or {}).get(
                     "url", "http://jellyfin:8096"
@@ -700,13 +736,10 @@ class CuratorConfig(BaseModel):
     jellyfin_api_key: str = ""
     jellyfin_scan_task_id: str = ""
     jellyfin_library_map: dict[str, str] = Field(default_factory=dict)
-    skip_jellyfin_scan: bool = Field(
-        default_factory=lambda: _env_flag(
-            "CURATOR_SKIP_JELLYFIN_SCAN"
-        ) or _env_flag(
-            "PRESENTATION_SKIP_JELLYFIN_SCAN"
-        )
-    )
+    media_server_kind: str = "jellyfin"
+    trigger_lib_scan: bool = False
+    plex_url: str = ""
+    plex_token: str = ""
     build_on_start: bool = Field(
         default_factory=lambda: (
             os.environ.get(
@@ -764,6 +797,14 @@ class CuratorConfig(BaseModel):
                     if isinstance(subtitles_raw, dict) and "root" in subtitles_raw:
                         data["subtitle_root"] = Path(str(subtitles_raw["root"]))
                 media_server = merged.get("media_server") or {}
+                if "kind" in media_server:
+                    data["media_server_kind"] = str(
+                        media_server["kind"]
+                    ).strip().lower() or "jellyfin"
+                if "trigger_lib_scan" in media_server:
+                    data["trigger_lib_scan"] = bool(
+                        media_server["trigger_lib_scan"]
+                    )
                 jellyfin = media_server.get("jellyfin") or {}
                 if "url" in jellyfin:
                     data["jellyfin_url"] = str(jellyfin["url"]).rstrip("/")
@@ -771,6 +812,11 @@ class CuratorConfig(BaseModel):
                     data["jellyfin_api_key"] = str(jellyfin["api_key"])
                 if "scan_task_id" in jellyfin:
                     data["jellyfin_scan_task_id"] = str(jellyfin["scan_task_id"])
+                plex = media_server.get("plex") or {}
+                if "url" in plex:
+                    data["plex_url"] = str(plex["url"]).rstrip("/")
+                if "token" in plex:
+                    data["plex_token"] = str(plex["token"])
                 library_map = media_server.get("library_map") or {}
                 if library_map:
                     data["jellyfin_library_map"] = {

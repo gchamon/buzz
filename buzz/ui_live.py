@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Literal, TypedDict, TypeVar, cast
 from urllib.parse import ParseResult
@@ -39,6 +40,7 @@ from .models import (
     deep_merge,
     diff_fields,
     effective_override_field_paths,
+    get_nested_value,
     load_base_and_overrides,
     mask_secrets,
     to_nested_dict,
@@ -53,6 +55,7 @@ _CONFIG_BOOL_FIELDS = (
     "compat.enable_all_dir",
     "compat.enable_unplayable_dir",
     "logging.verbose",
+    "media_server.trigger_lib_scan",
     "subtitles.enabled",
     "subtitles.fetch_on_resync",
     "subtitles.filters.exclude_ai",
@@ -60,6 +63,7 @@ _CONFIG_BOOL_FIELDS = (
 )
 _CONFIG_NUMBER_FIELDS = (
     "poll_interval_secs",
+    "provider.connection_concurrency",
     "server.port",
     "server.stream_buffer_size",
     "hooks.rd_update_delay_secs",
@@ -75,6 +79,7 @@ _LIBRARY_MAP_FIELDS = tuple(
 
 _CONFIG_TRACKED_FIELDS = (
     "poll_interval_secs",
+    "provider.connection_concurrency",
     "server.bind",
     "server.port",
     "server.stream_buffer_size",
@@ -87,6 +92,13 @@ _CONFIG_TRACKED_FIELDS = (
     "request_timeout_secs",
     "logging.verbose",
     "version_label",
+    "media_server.kind",
+    "media_server.trigger_lib_scan",
+    "media_server.jellyfin.url",
+    "media_server.jellyfin.api_key",
+    "media_server.jellyfin.scan_task_id",
+    "media_server.plex.url",
+    "media_server.plex.token",
     *_LIBRARY_MAP_FIELDS,
     "subtitles.enabled",
     "subtitles.fetch_on_resync",
@@ -214,6 +226,7 @@ class ConfigLanguage(TypedDict):
 class ConfigValues(TypedDict):
     anime_patterns: str
     bind: str
+    connection_concurrency: int
     curator_url: str
     download_delay_secs: int
     enable_all_dir: bool
@@ -222,9 +235,15 @@ class ConfigValues(TypedDict):
     exclude_machine: bool
     fetch_on_resync: bool
     hearing_impaired: str
+    jellyfin_api_key: str
+    jellyfin_scan_task_id: str
+    jellyfin_url: str
     library_map: dict[str, str]
+    media_server_kind: str
     poll_interval_secs: int
     port: int
+    plex_token: str
+    plex_url: str
     on_library_change: str
     request_timeout_secs: int
     rd_update_delay_secs: int
@@ -233,6 +252,7 @@ class ConfigValues(TypedDict):
     stream_buffer_size: int
     strategy: str
     subtitles_enabled: bool
+    trigger_lib_scan: bool
     verbose: bool
     version_label: str
 
@@ -242,6 +262,7 @@ class ConfigFieldState(TypedDict):
     is_dirty: bool
     is_overridden: bool
     reload_mode: str
+    baseline_value: str
 
 
 class ConfigContext(PageContext):
@@ -550,10 +571,11 @@ class CacheLiveView(_BaseBuzzLiveView):
         self, socket: ConnectedLiveViewSocket[CacheContext], hash: str
     ) -> None:
         try:
-            self.owner.state.delete_torrent(hash)
+            result = self.owner.state.delete_torrent(hash)
+            warning = result.get("warning") if isinstance(result, dict) else None
             socket.context = self._context(
-                console_msg="item moved to archive",
-                console_class=CSS_STATUS_GREEN,
+                console_msg=str(warning or "item moved to archive"),
+                console_class=CSS_STATUS_YELLOW if warning else CSS_STATUS_GREEN,
                 confirm_delete_id=None,
                 magnet_inputs=socket.context["magnet_inputs"],
                 analysis_results=socket.context["analysis_results"],
@@ -1170,11 +1192,16 @@ class ConfigLiveView(_BaseBuzzLiveView):
             _, baseline_config, _, _, _ = load_base_and_overrides(
                 str(config_path)
             )
+        baseline_values = _config_baseline_values(
+            effective_config,
+            baseline_config,
+        )
         effective_yaml = _render_effective_yaml(
             masked,
+            baseline_values,
             set(
                 effective_override_field_paths(
-                    baseline_config,
+                    baseline_values,
                     effective_config._raw_overrides,
                 )
             ),
@@ -1183,7 +1210,7 @@ class ConfigLiveView(_BaseBuzzLiveView):
         current_overrides = effective_config._raw_overrides
         field_states = _field_states(
             effective,
-            baseline_config,
+            baseline_values,
             current_overrides,
             _config_overrides_from_payload(draft_payload) if is_editing and draft_payload else {},
         )
@@ -1573,6 +1600,9 @@ def _config_values(
             effective["directories"]["anime"]["patterns"]
         ),
         "bind": effective["server"]["bind"],
+        "connection_concurrency": effective["provider"][
+            "connection_concurrency"
+        ],
         "curator_url": effective["hooks"]["curator_url"],
         "download_delay_secs": subtitles["download_delay_secs"],
         "enable_all_dir": effective["compat"]["enable_all_dir"],
@@ -1581,6 +1611,11 @@ def _config_values(
         "exclude_machine": subtitle_filters["exclude_machine"],
         "fetch_on_resync": subtitles["fetch_on_resync"],
         "hearing_impaired": subtitle_filters["hearing_impaired"],
+        "jellyfin_api_key": effective["media_server"]["jellyfin"]["api_key"],
+        "jellyfin_scan_task_id": effective["media_server"]["jellyfin"][
+            "scan_task_id"
+        ],
+        "jellyfin_url": effective["media_server"]["jellyfin"]["url"],
         "library_map": {
             key: str(
                 effective.get("media_server", {})
@@ -1589,9 +1624,12 @@ def _config_values(
             )
             for key in _LIBRARY_MAP_KEYS
         },
+        "media_server_kind": effective["media_server"]["kind"],
         "on_library_change": effective["hooks"]["on_library_change"],
         "poll_interval_secs": effective["poll_interval_secs"],
         "port": effective["server"]["port"],
+        "plex_token": effective["media_server"]["plex"]["token"],
+        "plex_url": effective["media_server"]["plex"]["url"],
         "request_timeout_secs": effective["request_timeout_secs"],
         "rd_update_delay_secs": effective["hooks"]["rd_update_delay_secs"],
         "search_delay_secs": subtitles["search_delay_secs"],
@@ -1599,6 +1637,7 @@ def _config_values(
         "stream_buffer_size": effective["server"]["stream_buffer_size"],
         "strategy": subtitles["strategy"],
         "subtitles_enabled": subtitles["enabled"],
+        "trigger_lib_scan": effective["media_server"]["trigger_lib_scan"],
         "verbose": effective["logging"]["verbose"],
         "version_label": effective["version_label"],
     }
@@ -1648,6 +1687,12 @@ def _config_overrides_from_payload(
         "hooks.on_library_change",
         "hooks.curator_url",
         "version_label",
+        "media_server.kind",
+        "media_server.jellyfin.url",
+        "media_server.jellyfin.api_key",
+        "media_server.jellyfin.scan_task_id",
+        "media_server.plex.url",
+        "media_server.plex.token",
         "subtitles.strategy",
         "subtitles.filters.hearing_impaired",
     )
@@ -1707,11 +1752,18 @@ def _field_states(
             if path in RESTART_REQUIRED_FIELDS
             else "hot reload"
         )
+        if is_overridden:
+            default_value = get_nested_value(baseline, path)
+            reload_mode = (
+                f"{reload_mode} · default: "
+                f"{_render_default_comment_value(default_value)}"
+            )
         states[alias] = {
             "css_class": css_class,
             "is_dirty": is_dirty,
             "is_overridden": is_overridden,
             "reload_mode": reload_mode,
+            "baseline_value": _render_default_comment_value(get_nested_value(baseline, path)),
         }
     return states
 
@@ -1720,17 +1772,31 @@ def _field_alias(path: str) -> str:
     return path.replace(".", "_")
 
 
+def _config_baseline_values(config: Any, baseline: dict[str, Any]) -> dict[str, Any]:
+    try:
+        baseline_config = config.__class__._from_merged_dict(baseline)
+    except Exception:
+        return baseline
+    return to_nested_dict(baseline_config)
+
+
 def _render_effective_yaml(
     effective: dict[str, Any],
+    baseline: dict[str, Any],
     override_paths: set[str],
 ) -> str:
-    lines = _yaml_lines(effective, override_paths=override_paths)
+    lines = _yaml_lines(
+        effective,
+        baseline=baseline,
+        override_paths=override_paths,
+    )
     return "\n".join(lines) + "\n"
 
 
 def _yaml_dict_lines(
     value: dict,
     *,
+    baseline: dict,
     indent: int,
     path: str,
     override_paths: set[str],
@@ -1740,12 +1806,15 @@ def _yaml_dict_lines(
     for key, child in value.items():
         child_path = f"{path}.{key}" if path else key
         if child_path in override_paths:
-            lines.append(f"{prefix}# Overriden via UI")
+            default_value = get_nested_value(baseline, child_path)
+            default_text = _render_default_comment_value(default_value)
+            lines.append(f"{prefix}# Overriden via UI. Default: {default_text}")
         if isinstance(child, dict):
             lines.append(f"{prefix}{key}:")
             lines.extend(
                 _yaml_lines(
                     child,
+                    baseline=baseline,
                     indent=indent + 2,
                     path=child_path,
                     override_paths=override_paths,
@@ -1762,6 +1831,7 @@ def _yaml_dict_lines(
                         lines.extend(
                             _yaml_lines(
                                 item,
+                                baseline=baseline,
                                 indent=indent + 4,
                                 path=child_path,
                                 override_paths=override_paths,
@@ -1786,18 +1856,29 @@ def _yaml_list_lines(value: list, *, indent: int) -> list[str]:
 def _yaml_lines(
     value: Any,
     *,
+    baseline: dict,
     indent: int = 0,
     path: str = "",
     override_paths: set[str],
 ) -> list[str]:
     if isinstance(value, dict):
         return _yaml_dict_lines(
-            value, indent=indent, path=path, override_paths=override_paths
+            value,
+            baseline=baseline,
+            indent=indent,
+            path=path,
+            override_paths=override_paths,
         )
     if isinstance(value, list):
         return _yaml_list_lines(value, indent=indent)
     prefix = " " * indent
     return [f"{prefix}{_render_yaml_scalar(value)}"]
+
+
+def _render_default_comment_value(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        return _render_yaml_scalar(json.dumps(value, sort_keys=True))
+    return _render_yaml_scalar(value)
 
 
 def _render_yaml_scalar(value: Any) -> str:

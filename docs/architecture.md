@@ -135,8 +135,8 @@ Important DAV routes:
 
 When a media server reads a file, `rclone` translates that read into a WebDAV
 request. `buzz-dav` resolves the requested virtual file to the Real-Debrid
-file entry, obtains an unrestricted stream URL, and proxies the response with
-range support. `server.stream_buffer_size` and `server.upstream_concurrency`
+resolution, obtains an unrestricted stream URL, and proxies the response with
+range support. `server.stream_buffer_size` and `provider.connection_concurrency`
 control stream behavior.
 
 ```mermaid

@@ -708,7 +708,7 @@ def fetch_subtitles_for_library(
 
         if (
             fetched_targets
-            and not config.skip_jellyfin_scan
+            and config.trigger_lib_scan
             and config.jellyfin_api_key
         ):
             trigger_jellyfin_selective_refresh(config, fetched_targets)

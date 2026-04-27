@@ -12,7 +12,7 @@ drifts in several places: it documents the OpenSubtitles credentials and the
 Jellyfin API key as living in `.env` while the codebase has moved most
 configuration into `buzz.yml` (and the new config UI writes
 `buzz.overrides.yml`); newer YAML keys (`media_server.library_map`,
-`server.upstream_concurrency`) are not listed at all; the actual first-time
+`provider.connection_concurrency`) are not listed at all; the actual first-time
 bootstrap involves a Jellyfin-then-buzz dance that the README never spells
 out; and the `.env.dist` carries dead variables (`LIBRARY_MOUNT`) that the
 compose file silently overrides. An operator following the README today will
@@ -51,7 +51,7 @@ so portainer-style deployments still work). Keep the README short — split into
 - **Two new YAML keys are added to the configuration reference** with their
   defaults and "why you'd touch this" commentary:
   `media_server.library_map` (debrid category → Jellyfin library name) and
-  `server.upstream_concurrency` (cap on simultaneous Real-Debrid CDN
+  `provider.connection_concurrency` (cap on simultaneous Real-Debrid CDN
   connections; lever for surviving Jellyfin scan storms).
 - **Jellyfin API credentials migrate from env-var-only to YAML-first.** A new
   `media_server` section accepts `api_key`, `url`, and the existing
@@ -64,9 +64,9 @@ so portainer-style deployments still work). Keep the README short — split into
 - Reconcile the README's `buzz.yml` and `.env` tables with the current code
   (`buzz/models.py::CuratorConfig`, `DavConfig`):
   - Add rows for `media_server.library_map`, `media_server.url`,
-    `media_server.api_key`, `server.upstream_concurrency`.
+    `media_server.api_key`, `provider.connection_concurrency`.
   - Update the complete YAML example to include `media_server` and
-    `server.upstream_concurrency`.
+    `provider.connection_concurrency`.
   - Mark `OPENSUBTITLES_*` and `SUBTITLE_*` env vars as "override only — see
     `subtitles.*` in `buzz.yml`".
   - Remove `LIBRARY_MOUNT` from `.env.dist` and the README's `.env` table.
@@ -102,7 +102,7 @@ so portainer-style deployments still work). Keep the README short — split into
   stack without consulting code or other docs.
 - Every variable named in `.env.dist` and every key in the README's `buzz.yml`
   table is read by the code; nothing is dead.
-- `media_server.library_map` and `server.upstream_concurrency` are documented
+- `media_server.library_map` and `provider.connection_concurrency` are documented
   with defaults and rationale.
 - `media_server.api_key` and `media_server.url` are accepted by `CuratorConfig`
   via YAML, with the existing env vars retained as overrides; setting either

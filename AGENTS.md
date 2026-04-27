@@ -50,6 +50,7 @@ issues with `TestClient`:
 
 ```bash
 docker run --rm \
+  -u 1000:1000 \
   -v "$PWD:/workspace" \
   -w /workspace \
   -e UV_CACHE_DIR=/tmp/uv-cache \

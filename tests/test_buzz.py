@@ -920,6 +920,72 @@ class BuzzStateTests(unittest.TestCase):
                 "magnet:?xt=urn:btih:ABC123HASH&dn=Movie",
             )
 
+    def test_delete_torrent_archives_when_upstream_item_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
+            )
+            client = self._create_fake_rd()
+            state = BuzzState(config, client=client)
+            state.sync(trigger_hook=False)
+            state.cache["TORRENT1"]["info"]["hash"] = "ABC123HASH"
+
+            def missing_delete(torrent_id):
+                return self.FakeResponse({}, status_code=404, text="not found")
+
+            client.torrents.delete = missing_delete
+
+            result = state.delete_torrent("TORRENT1")
+
+            self.assertEqual(result["status"], "success")
+            self.assertIn("warning", result)
+            self.assertNotIn("TORRENT1", state.cache)
+            self.assertIn("ABC123HASH", state.trashcan)
+
+    def test_delete_torrent_keeps_non_missing_upstream_errors_hard(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
+            )
+            client = self._create_fake_rd()
+            state = BuzzState(config, client=client)
+            state.sync(trigger_hook=False)
+            state.cache["TORRENT1"]["info"]["hash"] = "ABC123HASH"
+
+            def failing_delete(torrent_id):
+                return self.FakeResponse({}, status_code=500, text="server error")
+
+            client.torrents.delete = failing_delete
+
+            with self.assertRaisesRegex(ValueError, "Failed to delete torrent"):
+                state.delete_torrent("TORRENT1")
+
     @patch("buzz.core.state.record_event")
     @patch("buzz.core.state.subprocess.run")
     def test_run_hook_logs_stdout_and_stderr_on_failure(
@@ -1266,6 +1332,7 @@ class DavAppTests(unittest.TestCase):
         self.assertIn('href="/static/buzz.css"', body)
         self.assertIn('phx-click="prompt_delete"', body)
         self.assertIn('phx-click="fetch_subs"', body)
+        self.assertIn('phx-disable-with="..."', body)
         self.assertIn('phx-hook="BuzzOverflowMarquee"', body)
         self.assertIn("data-marquee-clip", body)
         self.assertIn("data-marquee-label", body)
@@ -1301,6 +1368,17 @@ class DavAppTests(unittest.TestCase):
         self.assertIn("data-marquee-clip", body)
         self.assertIn("data-marquee-label", body)
         self.assertIn('title="Old &amp; Gone"', body)
+
+    def test_confirmation_actions_render_in_progress_disable_text(self):
+        cache_template = Path("buzz/pyview_templates/cache_live.html").read_text(
+            encoding="utf-8"
+        )
+        archive_template = Path("buzz/pyview_templates/archive_live.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('phx-disable-with="..."', cache_template)
+        self.assertIn('phx-disable-with="..."', archive_template)
 
     def test_cache_page_renders_empty_state_and_error_banner(self):
         self.state.last_error = "Boom & stuff"
@@ -1369,7 +1447,14 @@ class DavAppTests(unittest.TestCase):
             response = client.get("/config")
 
             self.assertEqual(response.status_code, 200)
-            self.assertIn("# Overriden via UI", response.text)
+            self.assertIn("# Overriden via UI. Default: false", response.text)
+            from buzz.ui_live import ConfigLiveView, _load_template
+            from pyview.meta import PyViewMeta
+
+            view = ConfigLiveView(owner=app)
+            context = view._context(is_editing=True)
+            html = _load_template("config_live.html").render(context, PyViewMeta())
+            self.assertIn("hot reload · default: false", html)
 
     def test_config_page_ignores_default_valued_override_fields(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1483,10 +1568,23 @@ class DavAppTests(unittest.TestCase):
                 response.text,
             )
 
-    def test_dockerfile_copies_buzz_dist_config(self):
+    def test_dockerfile_copies_config_templates(self):
         dockerfile = Path("buzz/Dockerfile").read_text(encoding="utf-8")
 
         self.assertIn("COPY pyproject.toml README.md buzz.dist.yml /app/", dockerfile)
+
+    def test_minimal_config_exists_and_is_valid(self):
+        min_config_path = Path("buzz.min.yml")
+        self.assertTrue(min_config_path.exists())
+        with open(min_config_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        self.assertIn("provider", data)
+        self.assertIn("token", data["provider"])
+        self.assertIn("server", data)
+        self.assertIn("stream_buffer_size", data["server"])
+        self.assertIn("media_server", data)
+        self.assertIn("subtitles", data)
 
     def test_pyview_assets_are_served(self):
         response = self.client.get("/pyview/assets/app.js")
@@ -2037,7 +2135,7 @@ class DavAppTests(unittest.TestCase):
         import threading as _threading
 
         self.state.config = self.state.config.model_copy(
-            update={"upstream_concurrency": 2}
+            update={"connection_concurrency": 2}
         )
         self.state.client = self.FakeRD(
             [f"https://example.invalid/cdn/{i}" for i in range(10)]
@@ -2119,7 +2217,7 @@ class DavAppTests(unittest.TestCase):
 
     def test_open_remote_media_releases_setup_slot_before_stream_close(self):
         self.state.config = self.state.config.model_copy(
-            update={"upstream_concurrency": 1}
+            update={"connection_concurrency": 1}
         )
         self.state.client = self.FakeRD(
             [
@@ -2172,7 +2270,7 @@ class DavAppTests(unittest.TestCase):
         from buzz import dav_protocol
 
         self.state.config = self.state.config.model_copy(
-            update={"upstream_concurrency": 1}
+            update={"connection_concurrency": 1}
         )
         self.state.client = self.FakeRD(
             [
@@ -2744,6 +2842,37 @@ class ConfigUITests(unittest.TestCase):
                 {"movies": "Movies", "shows": "Shows", "anime": "Anime"},
             )
 
+    def test_curator_config_loads_media_server_settings_from_yaml(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            base_path.write_text(
+                (
+                    "provider:\n  token: testtoken\n"
+                    f"state_dir: {tmpdir}\n"
+                    "media_server:\n"
+                    "  kind: plex\n"
+                    "  trigger_lib_scan: true\n"
+                    "  jellyfin:\n"
+                    "    url: http://jellyfin.local:8096/\n"
+                    "    api_key: jf-secret\n"
+                    "    scan_task_id: scan-task\n"
+                    "  plex:\n"
+                    "    url: http://plex.local:32400/\n"
+                    "    token: plex-secret\n"
+                ),
+                encoding="utf-8",
+            )
+
+            config = CuratorConfig.load(str(base_path))
+
+            self.assertEqual(config.media_server_kind, "plex")
+            self.assertTrue(config.trigger_lib_scan)
+            self.assertEqual(config.jellyfin_url, "http://jellyfin.local:8096")
+            self.assertEqual(config.jellyfin_api_key, "jf-secret")
+            self.assertEqual(config.jellyfin_scan_task_id, "scan-task")
+            self.assertEqual(config.plex_url, "http://plex.local:32400")
+            self.assertEqual(config.plex_token, "plex-secret")
+
     def test_curator_config_library_map_default_empty_when_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base_path = Path(tmpdir) / "buzz.yml"
@@ -2777,6 +2906,95 @@ class ConfigUITests(unittest.TestCase):
             self.assertEqual(
                 nested["media_server"]["library_map"], {"shows": "Shows"}
             )
+
+    def test_dav_config_round_trips_media_server_settings(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            base_path.write_text(
+                (
+                    "provider:\n  token: testtoken\n"
+                    f"state_dir: {tmpdir}\n"
+                    "media_server:\n"
+                    "  kind: jellyfin\n"
+                    "  trigger_lib_scan: true\n"
+                    "  jellyfin:\n"
+                    "    url: http://jellyfin.local:8096\n"
+                    "    api_key: jf-secret\n"
+                    "    scan_task_id: scan-task\n"
+                    "  plex:\n"
+                    "    url: http://plex.local:32400\n"
+                    "    token: plex-secret\n"
+                    "  library_map:\n"
+                    "    shows: Shows\n"
+                ),
+                encoding="utf-8",
+            )
+
+            config = Config.load(str(base_path))
+            nested = to_nested_dict(config)
+
+            self.assertEqual(nested["media_server"]["kind"], "jellyfin")
+            self.assertTrue(nested["media_server"]["trigger_lib_scan"])
+            self.assertEqual(
+                nested["media_server"]["jellyfin"],
+                {
+                    "url": "http://jellyfin.local:8096",
+                    "api_key": "jf-secret",
+                    "scan_task_id": "scan-task",
+                },
+            )
+            self.assertEqual(
+                nested["media_server"]["plex"],
+                {
+                    "url": "http://plex.local:32400",
+                    "token": "plex-secret",
+                },
+            )
+
+    def test_dav_config_renames_connection_concurrency_to_connection_concurrency(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            base_path.write_text(
+                "provider:\n  token: testtoken\n  connection_concurrency: 8\n",
+                encoding="utf-8",
+            )
+
+            config = Config.load(str(base_path))
+            self.assertEqual(config.connection_concurrency, 8)
+
+            nested = to_nested_dict(config)
+            self.assertEqual(nested["provider"]["connection_concurrency"], 8)
+            self.assertNotIn("connection_concurrency", nested["server"])
+
+    def test_dav_config_ignores_old_connection_concurrency_key(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            base_path.write_text(
+                "provider:\n  token: testtoken\nserver:\n  connection_concurrency: 8\n",
+                encoding="utf-8",
+            )
+
+            config = Config.load(str(base_path))
+            # Should fall back to default 4 because the old key is ignored
+            self.assertEqual(config.connection_concurrency, 4)
+
+            nested = to_nested_dict(config)
+            self.assertEqual(nested["provider"]["connection_concurrency"], 4)
+            self.assertNotIn("connection_concurrency", nested["server"])
+
+    def test_config_modal_renders_provider_and_media_server_settings(self):
+        template = Path("buzz/pyview_templates/config_live.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('name="provider.connection_concurrency"', template)
+        self.assertIn('name="media_server.kind"', template)
+        self.assertIn('name="media_server.trigger_lib_scan"', template)
+        self.assertIn('name="media_server.jellyfin.url"', template)
+        self.assertIn('name="media_server.jellyfin.api_key"', template)
+        self.assertIn('name="media_server.jellyfin.scan_task_id"', template)
+        self.assertIn('name="media_server.plex.url"', template)
+        self.assertIn('name="media_server.plex.token"', template)
 
     def test_config_load_with_overrides(self):
         with tempfile.TemporaryDirectory() as tmpdir:
