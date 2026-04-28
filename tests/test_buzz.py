@@ -44,7 +44,7 @@ class LibraryBuilderTests(unittest.TestCase):
     def setUp(self):
         self.config = Config(
             token="token",
-            poll_interval_secs=10,
+            provider_poll_interval_secs=10,
             bind="127.0.0.1",
             port=9999,
             state_dir="/tmp/buzz-tests",
@@ -245,7 +245,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -288,7 +288,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -358,7 +358,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -435,7 +435,7 @@ class BuzzStateTests(unittest.TestCase):
             )
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=str(state_dir),
@@ -461,7 +461,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -503,7 +503,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -541,7 +541,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -596,7 +596,7 @@ class BuzzStateTests(unittest.TestCase):
             )
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=str(state_dir),
@@ -621,7 +621,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -646,7 +646,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -705,7 +705,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -731,7 +731,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -800,7 +800,7 @@ class BuzzStateTests(unittest.TestCase):
             message,
             "\n".join(
                 [
-                    "Real-Debrid library changed (96 torrents):",
+                    "real-Debrid library changed (96 torrents):",
                     "  +2 added",
                     "    movies/The.Lord.of.the.Rings.The.Fellowship.of.the.Ring.2001.EXTENDED.2160p.UHD.BluRay.x265-BOREDOR",
                     "    movies/The.Lord.of.the.Rings.The.Return.Of.The.King.2003.EXTENDED.2160p.UHD.BluRay.x265-BOREDOR",
@@ -812,7 +812,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -841,7 +841,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -869,7 +869,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -924,7 +924,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -959,7 +959,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -993,7 +993,7 @@ class BuzzStateTests(unittest.TestCase):
     ):
         config = Config(
             token="token",
-            poll_interval_secs=10,
+            provider_poll_interval_secs=10,
             bind="127.0.0.1",
             port=9999,
             state_dir="/tmp/buzz-tests",
@@ -1019,7 +1019,7 @@ class BuzzStateTests(unittest.TestCase):
         mock_record_event.assert_called_once_with(
             "\n".join(
                 [
-                    "Library update hook failed with exit code 2: ['sh', '/app/scripts/media_update.sh', 'movies/Interstellar']",
+                    "library update hook failed with exit code 2: ['sh', '/app/scripts/media_update.sh', 'movies/Interstellar']",
                     "stdout:\nhook stdout",
                     "stderr:\nhook stderr",
                 ]
@@ -1031,7 +1031,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -1068,7 +1068,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -1094,7 +1094,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -1143,7 +1143,7 @@ class BuzzStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
                 token="token",
-                poll_interval_secs=10,
+                provider_poll_interval_secs=10,
                 bind="127.0.0.1",
                 port=9999,
                 state_dir=tmpdir,
@@ -1232,7 +1232,7 @@ class DavAppTests(unittest.TestCase):
         )
         config = Config(
             token="token",
-            poll_interval_secs=10,
+            provider_poll_interval_secs=10,
             bind="127.0.0.1",
             port=9999,
             state_dir=str(state_dir),
@@ -1629,7 +1629,7 @@ class DavAppTests(unittest.TestCase):
                     "source": "curator",
                     "event": "curator_ready",
                     "level": "info",
-                    "message": "curator startup complete",
+                    "message": "Curator startup complete",
                 },
             },
         )
@@ -1655,7 +1655,7 @@ class DavAppTests(unittest.TestCase):
     def test_dav_app_init_does_not_fetch_languages_synchronously(self):
         config = Config(
             token="token",
-            poll_interval_secs=10,
+            provider_poll_interval_secs=10,
             bind="127.0.0.1",
             port=9999,
             state_dir=self.tmpdir.name,
@@ -1682,7 +1682,7 @@ class DavAppTests(unittest.TestCase):
     def _config_with_credentials(self, tmpdir: str) -> Config:
         return Config(
             token="token",
-            poll_interval_secs=10,
+            provider_poll_interval_secs=10,
             bind="127.0.0.1",
             port=9999,
             state_dir=tmpdir,
@@ -1768,7 +1768,7 @@ class DavAppTests(unittest.TestCase):
     def test_refresh_skipped_without_credentials(self):
         config = Config(
             token="token",
-            poll_interval_secs=10,
+            provider_poll_interval_secs=10,
             bind="127.0.0.1",
             port=9999,
             state_dir=self.tmpdir.name,
@@ -2522,8 +2522,8 @@ class DavAppTests(unittest.TestCase):
             after = len(registry.events)
             self.assertGreater(after, before)
             messages = [e["message"] for e in registry.events]
-            self.assertIn("OpenSubtitles language refresh started", messages)
-            self.assertIn("OpenSubtitles language refresh finished", messages)
+            self.assertIn("openSubtitles language refresh started", messages)
+            self.assertIn("openSubtitles language refresh finished", messages)
 
 
 class FetchOpenSubtitlesLanguagesTests(unittest.TestCase):
@@ -2606,7 +2606,7 @@ class DavBufferedStreamingTests(unittest.TestCase):
         )
         config = Config(
             token="token",
-            poll_interval_secs=10,
+            provider_poll_interval_secs=10,
             bind="127.0.0.1",
             port=9999,
             state_dir=str(state_dir),
@@ -2796,7 +2796,7 @@ class ConfigUITests(unittest.TestCase):
         try:
             config = Config.load(base_path)
             self.assertEqual(config.token, "testtoken")
-            self.assertEqual(config.poll_interval_secs, 10)
+            self.assertEqual(config.provider_poll_interval_secs, 10)
             self.assertEqual(config.bind, "0.0.0.0")
         finally:
             os.unlink(base_path)
@@ -3004,12 +3004,12 @@ class ConfigUITests(unittest.TestCase):
                 f"provider:\n  token: testtoken\nserver:\n  port: 9999\nstate_dir: {tmpdir}\n", encoding="utf-8"
             )
             overrides_path.write_text(
-                "server:\n  port: 8888\npoll_interval_secs: 60\n", encoding="utf-8"
+                "server:\n  port: 8888\nprovider:\n  poll_interval_secs: 60\n", encoding="utf-8"
             )
             config = Config.load(str(base_path))
             self.assertEqual(config.token, "testtoken")
             self.assertEqual(config.port, 8888)
-            self.assertEqual(config.poll_interval_secs, 60)
+            self.assertEqual(config.provider_poll_interval_secs, 60)
 
     def test_get_api_config(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -26,7 +26,7 @@ def main() -> None:
     )
 
     curator_sub.add_parser("server", help="Start curator API server")
-    curator_sub.add_parser("sync", help="Run a one-time curator build")
+    curator_sub.add_parser("sync", help="Run a one-time Curator build")
 
     args = parser.parse_args()
 

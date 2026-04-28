@@ -97,7 +97,7 @@ class OpenSubtitlesClient:
                 "OpenSubtitles username/password required for downloads"
             )
 
-        record_event("Logging in to OpenSubtitles...", level="info")
+        record_event("logging in to OpenSubtitles...", level="info")
         resp = self.client.post(
             f"{self.BASE_URL}/login",
             json={
@@ -449,20 +449,20 @@ def _prepare_mapping(
             e for e in mapping
             if _source_matches_torrent(e["source"], torrent_name)
         ]
-        record_event(f"Subtitle fetch triggered for torrent: {torrent_name}")
+        record_event(f"subtitle fetch triggered for torrent: {torrent_name}")
     else:
-        record_event("Subtitle fetch triggered for full library")
+        record_event("subtitle fetch triggered for full library")
     if not mapping:
         if torrent_name:
             record_event(
-                f"No library mapping found for torrent: {torrent_name}. "
-                "Try RESYNC LIB first.",
+                f"no library mapping found for torrent: {torrent_name}. "
+                "try RESYNC LIB first.",
                 level="error",
             )
         else:
             record_event(
-                "No video files found in library mapping. "
-                "Try RESYNC LIB first.",
+                "no video files found in library mapping. "
+                "try RESYNC LIB first.",
                 level="error",
             )
     return mapping
@@ -531,7 +531,7 @@ def _install_subtitle(
             flush=True,
         )
         record_event(
-            f"No file ID in subtitle result for: {params['query']} ({lang})",
+            f"no file ID in subtitle result for: {params['query']} ({lang})",
             level="warning",
         )
         return False
@@ -555,7 +555,7 @@ def _install_subtitle(
     )
 
     is_replacement = overlay_path.exists()
-    action = "Replacing" if is_replacement else "Downloading"
+    action = "replacing" if is_replacement else "downloading"
     record_event(
         f"{action} subtitle '{release}' ({lang}) for: {params['query']}"
     )
@@ -650,7 +650,7 @@ def _fetch_entry_subtitles(
         except Exception as e:
             print(f"[SUBS] ERROR: {params['query']} ({lang}): {e}", flush=True)
             record_event(
-                f"Subtitle error for {params['query']} ({lang}): {e}",
+                f"subtitle error for {params['query']} ({lang}): {e}",
                 level="error",
             )
             state.error_count += 1
@@ -670,8 +670,8 @@ def _subtitle_summary(counters: dict) -> str:
     if counters["already_exists"] > 0:
         parts.append(f"{counters['already_exists']} already up-to-date")
     if not parts:
-        return "Subtitle fetch complete: nothing to do"
-    return "Subtitle fetch complete: " + ", ".join(parts)
+        return "subtitle fetch complete: nothing to do"
+    return "subtitle fetch complete: " + ", ".join(parts)
 
 
 def fetch_subtitles_for_library(
@@ -714,7 +714,7 @@ def fetch_subtitles_for_library(
             trigger_jellyfin_selective_refresh(config, fetched_targets)
     except Exception as e:
         print(f"[SUBS] FATAL: Subtitle fetcher failed: {e}", flush=True)
-        record_event(f"Subtitle fetcher failed: {e}", level="error")
+        record_event(f"subtitle fetcher failed: {e}", level="error")
         state.stop(error=True)
 
 

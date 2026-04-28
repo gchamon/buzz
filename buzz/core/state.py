@@ -710,7 +710,7 @@ class BuzzState:
                         self.hook_in_progress = False
                         self.hook_last_finished_at = utc_now_iso()
         except Exception as exc:  # noqa: BLE001
-            record_event(f"Hook task failed unexpectedly: {exc}", level="error")
+            record_event(f"hook task failed unexpectedly: {exc}", level="error")
             with self.hook_lock:
                 self.hook_task_active = False
 
@@ -828,7 +828,7 @@ class BuzzState:
                     raise ValueError(f"Curator returned HTTP {response.status}")
                 self.verbose_log("Curator rebuild triggered successfully")
         except Exception as exc:
-            msg = f"Failed to trigger curator rebuild: {exc}"
+            msg = f"failed to trigger Curator rebuild: {exc}"
             record_event(msg, level="error")
             raise RuntimeError(msg) from exc
 
@@ -855,18 +855,18 @@ class BuzzState:
             self.verbose_log("Library update hook completed successfully")
         except subprocess.TimeoutExpired as exc:
             self._log_hook_error(
-                f"Library update hook timed out after {exc.timeout}s: {exc.cmd}",
+                f"library update hook timed out after {exc.timeout}s: {exc.cmd}",
                 exc.stdout,
                 exc.stderr,
             )
         except subprocess.CalledProcessError as exc:
             self._log_hook_error(
-                f"Library update hook failed with exit code {exc.returncode}: {exc.cmd}",
+                f"library update hook failed with exit code {exc.returncode}: {exc.cmd}",
                 exc.stdout,
                 exc.stderr,
             )
         except Exception as exc:
-            record_event(f"Library update hook failed: {exc}", level="error")
+            record_event(f"library update hook failed: {exc}", level="error")
 
     def _log_hook_error(
         self, message: str, stdout: str | bytes | None, stderr: str | bytes | None
@@ -1100,7 +1100,7 @@ class BuzzState:
             try:
                 self.select_files(torrent_id, file_ids)
             except Exception as exc:
-                record_event(f"Failed to auto-select files during restore: {exc}", level="error")
+                record_event(f"failed to auto-select files during restore: {exc}", level="error")
 
         with self.lock:
             if thash in self.trashcan:
@@ -1241,7 +1241,7 @@ class Poller(threading.Thread):
         updated: list[str],
         synced: int,
     ) -> str:
-        lines = [f"Real-Debrid library changed ({synced} torrents):"]
+        lines = [f"real-Debrid library changed ({synced} torrents):"]
         if added:
             lines.append(f"  +{len(added)} added")
             lines.extend(f"    {path}" for path in added)
@@ -1256,7 +1256,7 @@ class Poller(threading.Thread):
     def run(self) -> None:
         """Poll Real-Debrid and emit events when the library changes."""
         while True:
-            if self._stop_event.wait(self.state.config.poll_interval_secs):
+            if self._stop_event.wait(self.state.config.provider_poll_interval_secs):
                 return
             try:
                 report = self.state.sync()
@@ -1292,7 +1292,7 @@ class InitialSync(threading.Thread):
         """Run a single sync without triggering hooks, then mark startup done."""
         try:
             report = self.state.sync(trigger_hook=False)
-            record_event("Startup sync complete", event="startup_sync", report=report)
+            record_event("startup sync complete", event="startup_sync", report=report)
         except Exception as exc:  # noqa: BLE001
             self.state.last_error = str(exc)
             record_event(f"startup sync failed: {exc}", level="error")

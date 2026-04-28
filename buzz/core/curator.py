@@ -261,7 +261,7 @@ def mapping_diff(previous: list[dict], current: list[dict]) -> dict:
 
 
 def log_mapping_event(diff: dict, report: dict, mapping_entries: int) -> None:
-    """Record a curator mapping diff event."""
+    """Record a Curator mapping diff event."""
     record_event(
         "Curator mapping updated",
         event="curator_mapping_diff",
@@ -633,7 +633,7 @@ def validate_media_server_startup_auth(
         if now >= deadline:
             if probe.unreachable:
                 raise MediaServerAuthError(
-                    f"Jellyfin is unreachable at {config.jellyfin_url}."
+                    f"jellyfin is unreachable at {config.jellyfin_url}."
                 )
             detail = f": {last_error}" if last_error else "."
             raise MediaServerAuthError(
@@ -663,7 +663,7 @@ def rebuild_and_trigger(
     media_server_kind = _media_server_kind(config)
     if media_server_kind != "jellyfin":
         msg = (
-            f"Media server kind '{media_server_kind}' refresh is not "
+            f"media server kind '{media_server_kind}' refresh is not "
             "implemented by curator."
         )
         record_event(msg, level="warning")
@@ -696,7 +696,7 @@ def rebuild_and_trigger(
         # process doesn't think the whole rebuild failed just because the
         # scan trigger failed. The symlinks (build_library) were already
         # successfully swapped.
-        record_event(f"Jellyfin scan trigger failed: {exc}", level="error")
+        record_event(f"jellyfin scan trigger failed: {exc}", level="error")
     else:
         report["jellyfin_scan_triggered"] = True
         report["jellyfin_scan_error"] = None

@@ -129,8 +129,10 @@ def zurg_to_buzz(zurg: dict[str, Any]) -> dict[str, Any]:
         hook = DEFAULT_HOOK
 
     buzz = {
-        "provider": {"token": str(zurg.get("token", ""))},
-        "poll_interval_secs": int(zurg.get("check_for_changes_every_secs", 10)),
+        "provider": {
+            "token": str(zurg.get("token", "")),
+            "poll_interval_secs": int(zurg.get("check_for_changes_every_secs", 10)),
+        },
         "server": {"bind": "0.0.0.0", "port": int(zurg.get("port", 9999))},
         "state_dir": "/app/data",
         "hooks": {"on_library_change": hook},
@@ -159,7 +161,7 @@ def buzz_to_zurg(buzz: dict[str, Any]) -> str:
     directories = _as_dict(buzz.get("directories", {}))
     anime = _as_dict(directories.get("anime", {}))
     token = str(provider.get("token", ""))
-    poll = int(buzz.get("poll_interval_secs", 10))
+    poll = int(provider.get("poll_interval_secs", 10))
     port = int(server.get("port", 9999))
     hook = str(hooks.get("on_library_change", DEFAULT_HOOK)).strip()
     anime_patterns = list(anime.get("patterns", [DEFAULT_ANIME_PATTERN]))

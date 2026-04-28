@@ -100,7 +100,7 @@ def discover_jellyfin_libraries(config: CuratorConfig) -> dict[str, str]:
 def trigger_jellyfin_scan(config: CuratorConfig) -> None:
     """Trigger a full Jellyfin media library scan."""
     task_id = discover_scan_task_id(config)
-    record_event("Triggering full Jellyfin media library scan...", level="info")
+    record_event("triggering full Jellyfin media library scan...", level="info")
     req = request.Request(
         f"{config.jellyfin_url}/ScheduledTasks/Running/{task_id}",
         method="POST",
@@ -141,17 +141,17 @@ def trigger_jellyfin_selective_refresh(
         cat in config.jellyfin_library_map for cat in categories
     ):
         record_event(
-            "No Jellyfin libraries mapped for categories: "
-            f"{categories}. Skipping refresh.",
+            "no Jellyfin libraries mapped for categories: "
+            f"{categories}. skipping refresh.",
             level="info",
         )
         return
 
     if not library_names:
         record_event(
-            "Unknown categories "
+            "unknown categories "
             f"{categories} (not in media_server.library_map). "
-            "Falling back to full scan.",
+            "falling back to full scan.",
             level="warning",
         )
         trigger_jellyfin_scan(config)
@@ -163,14 +163,14 @@ def trigger_jellyfin_selective_refresh(
         if not library_id:
             record_event(
                 f"Jellyfin library '{name}' not found. "
-                "Falling back to full scan.",
+                "falling back to full scan.",
                 level="warning",
             )
             trigger_jellyfin_scan(config)
             return
 
         record_event(
-            f"Triggering selective refresh for Jellyfin library "
+            f"triggering selective refresh for Jellyfin library "
             f"'{name}' ({library_id})...",
             level="info",
         )
@@ -190,6 +190,6 @@ def trigger_jellyfin_selective_refresh(
             with request.urlopen(req, timeout=30) as resp:
                 _ = resp.read()
         except Exception as exc:
-            msg = f"Failed to refresh Jellyfin library '{name}': {exc}"
+            msg = f"failed to refresh Jellyfin library '{name}': {exc}"
             record_event(msg, level="error")
             raise RuntimeError(msg) from exc

@@ -170,10 +170,11 @@ For config merge, masking, and reload behavior, see
 | :--- | :--- | :--- |
 | `provider.token` | *(Required)* | Your Real-Debrid API token. |
 | `provider.connection_concurrency` | `4` | Maximum number of concurrent upstream connections to Real-Debrid (count). |
-| `poll_interval_secs` | `10` | How often Buzz polls Real-Debrid for changes (seconds). |
+| `provider.poll_interval_secs` | `10` | How often Buzz polls Real-Debrid for changes (seconds). |
 | `server.bind` | `0.0.0.0` | IP address the DAV server binds to. |
 | `server.port` | `9999` | Port for the DAV server (TCP port). |
 | `server.stream_buffer_size` | `0` | Read-ahead buffer size for streaming media (bytes). Set to `0` to disable. Recommended when enabled: `500000000` (500MiB). |
+| `ui.poll_interval_secs` | `3` | How often the Buzz web UI polls for updates (seconds). |
 | `tls.cert_path` | `data/tls/buzz.crt` | TLS certificate path for the HTTPS UI on port `9443` (container path); relative paths resolve from the process working directory. Set both TLS paths to empty strings to opt out. |
 | `tls.key_path` | `data/tls/buzz.key` | TLS private key path (container path). Buzz creates and renews missing or expiring certs automatically. |
 | `state_dir` | `/app/data` | Shared path used by both `buzz-dav` and `buzz-curator` for `buzz.sqlite` and related state (container path). |
@@ -221,8 +222,7 @@ Complete example:
 provider:
   token: "YOUR_RD_TOKEN"
   connection_concurrency: 4
-
-poll_interval_secs: 10
+  poll_interval_secs: 10
 
 server:
   bind: "0.0.0.0"

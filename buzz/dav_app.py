@@ -258,6 +258,7 @@ class DavApp:
         from .core.events import registry
         registry.default_source = "dav"
         registry.reconfigure(config.log_max_entries)
+        registry.verbose = config.verbose
 
         self.config = config
         self.saved_config = config
@@ -267,7 +268,7 @@ class DavApp:
             os.environ.get("BUZZ_CONFIG", DEFAULT_DAV_CONFIG_PATH),
         )
         for key in unknown_config_keys(config._file_raw, to_nested_dict(config)):
-            record_event(f"Unknown config key: {key}", level="warning")
+            record_event(f"unknown config key: {key}", level="warning")
         os.environ["RD_APITOKEN"] = config.token
         self.client = RD() if config.token else None
         self.ui_loop: asyncio.AbstractEventLoop | None = None
@@ -290,7 +291,7 @@ class DavApp:
             self._poller = None
             self.state.last_error = "Real-Debrid token is not configured."
             self.state.mark_startup_sync_complete()
-            record_event("Real-Debrid token is not configured", level="error")
+            record_event("real-Debrid token is not configured", level="error")
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
@@ -367,7 +368,7 @@ class DavApp:
                 return False
             self._language_refresh_running = True
         self.languages_refreshing = True
-        record_event("OpenSubtitles language refresh started")
+        record_event("openSubtitles language refresh started")
         self._notify_ui_change("config", {"languages_refreshing": True})
         threading.Thread(
             target=self._refresh_opensubtitles_languages,
@@ -388,7 +389,7 @@ class DavApp:
         finally:
             self._language_refresh_running = False
             self.languages_refreshing = False
-            record_event("OpenSubtitles language refresh finished")
+            record_event("openSubtitles language refresh finished")
             self._notify_ui_change("config", {"languages_refresh_complete": True})
 
     def is_ready(self) -> bool:
@@ -565,12 +566,12 @@ class DavApp:
         @self.app.post("/api/curator/rebuild")
         def curator_rebuild():
             try:
-                record_event("Manual library resync triggered")
+                record_event("manual library resync triggered")
                 self.state.manual_rebuild()
-                record_event("Manual library resync completed")
+                record_event("manual library resync completed")
                 return {"status": "success"}
             except Exception as exc:
-                record_event(f"Manual library resync failed: {exc}", level="error")
+                record_event(f"manual library resync failed: {exc}", level="error")
                 return JSONResponse(status_code=500, content={"error": str(exc)})
 
         @self.app.post("/api/subtitles/fetch-torrent")
@@ -927,6 +928,7 @@ class DavApp:
         runtime_config._raw_merged = to_nested_dict(runtime_config)
         self.config = runtime_config
         registry.reconfigure(runtime_config.log_max_entries)
+        registry.verbose = runtime_config.verbose
         self.state.apply_config(runtime_config)
         if snapshot_changed:
             self.state.sync(trigger_hook=False)

@@ -158,6 +158,30 @@ Machine-managed persistent state lives in `buzz.sqlite`.
 * Keep user-edited configuration in YAML/JSON files; use SQLite for machine
   state only.
 
+#### 9. Logging
+
+Logging messages (using `logger.*` or `record_event()`) follow specific
+capitalization rules to maintain a consistent look in the UI and terminal.
+
+* **Start with Lowercase:** Log messages should always start with a lowercase
+  letter.
+* **Proper Nouns:** Capitalize proper names (e.g., `Jellyfin`, `Curator`,
+  `OpenSubtitles`, `Real-Debrid`, `TLS`, `API`).
+* **Project Name:** The word `buzz` is always lowercase, even at the start of
+  a message.
+
+```python
+### Good
+logger.info("applied migrations")
+record_event("logging in to OpenSubtitles...")
+record_event("buzz startup complete")
+
+### Bad
+logger.info("Applied migrations")
+record_event("Logging in to OpenSubtitles...")
+record_event("Buzz startup complete")
+```
+
 #### Personal preferences
 
 Less is more: a cleaner, simpler approach over lots of features and "production ready" code. The idea is to start simple, see what needs improvement and then do it in a second run.

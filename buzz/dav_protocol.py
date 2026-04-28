@@ -207,7 +207,7 @@ def _try_resolve_download_url(
         state.verbose_log(f"Failed to resolve download URL: {exc}")
         if attempt < max_attempts - 1:
             record_event(
-                f"Retrying Real-Debrid stream resolution after failure: {exc}",
+                f"retrying Real-Debrid stream resolution after failure: {exc}",
                 level="warning",
                 event="rd_stream_retry",
                 path=source_url,
@@ -297,7 +297,7 @@ def _try_open_stream(
         )
         if attempt < max_attempts - 1:
             record_event(
-                f"Retrying Real-Debrid stream after upstream HTTP {exc.code}",
+                f"retrying Real-Debrid stream after upstream HTTP {exc.code}",
                 level="warning",
                 event="rd_stream_retry",
                 path=source_url,
@@ -314,7 +314,7 @@ def _try_open_stream(
         )
         if attempt < max_attempts - 1:
             record_event(
-                f"Retrying Real-Debrid stream after connection error: {exc}",
+                f"retrying Real-Debrid stream after connection error: {exc}",
                 level="debug",
                 event="rd_stream_retry",
                 path=source_url,
@@ -386,7 +386,7 @@ def open_remote_media(
                 raise
             if response is not None:
                 record_event(
-                    f"Retrying Real-Debrid stream after validation error: {exc}",
+                    f"retrying Real-Debrid stream after validation error: {exc}",
                     level="warning",
                     event="rd_stream_retry",
                     path=source_url,

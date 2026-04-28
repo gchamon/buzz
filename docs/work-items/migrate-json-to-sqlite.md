@@ -7,7 +7,7 @@ done
 ## Outcome
 
 All machine-managed persistent state — the torrent cache, the archived
-(trashcan) entries, the library snapshot, the curator mapping and report, and
+(trashcan) entries, the library snapshot, the Curator mapping and report, and
 per-subtitle metadata — lives in a single SQLite database at
 `{state_dir}/buzz.sqlite`. JSON files on disk are reserved for user-edited
 configuration (`buzz.yml`, `buzz.overrides.yml`). Operators gain indexed

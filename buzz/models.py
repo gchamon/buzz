@@ -24,7 +24,8 @@ RESTART_REQUIRED_FIELDS = (
     "tls.key_path",
 )
 UI_MANAGED_CONFIG_FIELDS = (
-    "poll_interval_secs",
+    "provider.poll_interval_secs",
+    "ui.poll_interval_secs",
     "server.bind",
     "server.port",
     "server.stream_buffer_size",
@@ -270,10 +271,10 @@ def _strip_secrets(d: dict) -> dict:
 
 
 _OVERRIDE_SCHEMA = {
-    "poll_interval_secs": True,
     "provider": {
         "token": True,
         "connection_concurrency": True,
+        "poll_interval_secs": True,
     },
     "server": {
         "bind": True,
@@ -402,8 +403,8 @@ def to_nested_dict(config: DavConfig) -> dict:
         "provider": {
             "token": config.token,
             "connection_concurrency": config.connection_concurrency,
+            "poll_interval_secs": config.provider_poll_interval_secs,
         },
-        "poll_interval_secs": config.poll_interval_secs,
         "server": {
             "bind": config.bind,
             "port": config.port,
@@ -541,7 +542,7 @@ class DavConfig(BaseModel):
     """Configuration for the WebDAV / Real-Debrid front-end."""
 
     token: str = ""
-    poll_interval_secs: int = 10
+    provider_poll_interval_secs: int = 10
     bind: str = "0.0.0.0"
     port: int = 9999
     stream_buffer_size: int = 0
@@ -601,7 +602,7 @@ class DavConfig(BaseModel):
 
         return cls(
             token=token,
-            poll_interval_secs=int(raw.get("poll_interval_secs", 10)),
+            provider_poll_interval_secs=int(provider.get("poll_interval_secs", 10)),
             bind=str(server.get("bind", "0.0.0.0")),
             port=int(server.get("port", 9999)),
             stream_buffer_size=int(server.get("stream_buffer_size", 0)),

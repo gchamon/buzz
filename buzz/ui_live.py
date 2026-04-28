@@ -62,7 +62,8 @@ _CONFIG_BOOL_FIELDS = (
     "subtitles.filters.exclude_machine",
 )
 _CONFIG_NUMBER_FIELDS = (
-    "poll_interval_secs",
+    "provider.poll_interval_secs",
+    "ui.poll_interval_secs",
     "provider.connection_concurrency",
     "server.port",
     "server.stream_buffer_size",
@@ -78,7 +79,8 @@ _LIBRARY_MAP_FIELDS = tuple(
 )
 
 _CONFIG_TRACKED_FIELDS = (
-    "poll_interval_secs",
+    "provider.poll_interval_secs",
+    "ui.poll_interval_secs",
     "provider.connection_concurrency",
     "server.bind",
     "server.port",
@@ -241,7 +243,8 @@ class ConfigValues(TypedDict):
     jellyfin_url: str
     library_map: dict[str, str]
     media_server_kind: str
-    poll_interval_secs: int
+    provider_poll_interval_secs: int
+    ui_poll_interval_secs: int
     port: int
     plex_token: str
     plex_url: str
@@ -1629,7 +1632,8 @@ def _config_values(
         },
         "media_server_kind": effective["media_server"]["kind"],
         "on_library_change": effective["hooks"]["on_library_change"],
-        "poll_interval_secs": effective["poll_interval_secs"],
+        "provider_poll_interval_secs": effective["provider"]["poll_interval_secs"],
+        "ui_poll_interval_secs": effective["ui"]["poll_interval_secs"],
         "port": effective["server"]["port"],
         "plex_token": effective["media_server"]["plex"]["token"],
         "plex_url": effective["media_server"]["plex"]["url"],

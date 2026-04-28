@@ -152,8 +152,8 @@ class CuratorAppTests(unittest.TestCase):
                         response = client.get("/healthz")
 
             self.assertEqual(response.status_code, 200)
-            self.assertIn("curator startup failed: bad auth", stdout.getvalue())
-            self.assertIn("curator startup complete", stdout.getvalue())
+            self.assertIn("Curator startup failed: bad auth", stdout.getvalue())
+            self.assertIn("Curator startup complete", stdout.getvalue())
 
     def test_curator_lifespan_logs_startup_auth_success(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -285,7 +285,7 @@ class CuratorAppTests(unittest.TestCase):
                 ),
             ):
                 with self.assertRaisesRegex(
-                    MediaServerAuthError, "Jellyfin is unreachable"
+                    MediaServerAuthError, "jellyfin is unreachable"
                 ):
                     validate_media_server_startup_auth(
                         config,

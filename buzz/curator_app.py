@@ -35,6 +35,7 @@ class CuratorApp:
 
         registry.default_source = "curator"
         registry.reconfigure(config.log_max_entries)
+        registry.verbose = config.verbose
 
         self.config = config
         self.config_path = getattr(
@@ -59,25 +60,25 @@ class CuratorApp:
                     )
             except Exception as exc:
                 record_event(
-                    f"curator startup failed: {exc}",
+                    f"Curator startup failed: {exc}",
                     level="error",
                 )
             if self.config.build_on_start:
                 try:
                     startup_report = build_library(self.config)
                     record_event(
-                        "initial curator build complete: "
+                        "initial Curator build complete: "
                         f"{startup_report['movies']} movies, "
                         f"{startup_report['show_files']} show files, "
                         f"{startup_report['anime_files']} anime files"
                     )
                 except Exception as exc:
                     record_event(
-                        f"initial curator build failed: {exc}",
+                        f"initial Curator build failed: {exc}",
                         level="error",
                     )
             record_event(
-                "curator startup complete",
+                "Curator startup complete",
                 event="curator_ready",
             )
             yield
@@ -151,8 +152,9 @@ class CuratorApp:
         self.config = CuratorConfig.load(self.config_path)
         self.curator.config = self.config
         registry.reconfigure(self.config.log_max_entries)
+        registry.verbose = self.config.verbose
         record_event(
-            "Curator config reloaded from disk",
+            "curator config reloaded from disk",
             event="curator_config_reloaded",
         )
 

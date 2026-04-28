@@ -108,7 +108,7 @@ It is both a WebDAV front end and the coordination point for operator actions.
 
 Main responsibilities:
 
-- Poll Real-Debrid on `poll_interval_secs` and compare current torrent
+- Poll Real-Debrid on `provider.poll_interval_secs` and compare current torrent
   signatures against the `torrents` table.
 - Delay hook execution by `hooks.rd_update_delay_secs` after RD changes so the
   inventory can settle before curation.
@@ -237,7 +237,9 @@ Page responsibilities:
 
 `buzz.core.events.EventRegistry` is a process-local, thread-safe ring buffer.
 Both services record structured log-style events through `record_event()`.
-Events are also printed to stdout for container-log visibility.
+Events follow a standard capitalization policy (lowercase by default, except
+for proper nouns like `Jellyfin` or `API`) and are also printed to stdout
+for container-log visibility. See `AGENTS.md` for the full coding convention.
 
 The DAV process uses events for local UI state, `/api/logs`, and the live logs
 page. The curator has its own event registry and notifies the DAV UI by posting
@@ -267,7 +269,7 @@ There are two OpenSubtitles integrations:
 
 Subtitle fetch flow:
 
-1. Build or load the current curator mapping.
+1. Build or load the current Curator mapping.
 2. Restrict the mapping to one torrent when a torrent-scoped fetch is requested.
 3. For each target video and configured language, skip existing overlay files.
 4. Search OpenSubtitles using parsed media metadata and source filename hints.

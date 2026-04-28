@@ -22,6 +22,7 @@ class EventRegistry:
         self.lock = threading.Lock()
         self.default_source = default_source
         self.listeners: list[Callable[[dict[str, Any]], None]] = []
+        self.verbose = False
 
     def record(
         self,
@@ -30,6 +31,8 @@ class EventRegistry:
         **extra: Any,
     ) -> None:
         """Store an event and print it to stdout."""
+        if level == "debug" and not self.verbose:
+            return
         event = {
             "timestamp": utc_now_iso(),
             "message": message,

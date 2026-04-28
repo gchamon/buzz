@@ -82,7 +82,7 @@ hearing-impaired, AI-translated, and machine-translated tracks.
     AI / machine filters then ranks by the chosen strategy; returns the top
     candidate or `None`.
   - `release_similarity(source_name, release_name)`: Jaccard token similarity.
-  - `fetch_subtitles_for_library(mapping, config)`: walks the curator mapping,
+  - `fetch_subtitles_for_library(mapping, config)`: walks the Curator mapping,
     checks overlay for existing files per language, orchestrates search →
     rank → download → write to overlay for each missing (file, language) pair.
 
@@ -108,7 +108,7 @@ hearing-impaired, AI-translated, and machine-translated tracks.
     are excluded.
   - Fallback chain: when a strategy yields no results, the next fallback is used
     and logged.
-  - Overlay structure: given a curator mapping fixture, assert that
+  - Overlay structure: given a Curator mapping fixture, assert that
     `apply_subtitle_overlay` creates symlinks at the correct paths.
 
 - **Logging + UI** (`buzz/templates/torrents.html`):

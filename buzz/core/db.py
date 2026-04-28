@@ -119,7 +119,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
                 " VALUES (?, datetime('now'))",
                 (v,),
             )
-    logger.info("Applied %d migration(s), now at version %d", len(pending), pending[-1][0])
+    logger.info("applied %d migration(s), now at version %d", len(pending), pending[-1][0])
 
 
 def migrate_legacy_files(conn: sqlite3.Connection, state_dir: Path) -> None:
@@ -170,7 +170,7 @@ def _migrate_torrent_cache(conn: sqlite3.Connection, state_dir: Path) -> None:
                 ),
             )
     _rename_migrated(path)
-    logger.info("Imported %d torrent(s) from %s", len(data), path.name)
+    logger.info("imported %d torrent(s) from %s", len(data), path.name)
 
 
 def _migrate_archive(conn: sqlite3.Connection, state_dir: Path) -> None:
@@ -199,7 +199,7 @@ def _migrate_archive(conn: sqlite3.Connection, state_dir: Path) -> None:
                 ),
             )
     _rename_migrated(path)
-    logger.info("Imported %d archive entry/entries from %s", len(data), path.name)
+    logger.info("imported %d archive entry/entries from %s", len(data), path.name)
 
 
 def _migrate_library_snapshot(conn: sqlite3.Connection, state_dir: Path) -> None:
@@ -220,7 +220,7 @@ def _migrate_library_snapshot(conn: sqlite3.Connection, state_dir: Path) -> None
             (json.dumps(data), digest, data.get("generated_at", _now_iso())),
         )
     _rename_migrated(path)
-    logger.info("Imported library snapshot from %s", path.name)
+    logger.info("imported library snapshot from %s", path.name)
 
 
 def _migrate_curator_mapping(conn: sqlite3.Connection, state_dir: Path) -> None:
@@ -240,7 +240,7 @@ def _migrate_curator_mapping(conn: sqlite3.Connection, state_dir: Path) -> None:
                 (entry.get("source", ""), entry.get("target", ""), entry.get("type", "")),
             )
     _rename_migrated(path)
-    logger.info("Imported %d mapping entry/entries from %s", len(data), path.name)
+    logger.info("imported %d mapping entry/entries from %s", len(data), path.name)
 
 
 def _migrate_curator_report(conn: sqlite3.Connection, state_dir: Path) -> None:
@@ -258,7 +258,7 @@ def _migrate_curator_report(conn: sqlite3.Connection, state_dir: Path) -> None:
             (json.dumps(data), _now_iso()),
         )
     _rename_migrated(path)
-    logger.info("Imported curator report from %s", path.name)
+    logger.info("imported curator report from %s", path.name)
 
 
 def migrate_subtitle_sidecars(
@@ -293,7 +293,7 @@ def migrate_subtitle_sidecars(
             sidecar.rename(sidecar.with_suffix(".migrated"))
             imported += 1
     if imported:
-        logger.info("Imported %d subtitle sidecar(s) from %s", imported, subtitle_root)
+        logger.info("imported %d subtitle sidecar(s) from %s", imported, subtitle_root)
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +302,7 @@ def migrate_subtitle_sidecars(
 
 
 def load_curator_mapping(conn: sqlite3.Connection) -> list[dict[str, str]]:
-    """Return the current curator mapping rows ordered by target path."""
+    """Return the current Curator mapping rows ordered by target path."""
     rows = conn.execute(
         "SELECT source, target, type FROM curator_mapping ORDER BY target"
     ).fetchall()
@@ -315,7 +315,7 @@ def load_curator_mapping(conn: sqlite3.Connection) -> list[dict[str, str]]:
 def replace_curator_mapping(
     conn: sqlite3.Connection, mapping: list[dict[str, str]]
 ) -> None:
-    """Replace all curator mapping rows in one transaction."""
+    """Replace all Curator mapping rows in one transaction."""
     with conn:
         conn.execute("DELETE FROM curator_mapping")
         for entry in mapping:
