@@ -52,8 +52,9 @@ curl -fsSL https://gitlab.com/gabriel.chamon/buzz/-/raw/main/buzz.min.yml -o buz
    hand-edit them upfront.
 
 3. *(Optional)* Download `.env.dist` as `.env` only if you need to override
-   `PUID`/`PGID`, opt into the Plex profile, or tune Plex container
-   settings. The stack defaults to Jellyfin and runs without an `.env` file.
+   `PUID`/`PGID`, tune the DAV memory cap, opt into the Plex profile, or
+   tune Plex container settings. The stack defaults to Jellyfin and runs
+   without an `.env` file.
 
    ```bash
    curl -fsSL https://gitlab.com/gabriel.chamon/buzz/-/raw/main/.env.dist -o .env
@@ -169,11 +170,11 @@ For config merge, masking, and reload behavior, see
 | Key | Default | Description |
 | :--- | :--- | :--- |
 | `provider.token` | *(Required)* | Your Real-Debrid API token. |
-| `provider.connection_concurrency` | `4` | Maximum number of concurrent upstream connections to Real-Debrid (count). |
+| `provider.connection_concurrency` | `4` | Maximum concurrent Real-Debrid stream setup/opening operations. Active media streams are intentionally not concurrency- or rate-limited by this setting and must not share metadata/listing throttles used for `PROPFIND`, GET setup, directory lists, or scans. |
 | `provider.poll_interval_secs` | `10` | How often Buzz polls Real-Debrid for changes (seconds). |
 | `server.bind` | `0.0.0.0` | IP address the DAV server binds to. |
 | `server.port` | `9999` | Port for the DAV server (TCP port). |
-| `server.stream_buffer_size` | `0` | Read-ahead buffer size for streaming media (bytes). Set to `0` to disable. Recommended when enabled: `500000000` (500MiB). |
+| `server.stream_buffer_size` | `0` | Read-ahead buffer size per active remote stream (bytes). Set to `0` to disable, which is recommended unless buffering is needed. Large values multiply during scans or timeline scrubbing. |
 | `ui.poll_interval_secs` | `3` | How often the Buzz web UI polls for updates (seconds). |
 | `tls.cert_path` | `data/tls/buzz.crt` | TLS certificate path for the HTTPS UI on port `9443` (container path); relative paths resolve from the process working directory. Set both TLS paths to empty strings to opt out. |
 | `tls.key_path` | `data/tls/buzz.key` | TLS private key path (container path). Buzz creates and renews missing or expiring certs automatically. |
@@ -281,6 +282,8 @@ only if you need to override one of these values:
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `PUID` / `PGID` | `1000` | User and Group ID used for creating host-owned files and for running services. Override only if your host UID/GID differs. |
+| `BUZZ_DAV_MEMORY_LIMIT` | `2g` | Docker memory cap for `buzz-dav`, so DAV scan/playback pressure is contained to that container. |
+| `BUZZ_DAV_MEMORY_SWAP_LIMIT` | `BUZZ_DAV_MEMORY_LIMIT` | Docker memory plus swap cap for `buzz-dav`. Defaults to the memory cap, allowing no extra swap to avoid disk wear. |
 | `COMPOSE_PROFILES` | *(unset → Jellyfin)* | Set to `plex` to swap the Jellyfin container for the Plex container. Plex support is currently **untested**. |
 | `PLEX_VERSION` | `docker` | Plex container image version. Only consumed when the `plex` profile is active. |
 | `PLEX_CLAIM` | *(Empty)* | Plex claim token for first-time setup. Only consumed when the `plex` profile is active. |
@@ -321,9 +324,8 @@ rebuild it after changes with `docker compose up -d --build`.
 For the GitLab registry image, CI components, and development override model,
 see [Deployment And CI Architecture](./docs/architecture.md#deployment-and-ci-architecture).
 
-Docker references are pinned as `tag@sha256:digest` so Renovate can propose
-reviewable image updates. To refresh the pinned images used by Compose,
-`buzz/Dockerfile`, and Buzz-owned GitLab CI jobs, run:
+To refresh the pinned images used by Compose, `buzz/Dockerfile`, and Buzz-owned
+GitLab CI jobs, run:
 
 ```bash
 uv run ./maint-scripts/update_dependency_refs.py
@@ -335,18 +337,20 @@ ranges in `pyproject.toml` when needed, run `uv lock --upgrade`, then run
 `uv sync --group dev`, `uv run python -m unittest discover -s tests`, and
 `uvx pyright buzz tests`.
 
-You can also use Renovate locally for a dry run:
+To preview Renovate updates locally with Docker, run it against the checked-out
+repository:
 
 ```sh
-npm_config_cache=/tmp/npm-cache npx --yes --package renovate renovate \
-  --platform=local \
-  --repository-cache=enabled \
-  --dry-run=full
+docker run --rm \
+  -e RENOVATE_PLATFORM=local \
+  -e RENOVATE_REPOSITORIES=/workspace \
+  -e LOG_LEVEL=debug \
+  -v "$PWD:/workspace" \
+  renovate/renovate
 ```
 
-Local Renovate is useful for checking what it would propose, but the normal
-update path should still be Renovate merge requests so the seven-day release
-age gate and CI checks remain visible.
+Add registry tokens as extra `-e` flags if you need Renovate to resolve private
+dependencies or avoid public registry rate limits.
 
 Run the test suite locally with `uv run python -m unittest discover -s tests`. We also keep templates clean with `htmlhint` (configured via `.htmlhintrc` in the root):
 

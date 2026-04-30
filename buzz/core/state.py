@@ -389,6 +389,9 @@ class BuzzState:
         self.hook_last_started_at = None
         self.hook_last_finished_at = None
         self.hook_last_error = None
+        self.hook_phase = "idle"
+        self.hook_active_paths: list[str] = []
+        self.hook_wait_started_at = None
         self.resolved_urls: dict[str, dict[str, Any]] = {}
         self._resolve_locks: dict[str, threading.Lock] = {}
         self.hook_lock = threading.Lock()
@@ -555,6 +558,64 @@ class BuzzState:
             "updated_paths": updated,
         }
 
+    @staticmethod
+    def _format_change_message(
+        added: list[str],
+        removed: list[str],
+        updated: list[str],
+        synced: int,
+    ) -> str:
+        lines = [f"real-Debrid library changed ({synced} torrents):"]
+        if added:
+            lines.append(f"  +{len(added)} added")
+            lines.extend(f"    {path}" for path in added)
+        if removed:
+            lines.append(f"  -{len(removed)} removed")
+            lines.extend(f"    {path}" for path in removed)
+        if updated:
+            lines.append(f"  ~{len(updated)} updated")
+            lines.extend(f"    {path}" for path in updated)
+        return "\n".join(lines)
+
+    def _record_sync_change_event(self, report: SyncReport) -> None:
+        added = report.get("added_paths", [])
+        removed = report.get("removed_paths", [])
+        updated = report.get("updated_paths", [])
+        if not any((added, removed, updated)):
+            return
+        record_event(
+            self._format_change_message(
+                added,
+                removed,
+                updated,
+                int(report.get("synced_torrents", 0)),
+            ),
+            event="realdebrid_update",
+        )
+
+    @staticmethod
+    def _hook_category_counts(paths: list[str]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for path in paths:
+            category = path.split("/", 1)[0] if path else "unknown"
+            counts[category] = counts.get(category, 0) + 1
+        return counts
+
+    @classmethod
+    def _hook_category_summary(cls, paths: list[str]) -> str:
+        counts = cls._hook_category_counts(paths)
+        if not counts:
+            return "no roots"
+        return ", ".join(
+            f"{category}={count}" for category, count in sorted(counts.items())
+        )
+
+    @staticmethod
+    def _hook_path_log_extra(paths: list[str]) -> dict[str, Any]:
+        if len(paths) <= 5:
+            return {"root_paths": list(paths)}
+        return {}
+
     def sync(self, *, trigger_hook: bool = True) -> SyncReport:
         """Sync torrent state with Real-Debrid and rebuild the snapshot."""
         if self.client is None:
@@ -621,6 +682,8 @@ class BuzzState:
                 self.last_sync_at = report["timestamp"]
                 self.last_report = report
                 self.last_error = None
+            if changed:
+                self._record_sync_change_event(report)
             if hook_paths:
                 self._enqueue_hook(hook_paths)
             if should_notify:
@@ -650,10 +713,21 @@ class BuzzState:
                 cached
                 and cached.get("signature") == signature
                 and isinstance(cached.get("info"), dict)
+                and not self._should_refresh_cached_info(summary, cached["info"])
             ):
                 info = cached["info"]
+                self._log_torrent_sync_decision(
+                    summary,
+                    info,
+                    source="cache",
+                )
             else:
                 info = self.client.torrents.info(torrent_id).json()
+                self._log_torrent_sync_decision(
+                    summary,
+                    info,
+                    source="refetch",
+                )
             cached_magnet = cached.get("magnet") if cached else None
             new_cache[torrent_id] = {
                 "signature": signature,
@@ -662,6 +736,65 @@ class BuzzState:
             }
             infos.append(info)
         return new_cache, infos
+
+    def _should_refresh_cached_info(
+        self, summary: TorrentSummary, info: TorrentInfo
+    ) -> bool:
+        """Return True when cached torrent detail is probably stale."""
+        if not self._summary_has_ready_links(summary):
+            return False
+        return not self._info_has_linked_playable_media(info)
+
+    def _summary_has_ready_links(self, summary: TorrentSummary) -> bool:
+        status = str(summary.get("status", "")).lower()
+        progress = summary.get("progress")
+        links = summary.get("links") or []
+        return bool(
+            links
+            and (
+                status == "downloaded"
+                or progress == 100
+                or progress == 100.0
+            )
+        )
+
+    def _info_has_linked_playable_media(self, info: TorrentInfo) -> bool:
+        selected = self.builder._selected_files(info)
+        playable = [item for item in selected if is_video_file(item["path"])]
+        return bool(
+            playable
+            and info.get("status") == "downloaded"
+            and any(item.get("url") for item in playable)
+        )
+
+    def _log_torrent_sync_decision(
+        self,
+        summary: TorrentSummary,
+        info: TorrentInfo,
+        *,
+        source: str,
+    ) -> None:
+        selected = self.builder._selected_files(info)
+        record_event(
+            "real-Debrid torrent detail sync decision",
+            level="debug",
+            event="realdebrid_torrent_detail_sync",
+            torrent_id=str(summary.get("id", "")),
+            filename=str(
+                info.get("original_filename")
+                or info.get("filename")
+                or summary.get("filename")
+                or ""
+            ),
+            status=str(info.get("status") or summary.get("status") or ""),
+            progress=summary.get("progress"),
+            summary_links=len(summary.get("links") or []),
+            selected_files=len(selected),
+            selected_videos=sum(
+                1 for item in selected if is_video_file(item["path"])
+            ),
+            detail_source=source,
+        )
 
     def _archive_removed_torrents(
         self, new_cache: dict[str, TorrentInfo]
@@ -683,9 +816,19 @@ class BuzzState:
             merged = set(self.hook_pending_paths)
             merged.update(pending)
             self.hook_pending_paths = sorted(merged)
+            pending_count = len(self.hook_pending_paths)
+            if not self.hook_in_progress:
+                self.hook_phase = "queued"
             if not self.hook_task_active:
                 self.hook_task_active = True
                 threading.Thread(target=self._run_hook_task, daemon=True).start()
+        record_event(
+            f"hook queued: {len(pending)} roots, {pending_count} pending",
+            event="hook_queued",
+            changed_roots=len(pending),
+            pending_roots=pending_count,
+            **self._hook_path_log_extra(sorted(pending)),
+        )
 
     def _run_hook_task(self) -> None:
         try:
@@ -698,38 +841,66 @@ class BuzzState:
                     self.hook_pending_paths = []
                     self.hook_in_progress = True
                     self.hook_last_started_at = utc_now_iso()
+                    self.hook_wait_started_at = self.hook_last_started_at
                     self.hook_last_error = None
+                    self.hook_phase = "queued"
+                    self.hook_active_paths = list(paths)
+
+                record_event(
+                    "hook batch started: "
+                    f"{len(paths)} roots ({self._hook_category_summary(paths)})",
+                    event="hook_batch_started",
+                    changed_roots=len(paths),
+                    categories=self._hook_category_counts(paths),
+                    **self._hook_path_log_extra(paths),
+                )
 
                 try:
                     self._trigger_curator_and_hooks(paths, skip_delay=False)
                 except Exception as exc:  # noqa: BLE001
                     with self.hook_lock:
                         self.hook_last_error = str(exc)
+                        self.hook_phase = "failed"
                 finally:
                     with self.hook_lock:
                         self.hook_in_progress = False
                         self.hook_last_finished_at = utc_now_iso()
+                        if self.hook_phase != "failed":
+                            self.hook_phase = "complete"
+                    record_event(
+                        f"hook batch finished: {len(paths)} roots",
+                        event="hook_batch_finished",
+                        changed_roots=len(paths),
+                        **self._hook_path_log_extra(paths),
+                    )
         except Exception as exc:  # noqa: BLE001
             record_event(f"hook task failed unexpectedly: {exc}", level="error")
             with self.hook_lock:
                 self.hook_task_active = False
+                self.hook_phase = "failed"
 
     def manual_rebuild(self) -> None:
         """Trigger curator rebuild and hooks immediately, skipping RD delay."""
         with self.hook_lock:
             self.hook_in_progress = True
             self.hook_last_started_at = utc_now_iso()
+            self.hook_wait_started_at = self.hook_last_started_at
             self.hook_last_error = None
+            self.hook_phase = "triggering_curator"
+            self.hook_active_paths = []
         try:
             self._trigger_curator_and_hooks([], skip_delay=True)
         except Exception as exc:
             with self.hook_lock:
                 self.hook_last_error = str(exc)
+                self.hook_phase = "failed"
             raise
         finally:
             with self.hook_lock:
                 self.hook_in_progress = False
                 self.hook_last_finished_at = utc_now_iso()
+                if self.hook_phase != "failed":
+                    self.hook_phase = "complete"
 
     def _summary_signature(self, summary: TorrentInfo) -> TorrentInfo:
         return {
@@ -748,10 +919,20 @@ class BuzzState:
             if self.config.library_mount and changed_roots:
                 self._wait_for_vfs_visibility(changed_roots)
             elif self.config.rd_update_delay_secs > 0:
-                self.verbose_log(
-                    f"Waiting {self.config.rd_update_delay_secs}s for Real-Debrid update..."
+                with self.hook_lock:
+                    self.hook_phase = "waiting_delay"
+                record_event(
+                    "waiting for Real-Debrid update delay: "
+                    f"{self.config.rd_update_delay_secs}s",
+                    event="hook_waiting_delay",
+                    delay_secs=self.config.rd_update_delay_secs,
                 )
                 time.sleep(self.config.rd_update_delay_secs)
+                record_event(
+                    "real-Debrid update delay finished",
+                    event="hook_delay_finished",
+                    delay_secs=self.config.rd_update_delay_secs,
+                )
 
         self._trigger_curator(changed_roots)
         self._run_hook(changed_roots)
@@ -776,15 +957,31 @@ class BuzzState:
         if not to_check:
             return
 
-        self.verbose_log(
-            f"Waiting for VFS visibility of {len(to_check)} roots in {mount} (timeout {timeout}s)..."
+        with self.hook_lock:
+            self.hook_phase = "waiting_vfs"
+        record_event(
+            "waiting for VFS visibility: "
+            f"{len(to_check)} roots in {mount} (timeout {timeout}s)",
+            event="hook_waiting_vfs",
+            roots=len(to_check),
+            mount=mount,
+            timeout_secs=timeout,
         )
 
+        last_missing: list[str] = []
+        last_stale: list[str] = []
         while time.time() - start_time < timeout:
             all_visible, missing, stale = self._check_vfs_roots(mount, to_check)
+            last_missing = missing
+            last_stale = stale
             if all_visible:
                 elapsed = int(time.time() - start_time)
-                self.verbose_log(f"VFS visibility confirmed after {elapsed}s")
+                record_event(
+                    f"vfs visibility confirmed after {elapsed}s",
+                    event="hook_vfs_visible",
+                    elapsed_secs=elapsed,
+                    roots=len(to_check),
+                )
                 return
             if int(time.time() - start_time) % 30 == 0:
                 self.verbose_log(
@@ -792,8 +989,15 @@ class BuzzState:
                 )
             time.sleep(2)
 
-        self.verbose_log(
-            f"VFS visibility timeout reached after {timeout}s. Proceeding with sync."
+        record_event(
+            "vfs visibility timeout reached after "
+            f"{timeout}s; proceeding with sync",
+            level="warning",
+            event="hook_vfs_timeout",
+            timeout_secs=timeout,
+            roots=len(to_check),
+            missing_roots=len(last_missing),
+            stale_roots=len(last_stale),
         )
 
     def _check_vfs_roots(
@@ -813,7 +1017,13 @@ class BuzzState:
     def _trigger_curator(self, changed_roots: list[str]) -> None:
         if not self.config.curator_url:
             return
-        self.verbose_log(f"Triggering curator rebuild at {self.config.curator_url}...")
+        with self.hook_lock:
+            self.hook_phase = "triggering_curator"
+        record_event(
+            f"triggering Curator rebuild: {len(changed_roots)} roots",
+            event="hook_triggering_curator",
+            changed_roots=len(changed_roots),
+        )
         try:
             payload = {"changed_roots": changed_roots}
             data = json.dumps(payload).encode("utf-8")
@@ -826,7 +1036,11 @@ class BuzzState:
             with request.urlopen(req, timeout=30) as response:
                 if response.status not in (200, 204):
                     raise ValueError(f"Curator returned HTTP {response.status}")
-                self.verbose_log("Curator rebuild triggered successfully")
+                record_event(
+                    "curator rebuild accepted",
+                    event="hook_curator_accepted",
+                    status=response.status,
+                )
         except Exception as exc:
             msg = f"failed to trigger Curator rebuild: {exc}"
             record_event(msg, level="error")
@@ -841,7 +1055,13 @@ class BuzzState:
         if not filtered_roots:
             return
 
-        self.verbose_log(f"Running library update hook: {self.config.hook_command}...")
+        with self.hook_lock:
+            self.hook_phase = "running_hook"
+        record_event(
+            f"running library update hook: {len(filtered_roots)} roots",
+            event="hook_running_command",
+            changed_roots=len(filtered_roots),
+        )
         try:
             cmd = shlex.split(self.config.hook_command)
             cmd.extend(filtered_roots)
@@ -852,7 +1072,11 @@ class BuzzState:
                 capture_output=True,
                 text=True,
             )
-            self.verbose_log("Library update hook completed successfully")
+            record_event(
+                "library update hook completed",
+                event="hook_command_finished",
+                changed_roots=len(filtered_roots),
+            )
         except subprocess.TimeoutExpired as exc:
             self._log_hook_error(
                 f"library update hook timed out after {exc.timeout}s: {exc.cmd}",
@@ -935,6 +1159,10 @@ class BuzzState:
                 "hook_last_started_at": self.hook_last_started_at,
                 "hook_last_finished_at": self.hook_last_finished_at,
                 "hook_last_error": self.hook_last_error,
+                "hook_phase": self.hook_phase,
+                "hook_active_paths": list(self.hook_active_paths),
+                "hook_pending_count": len(self.hook_pending_paths),
+                "hook_wait_started_at": self.hook_wait_started_at,
             }
 
     def torrents(self) -> list[TorrentSummary]:
@@ -1241,39 +1469,24 @@ class Poller(threading.Thread):
         updated: list[str],
         synced: int,
     ) -> str:
-        lines = [f"real-Debrid library changed ({synced} torrents):"]
-        if added:
-            lines.append(f"  +{len(added)} added")
-            lines.extend(f"    {path}" for path in added)
-        if removed:
-            lines.append(f"  -{len(removed)} removed")
-            lines.extend(f"    {path}" for path in removed)
-        if updated:
-            lines.append(f"  ~{len(updated)} updated")
-            lines.extend(f"    {path}" for path in updated)
-        return "\n".join(lines)
+        return self.state._format_change_message(
+            added,
+            removed,
+            updated,
+            synced,
+        )
 
     def run(self) -> None:
-        """Poll Real-Debrid and emit events when the library changes."""
+        """Poll Real-Debrid and let state sync emit change events."""
         while True:
             if self._stop_event.wait(self.state.config.provider_poll_interval_secs):
                 return
             try:
-                report = self.state.sync()
-                if report.get("changed"):
-                    added = report.get("added_paths", [])
-                    removed = report.get("removed_paths", [])
-                    updated = report.get("updated_paths", [])
-                    synced = report.get("synced_torrents", 0)
-                    if not any((added, removed, updated)):
-                        continue
-                    record_event(
-                        self._format_change_message(added, removed, updated, synced),
-                        event="realdebrid_update",
-                    )
+                self.state.sync()
             except Exception as exc:  # noqa: BLE001
-                self.state.last_error = str(exc)
-                record_event(f"background sync failed: {exc}", level="error")
+                with self.state.lock:
+                    self.state.last_error = None
+                record_event(f"background sync failed: {exc}", level="warning")
 
     def stop(self) -> None:
         """Signal the polling thread to stop."""

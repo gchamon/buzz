@@ -35,7 +35,8 @@ class VFSSyncTests(unittest.TestCase):
         # Mock exists to return True for the requested root
         mock_exists.return_value = True
 
-        self.state._trigger_curator_and_hooks(["movies/MyMovie"])
+        with patch("buzz.core.state.record_event") as mock_record:
+            self.state._trigger_curator_and_hooks(["movies/MyMovie"])
 
         # Verify os.path.exists was called with the correct path
         mock_exists.assert_called_with("/mnt/buzz/raw/movies/MyMovie")
@@ -44,6 +45,9 @@ class VFSSyncTests(unittest.TestCase):
         mock_run_hook.assert_called_once()
         # Verify no sleep was needed (it was visible immediately)
         mock_sleep.assert_not_called()
+        events = [call.kwargs.get("event") for call in mock_record.call_args_list]
+        self.assertIn("hook_waiting_vfs", events)
+        self.assertIn("hook_vfs_visible", events)
 
     @patch("os.path.exists")
     @patch("time.sleep")
@@ -56,12 +60,17 @@ class VFSSyncTests(unittest.TestCase):
         # Mock exists to return False first, then True
         mock_exists.side_effect = [False, True]
 
-        self.state._trigger_curator_and_hooks(["movies/MyMovie"])
+        with patch("buzz.core.state.record_event") as mock_record:
+            self.state._trigger_curator_and_hooks(["movies/MyMovie"])
 
         # Verify it slept once
         mock_sleep.assert_called_once_with(2)
         # Verify curator and hooks were triggered
         mock_trigger_curator.assert_called_once()
+        self.assertIn(
+            "hook_vfs_visible",
+            [call.kwargs.get("event") for call in mock_record.call_args_list],
+        )
 
     @patch("os.path.exists")
     @patch("time.sleep")
@@ -92,11 +101,19 @@ class VFSSyncTests(unittest.TestCase):
         # Mock exists to always return False
         mock_exists.return_value = False
 
-        self.state._trigger_curator_and_hooks(["movies/MyMovie"])
+        with patch("buzz.core.state.record_event") as mock_record:
+            self.state._trigger_curator_and_hooks(["movies/MyMovie"])
 
         # Verify it timed out but still proceeded
         mock_trigger_curator.assert_called_once()
         mock_run_hook.assert_called_once()
+        timeout_events = [
+            call for call in mock_record.call_args_list
+            if call.kwargs.get("event") == "hook_vfs_timeout"
+        ]
+        self.assertEqual(len(timeout_events), 1)
+        self.assertEqual(timeout_events[0].kwargs["level"], "warning")
+        self.assertEqual(timeout_events[0].kwargs["missing_roots"], 1)
 
     @patch("os.path.exists")
     @patch("time.sleep")
@@ -112,13 +129,18 @@ class VFSSyncTests(unittest.TestCase):
         # Mock exists to return True (stale) then False (gone)
         mock_exists.side_effect = [True, False]
 
-        self.state._trigger_curator_and_hooks(["movies/MyMovie"])
+        with patch("buzz.core.state.record_event") as mock_record:
+            self.state._trigger_curator_and_hooks(["movies/MyMovie"])
 
         # Should have called exists twice
         self.assertEqual(mock_exists.call_count, 2)
         # Should have slept once
         mock_sleep.assert_called_once_with(2)
         mock_trigger_curator.assert_called_once()
+        self.assertIn(
+            "hook_vfs_visible",
+            [call.kwargs.get("event") for call in mock_record.call_args_list],
+        )
 
 if __name__ == "__main__":
     unittest.main()

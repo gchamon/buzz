@@ -658,6 +658,50 @@ class CuratorAppTests(unittest.TestCase):
                 )
             )
 
+    @patch("buzz.core.media_server.trigger_jellyfin_scan")
+    @patch("buzz.core.media_server.discover_jellyfin_libraries")
+    def test_selective_refresh_warns_with_available_jellyfin_libraries(
+        self, mock_discover, mock_scan
+    ):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(
+                root,
+                jellyfin_api_key="token",
+                jellyfin_library_map={"shows": "TV Shows"},
+            )
+            mock_discover.return_value = {
+                "Movies": "movie-id-123",
+                "Shows": "show-id-123",
+            }
+
+            from buzz.core.curator import trigger_jellyfin_selective_refresh
+
+            stdout = io.StringIO()
+            with patch("sys.stdout", stdout):
+                trigger_jellyfin_selective_refresh(
+                    config, ["shows/Some Show"]
+                )
+
+            mock_scan.assert_called_once_with(config)
+            logged = stdout.getvalue()
+            self.assertIn(
+                "could not find Jellyfin library 'TV Shows' "
+                "for category 'shows'",
+                logged,
+            )
+            self.assertIn(
+                "available Jellyfin libraries: Movies, Shows",
+                logged,
+            )
+            self.assertIn('"event": "jellyfin_library_not_found"', logged)
+            self.assertIn('"category": "shows"', logged)
+            self.assertIn('"library_name": "TV Shows"', logged)
+            self.assertIn(
+                '"available_libraries": ["Movies", "Shows"]',
+                logged,
+            )
+
     @patch("buzz.core.media_server.discover_jellyfin_libraries")
     @patch("urllib.request.urlopen")
     def test_selective_refresh_failure_marks_rebuild_scan_failed(

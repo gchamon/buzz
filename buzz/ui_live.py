@@ -425,7 +425,28 @@ class _BaseBuzzLiveView(LiveView[_TContext]):
                 "value": status.get("last_sync_at") or "never",
             },
             {"label": "state", "value": sync_state},
+            {"label": "hook", "value": self._hook_status_label(status)},
         ]
+
+    def _hook_status_label(self, status: dict[str, Any]) -> str:
+        phase = str(status.get("hook_phase") or "idle")
+        active_count = len(status.get("hook_active_paths") or [])
+        pending_count = int(status.get("hook_pending_count") or 0)
+        if phase in {"idle", "complete"} and pending_count == 0:
+            return "idle"
+        if phase == "queued":
+            return f"queued ({pending_count} roots)"
+        if phase == "waiting_vfs":
+            return f"waiting_vfs ({active_count} roots)"
+        if phase == "waiting_delay":
+            return f"waiting_delay ({active_count} roots)"
+        if phase == "triggering_curator":
+            return f"curator ({active_count} roots)"
+        if phase == "running_hook":
+            return f"command ({active_count} roots)"
+        if phase == "failed":
+            return "failed"
+        return phase
 
     def _base_context(
         self,

@@ -40,7 +40,11 @@ from .core.utils import (
     format_bytes,
     http_date,
 )
-from .dav_protocol import open_remote_media, propfind_body
+from .dav_protocol import (
+    _is_transient_connection_error,
+    open_remote_media,
+    propfind_body,
+)
 from .models import (
     AddTorrentRequest,
     DavConfig,
@@ -733,7 +737,13 @@ class DavApp:
                 self.state, node, range_header
             )
             return StreamingResponse(
-                self._stream_remote(response, first_chunk, self.config.stream_buffer_size),
+                self._stream_remote(
+                    response,
+                    first_chunk,
+                    self.config.stream_buffer_size,
+                    node,
+                    range_header,
+                ),
                 status_code=status_code,
                 headers=headers,
             )
@@ -761,7 +771,7 @@ class DavApp:
                 f"Real-Debrid stream failed: {exc}",
                 event="rd_stream_failed",
                 path=rel,
-                level="error",
+                level="warning",
             )
             return Response(status_code=502, content=str(exc))
 
@@ -770,6 +780,8 @@ class DavApp:
         response: Any,
         first_chunk: bytes,
         buffer_size: int,
+        node: dict | None = None,
+        range_header: tuple[int, int] | None = None,
     ):
         chunk_size = 64 * 1024
 
@@ -786,42 +798,65 @@ class DavApp:
                 response.close()
             return
 
-        q = queue.Queue(maxsize=max(1, buffer_size // chunk_size))
-        stop_event = threading.Event()
+        max_resume_attempts = 3
+        size = int(node["size"]) if node is not None else 0
+        range_start = range_header[0] if range_header else 0
+        range_end = range_header[1] if range_header else max(0, size - 1)
+        bytes_sent = 0
 
-        def buffer_reader():
-            try:
-                while not stop_event.is_set():
-                    chunk = response.read(chunk_size)
-                    if not chunk:
-                        break
+        def start_buffer_reader(current_response: Any):
+            q = queue.Queue(maxsize=max(1, buffer_size // chunk_size))
+            stop_event = threading.Event()
+
+            def buffer_reader():
+                try:
+                    while not stop_event.is_set():
+                        chunk = current_response.read(chunk_size)
+                        if not chunk:
+                            break
+                        while not stop_event.is_set():
+                            try:
+                                q.put(chunk, timeout=1)
+                                break
+                            except queue.Full:
+                                continue
+                except Exception as exc:
+                    record_event(
+                        f"Real-Debrid stream read interrupted: {exc}",
+                        level="debug",
+                        event="buffer_reader_error",
+                        error=str(exc),
+                    )
                     while not stop_event.is_set():
                         try:
-                            q.put(chunk, timeout=1)
+                            q.put(exc, timeout=1)
                             break
                         except queue.Full:
                             continue
-            except Exception as exc:
-                print(
-                    json.dumps(
-                        {"event": "buffer_reader_error", "error": str(exc)},
-                        sort_keys=True,
-                    ),
-                    flush=True,
-                )
-            finally:
-                while not stop_event.is_set():
-                    try:
-                        q.put(None, timeout=1)
-                        break
-                    except queue.Full:
-                        continue
+                    return
+                finally:
+                    while not stop_event.is_set():
+                        try:
+                            q.put(None, timeout=1)
+                            break
+                        except queue.Full:
+                            continue
 
-        t = threading.Thread(target=buffer_reader, daemon=True)
-        t.start()
+            t = threading.Thread(target=buffer_reader, daemon=True)
+            t.start()
+            return q, stop_event, t
 
+        q, stop_event, t = start_buffer_reader(response)
+
+        def stop_current_reader() -> None:
+            stop_event.set()
+            t.join(timeout=5)
+            response.close()
+
+        resume_attempts = 0
         try:
             if first_chunk:
+                bytes_sent += len(first_chunk)
                 yield first_chunk
             while True:
                 try:
@@ -832,11 +867,32 @@ class DavApp:
                     continue
                 if item is None:
                     break
+                if isinstance(item, BaseException):
+                    stop_current_reader()
+                    if (
+                        node is None
+                        or not _is_transient_connection_error(item)
+                        or resume_attempts >= max_resume_attempts
+                    ):
+                        raise item
+                    resume_from = range_start + bytes_sent
+                    if resume_from > range_end:
+                        break
+                    resume_attempts += 1
+                    response, first_chunk = open_remote_media(
+                        self.state,
+                        node,
+                        (resume_from, range_end),
+                    )
+                    q, stop_event, t = start_buffer_reader(response)
+                    if first_chunk:
+                        bytes_sent += len(first_chunk)
+                        yield first_chunk
+                    continue
+                bytes_sent += len(item)
                 yield item
         finally:
-            stop_event.set()
-            t.join(timeout=5)
-            response.close()
+            stop_current_reader()
 
     def fetch_subtitles(self, torrent_name: str) -> dict:
         """Request subtitle fetch for a torrent from the curator."""
@@ -990,6 +1046,9 @@ class DavApp:
             level_label = f"[{level.upper()}]"
             source = "buzz-curator" if log.get("source") == "curator" else "buzz-dav"
             message = str(log.get("message", ""))
+            count = int(log.get("count", 1))
+            if count > 1:
+                message = f"{message} ({count})"
             copy_text = f"{source} {display_timestamp} {level_label} {message}"
             formatted.append(
                 {

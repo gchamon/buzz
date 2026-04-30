@@ -4,6 +4,12 @@ services:
     container_name: buzz-dav
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
+    mem_limit: ${BUZZ_DAV_MEMORY_LIMIT:-2g}
+    memswap_limit: ${BUZZ_DAV_MEMORY_SWAP_LIMIT:-${BUZZ_DAV_MEMORY_LIMIT:-2g}}
+    deploy:
+      resources:
+        limits:
+          memory: ${BUZZ_DAV_MEMORY_LIMIT:-2g}
     environment:
       - UV_CACHE_DIR=/app/cache/uv-buzz
       - TZ=${TZ:-UTC}

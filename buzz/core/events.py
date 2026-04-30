@@ -40,10 +40,24 @@ class EventRegistry:
             "source": extra.get("source") or self.default_source,
             **extra,
         }
+        event["count"] = 1
         if not event["source"]:
             del event["source"]
+        should_print = True
         with self.lock:
-            self.events.append(event)
+            last_event = self.events[-1] if self.events else None
+            if (
+                level == "warning"
+                and last_event
+                and last_event.get("level") == level
+                and last_event.get("message") == message
+                and last_event.get("source") == event.get("source")
+            ):
+                last_event["count"] = int(last_event.get("count", 1)) + 1
+                event = last_event
+                should_print = False
+            else:
+                self.events.append(event)
             listeners = list(self.listeners)
 
         for listener in listeners:
@@ -52,12 +66,13 @@ class EventRegistry:
             except Exception:
                 pass
 
-        # Also print to stdout for legacy logging and visibility
-        prefix = f"[{level.upper()}]" if level != "info" else ""
-        out = f"{prefix} {message}".strip()
-        if extra:
-            out += f" {json.dumps(extra, sort_keys=True)}"
-        print(out, flush=True)
+        if should_print:
+            # Also print to stdout for legacy logging and visibility.
+            prefix = f"[{level.upper()}]" if level != "info" else ""
+            out = f"{prefix} {message}".strip()
+            if extra:
+                out += f" {json.dumps(extra, sort_keys=True)}"
+            print(out, flush=True)
 
     def get_recent(self, limit: int = 100) -> list[dict]:
         """Return the most recent events, oldest first."""
