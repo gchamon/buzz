@@ -3,18 +3,19 @@
 provider:
   token: yourtoken
   # Maximum number of concurrent upstream connections to Real-Debrid (count).
-  # Caps the parallelism of media probes/streams (e.g. during a Jellyfin
-  # library scan) so the upstream CDN doesn't drop connections under load.
-  # Increase if scans crawl, decrease if you still see retry storms.
+  # Caps only the setup/opening phase for Real-Debrid media streams. Active
+  # media streams are intentionally not concurrency- or rate-limited here;
+  # they cannot safely share metadata/listing throttles used for PROPFIND,
+  # GET setup, directory lists, or scans.
   connection_concurrency: 4
   poll_interval_secs: 10
 server:
   bind: 0.0.0.0
   port: 9999
   # Read-ahead buffer size in bytes for streaming media (bytes).
-  # Set to 0 to disable. Recommended when enabled: 500000000.
-  # When enabled, a background thread pre-fetches data from Real-Debrid into a
-  # bounded queue to smooth out network variations.
+  # Set to 0 to disable, which is recommended unless buffering is needed.
+  # When enabled, this amount can be allocated per active remote stream, so
+  # large values multiply during Jellyfin scans or timeline scrubbing.
   stream_buffer_size: 0
 
 # TLS is enabled by default. Relative paths resolve from the process working

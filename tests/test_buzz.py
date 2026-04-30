@@ -1,4 +1,6 @@
 import asyncio
+import errno
+import io
 import json
 import os
 import subprocess
@@ -7,6 +9,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import yaml
@@ -26,6 +29,7 @@ from buzz.core import db
 from buzz.core.tls import ensure_tls_certificate
 from buzz.dav_app import DavApp
 from buzz.dav_protocol import open_remote_media, propfind_body
+from buzz.ui_live import CacheLiveView
 from buzz.models import (
     DavConfig as Config,
 )
@@ -189,6 +193,7 @@ class BuzzStateTests(unittest.TestCase):
                 self.torrents_list = torrents_list
                 self.torrent_infos = torrent_infos
                 self.added_magnets = []
+                self.info_calls = []
                 self.selected_files_calls = []
                 self.deleted_ids = []
 
@@ -196,6 +201,7 @@ class BuzzStateTests(unittest.TestCase):
                 return BuzzStateTests.FakeResponse(self.torrents_list)
 
             def info(self, torrent_id):
+                self.info_calls.append(torrent_id)
                 return BuzzStateTests.FakeResponse(self.torrent_infos.get(torrent_id))
 
             def add_magnet(self, magnet):
@@ -784,6 +790,12 @@ class BuzzStateTests(unittest.TestCase):
 
     def test_poller_formats_change_log_across_multiple_lines(self):
         state = MagicMock()
+        state._format_change_message = (
+            lambda added, removed, updated, synced:
+            BuzzState._format_change_message(
+                added, removed, updated, synced
+            )
+        )
         poller = Poller(state)
 
         message = poller._format_change_message(
@@ -807,6 +819,25 @@ class BuzzStateTests(unittest.TestCase):
                 ]
             ),
         )
+
+    def test_poller_does_not_emit_duplicate_change_event(self):
+        state = MagicMock()
+        state.config.provider_poll_interval_secs = 0
+        state.sync.return_value = {
+            "changed": True,
+            "added_paths": ["shows/Black Mirror S07"],
+            "removed_paths": [],
+            "updated_paths": [],
+            "synced_torrents": 100,
+        }
+        poller = Poller(state)
+        poller._stop_event.wait = MagicMock(side_effect=[False, True])
+
+        with patch("buzz.core.state.record_event") as mock_record:
+            poller.run()
+
+        state.sync.assert_called_once_with()
+        mock_record.assert_not_called()
 
     def test_identical_syncs_do_not_enqueue_duplicate_hooks(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -864,6 +895,187 @@ class BuzzStateTests(unittest.TestCase):
 
             self.assertTrue(report["changed"])
             self.assertEqual(enqueued, [["movies/Movie 2026"]])
+
+    def test_direct_sync_logs_realdebrid_change_event(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                provider_poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                curator_url="",
+            )
+            state = BuzzState(config, client=self._create_fake_rd())
+
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                report = state.sync()
+
+            self.assertTrue(report["changed"])
+            logged = stdout.getvalue()
+            self.assertIn("real-Debrid library changed (1 torrents):", logged)
+            self.assertIn("+1 added", logged)
+            self.assertIn("movies/Movie 2026", logged)
+            self.assertIn('"event": "realdebrid_update"', logged)
+
+    def test_show_only_addition_enqueues_show_curator_rebuild(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                provider_poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                curator_url="http://curator.invalid/rebuild",
+            )
+            movie_summary = {
+                "id": "MOVIE1",
+                "filename": "Movie.2026.1080p.mkv",
+                "bytes": 123,
+                "progress": 100,
+                "status": "downloaded",
+                "ended": "2026-01-01T00:00:00Z",
+                "links": ["https://example.invalid/movie"],
+            }
+            show_summary = {
+                "id": "SHOW1",
+                "filename": "Black.Mirror.S07.2160p.mkv",
+                "bytes": 456,
+                "progress": 100,
+                "status": "downloaded",
+                "ended": "2026-01-02T00:00:00Z",
+                "links": ["https://example.invalid/show"],
+            }
+            movie_info = {
+                "id": "MOVIE1",
+                "status": "downloaded",
+                "filename": "Movie.2026.1080p.mkv",
+                "original_filename": "Movie 2026",
+                "links": ["https://example.invalid/movie"],
+                "files": [
+                    {
+                        "id": 1,
+                        "path": "/Movie.2026.1080p.mkv",
+                        "bytes": 123,
+                        "selected": 1,
+                    }
+                ],
+            }
+            show_info = {
+                "id": "SHOW1",
+                "status": "downloaded",
+                "filename": "Black.Mirror.S07.2160p.mkv",
+                "original_filename": "Black Mirror S07",
+                "links": ["https://example.invalid/show"],
+                "files": [
+                    {
+                        "id": 1,
+                        "path": "/Black.Mirror.S07E01.mkv",
+                        "bytes": 456,
+                        "selected": 1,
+                    }
+                ],
+            }
+            client = self.FakeRD(
+                torrents_list=[movie_summary],
+                torrent_infos={"MOVIE1": movie_info, "SHOW1": show_info},
+            )
+            state = BuzzState(config, client=client)
+            state.sync(trigger_hook=False)
+            client.torrents.torrents_list = [movie_summary, show_summary]
+            enqueued = []
+            state._enqueue_hook = lambda changed_roots: enqueued.append(
+                list(changed_roots)
+            )
+
+            report = state.sync()
+
+            self.assertEqual(report["added_paths"], ["shows/Black Mirror S07"])
+            self.assertEqual(report["removed_paths"], [])
+            self.assertEqual(report["updated_paths"], [])
+            self.assertEqual(enqueued, [["shows/Black Mirror S07"]])
+
+    def test_sync_refetches_stale_cached_info_when_summary_has_ready_links(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                provider_poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                curator_url="",
+            )
+            summary = {
+                "id": "SHOW1",
+                "filename": "Black.Mirror.S07.2160p.mkv",
+                "bytes": 456,
+                "progress": 100,
+                "status": "downloaded",
+                "ended": "2026-01-02T00:00:00Z",
+                "links": ["https://example.invalid/show"],
+            }
+            stale_info = {
+                "id": "SHOW1",
+                "status": "downloaded",
+                "filename": "Black.Mirror.S07.2160p.mkv",
+                "links": [],
+                "files": [
+                    {
+                        "id": 1,
+                        "path": "/Black.Mirror.S07E01.mkv",
+                        "bytes": 456,
+                        "selected": 1,
+                    }
+                ],
+            }
+            fresh_info = {
+                **stale_info,
+                "links": ["https://example.invalid/show"],
+            }
+            client = self.FakeRD(
+                torrents_list=[summary],
+                torrent_infos={"SHOW1": fresh_info},
+            )
+            state = BuzzState(config, client=client)
+            signature = state._summary_signature(summary)
+            state.cache["SHOW1"] = {
+                "signature": signature,
+                "info": stale_info,
+                "magnet": None,
+            }
+
+            report = state.sync(trigger_hook=False)
+
+            self.assertEqual(client.torrents.info_calls, ["SHOW1"])
+            self.assertEqual(
+                report["added_paths"],
+                ["shows/Black.Mirror.S07.2160p.mkv"],
+            )
+            self.assertIn(
+                "shows/Black.Mirror.S07.2160p.mkv/Black.Mirror.S07E01.mkv",
+                state.snapshot["files"],
+            )
 
     def test_sync_moves_upstream_removed_torrent_to_trashcan(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1016,7 +1228,12 @@ class BuzzStateTests(unittest.TestCase):
 
         state._run_hook(["movies/Interstellar"])
 
-        mock_record_event.assert_called_once_with(
+        mock_record_event.assert_any_call(
+            "running library update hook: 1 roots",
+            event="hook_running_command",
+            changed_roots=1,
+        )
+        mock_record_event.assert_any_call(
             "\n".join(
                 [
                     "library update hook failed with exit code 2: ['sh', '/app/scripts/media_update.sh', 'movies/Interstellar']",
@@ -1125,9 +1342,17 @@ class BuzzStateTests(unittest.TestCase):
             state._run_hook = fake_run_hook
             state._enqueue_hook(["movies/A"])
             self.assertTrue(first_started.wait(timeout=5))
+            status = state.status()
+            self.assertTrue(status["hook_in_progress"])
+            self.assertEqual(status["hook_phase"], "queued")
+            self.assertEqual(status["hook_active_paths"], ["movies/A"])
+            self.assertEqual(status["hook_pending_count"], 0)
+            self.assertIsNotNone(status["hook_wait_started_at"])
             state._enqueue_hook(["shows/B"])
             state._enqueue_hook(["movies/A", "movies/C"])
+            status = state.status()
             self.assertTrue(state.status()["hook_pending"])
+            self.assertEqual(status["hook_pending_count"], 3)
             release_first.set()
             self.assertTrue(second_started.wait(timeout=5))
 
@@ -1137,7 +1362,9 @@ class BuzzStateTests(unittest.TestCase):
 
             self.assertEqual(runs[0], ["movies/A"])
             self.assertEqual(runs[1], ["movies/A", "movies/C", "shows/B"])
-            self.assertFalse(state.status()["hook_pending"])
+            status = state.status()
+            self.assertFalse(status["hook_pending"])
+            self.assertEqual(status["hook_phase"], "complete")
 
     def test_hook_failure_is_reported_without_affecting_readiness(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1176,6 +1403,42 @@ class BuzzStateTests(unittest.TestCase):
             self.assertTrue(done.is_set())
             self.assertTrue(state.is_ready())
             self.assertEqual(state.status()["hook_last_error"], "hook failed")
+
+
+class PollerTests(unittest.TestCase):
+    def test_background_sync_failure_records_warning_without_last_error(self):
+        class FakeStopEvent:
+            def __init__(self):
+                self.calls = 0
+
+            def wait(self, _timeout):
+                self.calls += 1
+                return self.calls > 1
+
+            def set(self):
+                pass
+
+        class FakeState:
+            def __init__(self):
+                self.config = Config(provider_poll_interval_secs=0)
+                self.last_error = "previous"
+                self.lock = threading.Lock()
+
+            def sync(self):
+                raise RuntimeError("rd unavailable")
+
+        state = FakeState()
+        poller = Poller(cast(Any, state))
+        poller._stop_event = cast(Any, FakeStopEvent())
+
+        with patch("buzz.core.state.record_event") as mock_record_event:
+            poller.run()
+
+        self.assertIsNone(state.last_error)
+        mock_record_event.assert_called_once_with(
+            "background sync failed: rd unavailable",
+            level="warning",
+        )
 
 
 class DavAppTests(unittest.TestCase):
@@ -1267,6 +1530,17 @@ class DavAppTests(unittest.TestCase):
         self.assertEqual(
             dav_rel_path("/dav/movies/Little%20Shop%20%5B1986%5D%20%2B%20Extras/"),
             "movies/Little Shop [1986] + Extras",
+        )
+
+    def test_hook_status_is_visible_in_ui_meta_items(self):
+        self.dav_app.state.hook_phase = "waiting_vfs"
+        self.dav_app.state.hook_active_paths = ["movies/A", "shows/B"]
+
+        meta_items = CacheLiveView(self.dav_app)._meta_items()
+
+        self.assertIn(
+            {"label": "hook", "value": "waiting_vfs (2 roots)"},
+            meta_items,
         )
 
     def test_propfind_child_round_trips_encoded_directory_name(self):
@@ -2584,6 +2858,28 @@ class DavBufferedStreamingTests(unittest.TestCase):
             self.close()
             return False
 
+    class FailingResponse(FakeResponse):
+        def __init__(
+            self,
+            body: bytes,
+            *,
+            fail_after_reads: int = 1,
+            error: Exception | None = None,
+        ):
+            super().__init__(body)
+            self._reads = 0
+            self._fail_after_reads = fail_after_reads
+            self._error = error or TimeoutError(
+                errno.ETIMEDOUT,
+                "The read operation timed out",
+            )
+
+        def read(self, amount=-1):
+            if self._reads >= self._fail_after_reads:
+                raise self._error
+            self._reads += 1
+            return super().read(amount)
+
     def _make_dav_app(self):
         tmpdir = tempfile.mkdtemp()
         self.addCleanup(__import__("shutil").rmtree, tmpdir)
@@ -2656,17 +2952,169 @@ class DavBufferedStreamingTests(unittest.TestCase):
         dav_app = self._make_dav_app()
         payload = bytes(range(256)) * (self.BUFFER_SIZE * 2 // 256)
         fake_response = self.FakeResponse(payload)
+        node = {
+            "type": "remote",
+            "size": str(len(payload)),
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-buf-1",
+        }
+
+        received = b"".join(
+            dav_app._stream_remote(
+                fake_response,
+                b"",
+                self.BUFFER_SIZE,
+                node,
+                None,
+            )
+        )
+
+        self.assertEqual(received, payload)
+        self.assertTrue(fake_response.closed)
+
+    def test_buffered_streaming_resumes_after_transient_read_timeout(self):
+        dav_app = self._make_dav_app()
+        payload = bytes(range(256)) * (self.BUFFER_SIZE * 2 // 256)
+        first_response = self.FailingResponse(payload, fail_after_reads=1)
+        resumed_response = self.FakeResponse(payload[self.CHUNK_SIZE :])
+        node = {
+            "type": "remote",
+            "size": str(len(payload)),
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-buf-resume",
+        }
 
         with patch(
             "buzz.dav_app.open_remote_media",
-            return_value=(fake_response, b""),
-        ):
-            client = TestClient(dav_app.app)
-            r = client.get("/dav/movies/Test%20Film/film.mkv")
+            return_value=(resumed_response, b""),
+        ) as mock_open:
+            received = b"".join(
+                dav_app._stream_remote(
+                    first_response,
+                    b"",
+                    self.BUFFER_SIZE,
+                    node,
+                    None,
+                )
+            )
 
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.content, payload)
-        self.assertTrue(fake_response.closed)
+        self.assertEqual(received, payload)
+        mock_open.assert_called_once_with(
+            dav_app.state,
+            node,
+            (self.CHUNK_SIZE, len(payload) - 1),
+        )
+        self.assertTrue(first_response.closed)
+        self.assertTrue(resumed_response.closed)
+
+    def test_buffered_reader_timeout_is_debug_only_by_default(self):
+        dav_app = self._make_dav_app()
+        payload = bytes(range(256)) * (self.CHUNK_SIZE // 256)
+        fake_response = self.FailingResponse(payload, fail_after_reads=0)
+        node = {
+            "type": "remote",
+            "size": str(len(payload)),
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-buf-debug",
+        }
+
+        with patch("buzz.dav_app.open_remote_media", return_value=(fake_response, b"")):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                with self.assertRaises(TimeoutError):
+                    b"".join(
+                        dav_app._stream_remote(
+                            fake_response,
+                            b"",
+                            self.BUFFER_SIZE,
+                            node,
+                            None,
+                        )
+                    )
+
+        self.assertNotIn("buffer_reader_error", stdout.getvalue())
+
+    def test_buffered_streaming_raises_after_resume_retries_are_exhausted(self):
+        dav_app = self._make_dav_app()
+        payload = bytes(range(256)) * (self.CHUNK_SIZE // 256)
+        first_response = self.FailingResponse(payload, fail_after_reads=0)
+        retry_responses = [
+            self.FailingResponse(payload, fail_after_reads=0)
+            for _ in range(3)
+        ]
+        node = {
+            "type": "remote",
+            "size": str(len(payload)),
+            "source_url": "https://example.invalid/source",
+            "mime_type": "video/x-matroska",
+            "modified": "2026-01-01T00:00:00Z",
+            "etag": "etag-buf-exhausted",
+        }
+
+        with patch(
+            "buzz.dav_app.open_remote_media",
+            side_effect=[(response, b"") for response in retry_responses],
+        ) as mock_open:
+            with self.assertRaises(TimeoutError):
+                b"".join(
+                    dav_app._stream_remote(
+                        first_response,
+                        b"",
+                        self.BUFFER_SIZE,
+                        node,
+                        None,
+                    )
+                )
+
+        self.assertEqual(mock_open.call_count, 3)
+
+    def test_remote_get_head_and_range_keep_size_headers(self):
+        dav_app = self._make_dav_app()
+        node = dav_app.state.lookup("movies/Test Film/film.mkv")
+        if node is None:
+            self.fail("Expected snapshot node for streaming header test")
+        captured_headers: list[dict] = []
+
+        def fake_streaming_response(_content, **kwargs):
+            captured_headers.append(kwargs["headers"])
+            return MagicMock(status_code=kwargs["status_code"])
+
+        with patch(
+            "buzz.dav_app.open_remote_media",
+            return_value=(self.FakeResponse(b""), b""),
+        ), patch(
+            "buzz.dav_app.StreamingResponse",
+            side_effect=fake_streaming_response,
+        ):
+            dav_app._dav_remote_response(
+                node, True, None, "movies/Test Film/film.mkv"
+            )
+            dav_app._dav_remote_response(
+                node, True, "bytes=0-0", "movies/Test Film/film.mkv"
+            )
+        head_response = dav_app._dav_remote_response(
+            node, False, None, "movies/Test Film/film.mkv"
+        )
+        size = int(node["size"])
+
+        self.assertEqual(
+            captured_headers[0]["Content-Length"],
+            str(size),
+        )
+        self.assertEqual(
+            head_response.headers["content-length"],
+            str(size),
+        )
+        self.assertEqual(captured_headers[1]["Content-Length"], "1")
+        self.assertEqual(
+            captured_headers[1]["Content-Range"],
+            f"bytes 0-0/{size}",
+        )
 
     # ------------------------------------------------------------------
     # Helpers for generator-level thread tests

@@ -127,17 +127,16 @@ def trigger_jellyfin_selective_refresh(
     if not categories:
         return
 
-    library_names = {
-        config.jellyfin_library_map.get(cat)
-        for cat in categories
-        if cat in config.jellyfin_library_map
+    category_library_names = {
+        cat: library_name
+        for cat in sorted(categories)
+        if (library_name := config.jellyfin_library_map.get(cat))
     }
-    library_names = {name for name in library_names if name}
 
     # If all categories are known but none map to a library
     # (e.g. __unplayable__), just skip instead of falling back to a full
     # scan.
-    if not library_names and all(
+    if not category_library_names and all(
         cat in config.jellyfin_library_map for cat in categories
     ):
         record_event(
@@ -147,7 +146,7 @@ def trigger_jellyfin_selective_refresh(
         )
         return
 
-    if not library_names:
+    if not category_library_names:
         record_event(
             "unknown categories "
             f"{categories} (not in media_server.library_map). "
@@ -158,13 +157,24 @@ def trigger_jellyfin_selective_refresh(
         return
 
     libraries = discover_jellyfin_libraries(config)
-    for name in library_names:
+    available_libraries = sorted(libraries)
+    for category, name in category_library_names.items():
         library_id = libraries.get(name)
         if not library_id:
+            available = (
+                ", ".join(available_libraries)
+                if available_libraries
+                else "none"
+            )
             record_event(
-                f"Jellyfin library '{name}' not found. "
+                f"could not find Jellyfin library '{name}' for category "
+                f"'{category}'. available Jellyfin libraries: {available}. "
                 "falling back to full scan.",
                 level="warning",
+                event="jellyfin_library_not_found",
+                category=category,
+                library_name=name,
+                available_libraries=available_libraries,
             )
             trigger_jellyfin_scan(config)
             return

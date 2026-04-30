@@ -1,6 +1,10 @@
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from typing import Any, cast
 
 from buzz.core.events import EventRegistry
+from buzz.dav_app import DavApp
 
 
 class EventRegistryTests(unittest.TestCase):
@@ -36,6 +40,65 @@ class EventRegistryTests(unittest.TestCase):
         self.assertEqual(len(events), 3)
         self.assertEqual(events[0]["message"], "msg 7")
         self.assertEqual(events[-1]["message"], "msg 9")
+
+    def test_consecutive_identical_warnings_are_counted(self):
+        registry = EventRegistry(maxlen=10)
+
+        with redirect_stdout(StringIO()) as stdout:
+            registry.record("rd unavailable", level="warning", source="dav")
+            registry.record("rd unavailable", level="warning", source="dav")
+            registry.record("rd unavailable", level="warning", source="dav")
+
+        events = registry.get_recent()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["message"], "rd unavailable")
+        self.assertEqual(events[0]["count"], 3)
+        self.assertEqual(stdout.getvalue().count("rd unavailable"), 1)
+
+    def test_warning_sequence_breaks_on_different_identity(self):
+        registry = EventRegistry(maxlen=10)
+        registry.record("rd unavailable", level="warning", source="dav")
+        registry.record("sync failed", level="warning", source="dav")
+        registry.record("rd unavailable", level="warning", source="dav")
+        registry.record("rd unavailable", level="warning", source="curator")
+
+        events = registry.get_recent()
+        self.assertEqual(len(events), 4)
+        self.assertEqual([event["count"] for event in events], [1, 1, 1, 1])
+
+    def test_non_warning_events_keep_separate_entries(self):
+        registry = EventRegistry(maxlen=10)
+        registry.record("boom", level="error")
+        registry.record("boom", level="error")
+
+        events = registry.get_recent()
+        self.assertEqual(len(events), 2)
+        self.assertEqual([event["count"] for event in events], [1, 1])
+
+    def test_formatted_logs_append_warning_count(self):
+        class FakeApp:
+            def get_logs(self, limit: int = 100):
+                return [
+                    {
+                        "timestamp": "2026-04-30T10:40:09Z",
+                        "level": "warning",
+                        "message": "background sync failed: eof",
+                        "source": "dav",
+                        "count": 3,
+                    }
+                ]
+
+        formatted = DavApp.formatted_logs(cast(Any, FakeApp()), limit=100)
+
+        self.assertEqual(
+            formatted[0]["message"],
+            "background sync failed: eof (3)",
+        )
+        self.assertIn(
+            "[WARNING] background sync failed: eof (3)",
+            formatted[0]["copy_text"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
