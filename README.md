@@ -174,7 +174,6 @@ For config merge, masking, and reload behavior, see
 | `provider.poll_interval_secs` | `10` | How often Buzz polls Real-Debrid for changes (seconds). |
 | `server.bind` | `0.0.0.0` | IP address the DAV server binds to. |
 | `server.port` | `9999` | Port for the DAV server (TCP port). |
-| `server.stream_buffer_size` | `0` | Read-ahead buffer size per active remote stream (bytes). Set to `0` to disable, which is recommended unless buffering is needed. Large values multiply during scans or timeline scrubbing. |
 | `ui.poll_interval_secs` | `3` | How often the Buzz web UI polls for updates (seconds). |
 | `tls.cert_path` | `data/tls/buzz.crt` | TLS certificate path for the HTTPS UI on port `9443` (container path); relative paths resolve from the process working directory. Set both TLS paths to empty strings to opt out. |
 | `tls.key_path` | `data/tls/buzz.key` | TLS private key path (container path). Buzz creates and renews missing or expiring certs automatically. |
@@ -228,7 +227,6 @@ provider:
 server:
   bind: "0.0.0.0"
   port: 9999
-  stream_buffer_size: 0
 
 tls:
   cert_path: data/tls/buzz.crt

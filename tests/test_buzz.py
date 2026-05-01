@@ -1,5 +1,4 @@
 import asyncio
-import errno
 import io
 import json
 import os
@@ -1855,8 +1854,6 @@ class DavAppTests(unittest.TestCase):
 
         self.assertIn("provider", data)
         self.assertIn("token", data["provider"])
-        self.assertIn("server", data)
-        self.assertIn("stream_buffer_size", data["server"])
         self.assertIn("media_server", data)
         self.assertIn("subtitles", data)
 
@@ -2826,12 +2823,10 @@ class FetchOpenSubtitlesLanguagesTests(unittest.TestCase):
         self.assertIn("User-Agent", captured["headers"])
 
 
-class DavBufferedStreamingTests(unittest.TestCase):
-    """Thread-safety tests for the buffered streaming path (stream_buffer_size >= 64KB)."""
+class DavRemoteStreamingTests(unittest.TestCase):
+    """Tests for direct remote media streaming."""
 
-    # 256KB buffer — large enough to exercise the buffered code path.
-    BUFFER_SIZE = 256 * 1024
-    CHUNK_SIZE = 64 * 1024
+    BODY_SIZE = 512 * 1024
 
     class FakeResponse:
         """Streaming response backed by a memoryview; supports read() and close()."""
@@ -2851,35 +2846,6 @@ class DavBufferedStreamingTests(unittest.TestCase):
         def close(self):
             self.closed = True
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            self.close()
-            return False
-
-    class FailingResponse(FakeResponse):
-        def __init__(
-            self,
-            body: bytes,
-            *,
-            fail_after_reads: int = 1,
-            error: Exception | None = None,
-        ):
-            super().__init__(body)
-            self._reads = 0
-            self._fail_after_reads = fail_after_reads
-            self._error = error or TimeoutError(
-                errno.ETIMEDOUT,
-                "The read operation timed out",
-            )
-
-        def read(self, amount=-1):
-            if self._reads >= self._fail_after_reads:
-                raise self._error
-            self._reads += 1
-            return super().read(amount)
-
     def _make_dav_app(self):
         tmpdir = tempfile.mkdtemp()
         self.addCleanup(__import__("shutil").rmtree, tmpdir)
@@ -2889,7 +2855,7 @@ class DavBufferedStreamingTests(unittest.TestCase):
             "files": {
                 "movies/Test Film/film.mkv": {
                     "type": "remote",
-                    "size": str(self.BUFFER_SIZE * 2),  # bigger than the buffer
+                    "size": str(self.BODY_SIZE),
                     "source_url": "https://example.invalid/source",
                     "mime_type": "video/x-matroska",
                     "modified": "2026-01-01T00:00:00Z",
@@ -2914,7 +2880,6 @@ class DavBufferedStreamingTests(unittest.TestCase):
             user_agent="buzz-tests",
             version_label="buzz/test",
             rd_update_delay_secs=0,
-            stream_buffer_size=self.BUFFER_SIZE,
         )
         rd_patcher = patch("buzz.dav_app.RD", return_value=DavAppTests.FakeRD())
         languages_patcher = patch(
@@ -2944,134 +2909,37 @@ class DavBufferedStreamingTests(unittest.TestCase):
         req.headers.get.return_value = None
         return req
 
-    # ------------------------------------------------------------------
-    # Happy-path: all bytes flow through the buffered path correctly
-    # ------------------------------------------------------------------
-
-    def test_buffered_streaming_all_bytes_received(self):
+    def test_remote_streaming_all_bytes_received(self):
         dav_app = self._make_dav_app()
-        payload = bytes(range(256)) * (self.BUFFER_SIZE * 2 // 256)
+        payload = bytes(range(256)) * (self.BODY_SIZE // 256)
         fake_response = self.FakeResponse(payload)
-        node = {
-            "type": "remote",
-            "size": str(len(payload)),
-            "source_url": "https://example.invalid/source",
-            "mime_type": "video/x-matroska",
-            "modified": "2026-01-01T00:00:00Z",
-            "etag": "etag-buf-1",
-        }
 
-        received = b"".join(
-            dav_app._stream_remote(
-                fake_response,
-                b"",
-                self.BUFFER_SIZE,
-                node,
-                None,
-            )
-        )
+        received = b"".join(dav_app._stream_remote(fake_response, b""))
 
         self.assertEqual(received, payload)
         self.assertTrue(fake_response.closed)
 
-    def test_buffered_streaming_resumes_after_transient_read_timeout(self):
+    def test_remote_streaming_yields_first_chunk_before_reading_response(self):
         dav_app = self._make_dav_app()
-        payload = bytes(range(256)) * (self.BUFFER_SIZE * 2 // 256)
-        first_response = self.FailingResponse(payload, fail_after_reads=1)
-        resumed_response = self.FakeResponse(payload[self.CHUNK_SIZE :])
-        node = {
-            "type": "remote",
-            "size": str(len(payload)),
-            "source_url": "https://example.invalid/source",
-            "mime_type": "video/x-matroska",
-            "modified": "2026-01-01T00:00:00Z",
-            "etag": "etag-buf-resume",
-        }
+        first_chunk = b"first"
+        rest = b"second"
+        fake_response = self.FakeResponse(rest)
 
-        with patch(
-            "buzz.dav_app.open_remote_media",
-            return_value=(resumed_response, b""),
-        ) as mock_open:
-            received = b"".join(
-                dav_app._stream_remote(
-                    first_response,
-                    b"",
-                    self.BUFFER_SIZE,
-                    node,
-                    None,
-                )
-            )
+        received = b"".join(dav_app._stream_remote(fake_response, first_chunk))
 
-        self.assertEqual(received, payload)
-        mock_open.assert_called_once_with(
-            dav_app.state,
-            node,
-            (self.CHUNK_SIZE, len(payload) - 1),
-        )
-        self.assertTrue(first_response.closed)
-        self.assertTrue(resumed_response.closed)
+        self.assertEqual(received, first_chunk + rest)
+        self.assertTrue(fake_response.closed)
 
-    def test_buffered_reader_timeout_is_debug_only_by_default(self):
+    def test_remote_streaming_closes_response_after_early_close(self):
         dav_app = self._make_dav_app()
-        payload = bytes(range(256)) * (self.CHUNK_SIZE // 256)
-        fake_response = self.FailingResponse(payload, fail_after_reads=0)
-        node = {
-            "type": "remote",
-            "size": str(len(payload)),
-            "source_url": "https://example.invalid/source",
-            "mime_type": "video/x-matroska",
-            "modified": "2026-01-01T00:00:00Z",
-            "etag": "etag-buf-debug",
-        }
+        payload = bytes(range(256)) * (self.BODY_SIZE // 256)
+        fake_response = self.FakeResponse(payload)
 
-        with patch("buzz.dav_app.open_remote_media", return_value=(fake_response, b"")):
-            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
-                with self.assertRaises(TimeoutError):
-                    b"".join(
-                        dav_app._stream_remote(
-                            fake_response,
-                            b"",
-                            self.BUFFER_SIZE,
-                            node,
-                            None,
-                        )
-                    )
+        gen = dav_app._stream_remote(fake_response, b"")
+        next(gen)
+        gen.close()
 
-        self.assertNotIn("buffer_reader_error", stdout.getvalue())
-
-    def test_buffered_streaming_raises_after_resume_retries_are_exhausted(self):
-        dav_app = self._make_dav_app()
-        payload = bytes(range(256)) * (self.CHUNK_SIZE // 256)
-        first_response = self.FailingResponse(payload, fail_after_reads=0)
-        retry_responses = [
-            self.FailingResponse(payload, fail_after_reads=0)
-            for _ in range(3)
-        ]
-        node = {
-            "type": "remote",
-            "size": str(len(payload)),
-            "source_url": "https://example.invalid/source",
-            "mime_type": "video/x-matroska",
-            "modified": "2026-01-01T00:00:00Z",
-            "etag": "etag-buf-exhausted",
-        }
-
-        with patch(
-            "buzz.dav_app.open_remote_media",
-            side_effect=[(response, b"") for response in retry_responses],
-        ) as mock_open:
-            with self.assertRaises(TimeoutError):
-                b"".join(
-                    dav_app._stream_remote(
-                        first_response,
-                        b"",
-                        self.BUFFER_SIZE,
-                        node,
-                        None,
-                    )
-                )
-
-        self.assertEqual(mock_open.call_count, 3)
+        self.assertTrue(fake_response.closed)
 
     def test_remote_get_head_and_range_keep_size_headers(self):
         dav_app = self._make_dav_app()
@@ -3116,16 +2984,8 @@ class DavBufferedStreamingTests(unittest.TestCase):
             f"bytes 0-0/{size}",
         )
 
-    # ------------------------------------------------------------------
-    # Helpers for generator-level thread tests
-    # ------------------------------------------------------------------
-
     def _start_patches(self, fake_response):
-        """Start persistent patches for open_remote_media and StreamingResponse.
-        Returns the captured raw sync generator after serve_dav is called.
-        Both patches remain active until tearDown via addCleanup, so the
-        open_remote_media mock is still in place when the generator runs.
-        """
+        """Start patches and return the captured raw sync generator."""
         captured = {}
 
         def fake_streaming_response(content, **kwargs):
@@ -3140,13 +3000,9 @@ class DavBufferedStreamingTests(unittest.TestCase):
         self.addCleanup(sr_patch.stop)
         return captured
 
-    # ------------------------------------------------------------------
-    # Thread cleanup: background thread joins after normal generator exit
-    # ------------------------------------------------------------------
-
-    def test_background_thread_joins_after_normal_completion(self):
+    def test_remote_streaming_through_route_closes_after_completion(self):
         dav_app = self._make_dav_app()
-        payload = bytes(range(256)) * (self.BUFFER_SIZE * 2 // 256)
+        payload = bytes(range(256)) * (self.BODY_SIZE // 256)
         fake_response = self.FakeResponse(payload)
         mock_req = self._mock_request("/dav/movies/Test%20Film/film.mkv")
 
@@ -3155,43 +3011,12 @@ class DavBufferedStreamingTests(unittest.TestCase):
         serve_dav(path="movies/Test%20Film/film.mkv", request=mock_req)
         gen = captured["gen"]
 
-        threads_before = threading.active_count()
-        # Exhaust the generator; the finally block runs when StopIteration is raised.
         received = b"".join(gen)
-        threads_after = threading.active_count()
 
         self.assertEqual(received, payload)
-        # The background thread must have joined before the generator returned.
-        self.assertLessEqual(threads_after, threads_before)
         self.assertTrue(fake_response.closed)
 
-    # ------------------------------------------------------------------
-    # Thread cleanup: background thread joins after premature generator close
-    # ------------------------------------------------------------------
 
-    def test_background_thread_joins_after_early_close(self):
-        dav_app = self._make_dav_app()
-        # Large payload so the background thread is still active when we close.
-        payload = bytes(range(256)) * (self.BUFFER_SIZE * 2 // 256)
-        fake_response = self.FakeResponse(payload)
-        mock_req = self._mock_request("/dav/movies/Test%20Film/film.mkv")
-
-        captured = self._start_patches(fake_response)
-        serve_dav = self._get_serve_dav(dav_app)
-        serve_dav(path="movies/Test%20Film/film.mkv", request=mock_req)
-        gen = captured["gen"]
-
-        threads_before = threading.active_count()
-        # Read one chunk then abandon the rest.
-        next(gen)
-        # gen.close() throws GeneratorExit into the generator, firing the finally block
-        # synchronously: stop_event.set() -> t.join(timeout=5) -> response.close()
-        gen.close()
-        threads_after = threading.active_count()
-
-        # Background thread must have joined before gen.close() returned.
-        self.assertLessEqual(threads_after, threads_before)
-        self.assertTrue(fake_response.closed)
 class ConfigUITests(unittest.TestCase):
     def test_deep_merge_nested_overrides(self):
         base = {"a": 1, "b": {"c": 2, "d": 3}}

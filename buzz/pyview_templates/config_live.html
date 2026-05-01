@@ -111,17 +111,6 @@
                 value="{{ values.port }}"
               >
             </div>
-            <div class="config-field {{ field_states.server_stream_buffer_size.css_class }}">
-              <label for="server.stream_buffer_size">stream_buffer_size</label>
-              <span class="config-reload-mode">{{ field_states.server_stream_buffer_size.reload_mode }}</span>
-              <span class="config-baseline"># Default: {{ field_states.server_stream_buffer_size.baseline_value }}</span>
-              <input
-                type="number"
-                id="server.stream_buffer_size"
-                name="server.stream_buffer_size"
-                value="{{ values.stream_buffer_size }}"
-              >
-            </div>
           </fieldset>
 
           <fieldset class="config-section">

@@ -12,11 +12,6 @@ provider:
 server:
   bind: 0.0.0.0
   port: 9999
-  # Read-ahead buffer size in bytes for streaming media (bytes).
-  # Set to 0 to disable, which is recommended unless buffering is needed.
-  # When enabled, this amount can be allocated per active remote stream, so
-  # large values multiply during Jellyfin scans or timeline scrubbing.
-  stream_buffer_size: 0
 
 # TLS is enabled by default. Relative paths resolve from the process working
 # directory, which is /app in the container. Set both paths to "" to opt out.

@@ -28,7 +28,6 @@ UI_MANAGED_CONFIG_FIELDS = (
     "ui.poll_interval_secs",
     "server.bind",
     "server.port",
-    "server.stream_buffer_size",
     "provider.connection_concurrency",
     "hooks.on_library_change",
     "hooks.curator_url",
@@ -279,7 +278,6 @@ _OVERRIDE_SCHEMA = {
     "server": {
         "bind": True,
         "port": True,
-        "stream_buffer_size": True,
     },
     "state_dir": True,
     "hooks": {
@@ -408,7 +406,6 @@ def to_nested_dict(config: DavConfig) -> dict:
         "server": {
             "bind": config.bind,
             "port": config.port,
-            "stream_buffer_size": config.stream_buffer_size,
         },
         "state_dir": config.state_dir,
         "hooks": {
@@ -545,7 +542,6 @@ class DavConfig(BaseModel):
     provider_poll_interval_secs: int = 10
     bind: str = "0.0.0.0"
     port: int = 9999
-    stream_buffer_size: int = 0
     connection_concurrency: int = 4
     state_dir: str = DEFAULT_STATE_DIR
     hook_command: str = ""
@@ -605,7 +601,6 @@ class DavConfig(BaseModel):
             provider_poll_interval_secs=int(provider.get("poll_interval_secs", 10)),
             bind=str(server.get("bind", "0.0.0.0")),
             port=int(server.get("port", 9999)),
-            stream_buffer_size=int(server.get("stream_buffer_size", 0)),
             connection_concurrency=max(
                 1, int(provider.get("connection_concurrency", 4))
             ),

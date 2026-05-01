@@ -76,8 +76,7 @@ file-only.
     with secrets replaced by `***`, server-rendered.
   - Edit overrides section: form with `<fieldset>` groups:
     - **Polling**: `poll_interval_secs` (number).
-    - **Server**: `bind` (text), `port` (number), `stream_buffer_size`
-      (number).
+    - **Server**: `bind` (text), `port` (number).
     - **Hooks**: `on_library_change` (text), `curator_url` (text),
       `rd_update_delay_secs` (number).
     - **Compatibility**: `enable_all_dir` (checkbox),

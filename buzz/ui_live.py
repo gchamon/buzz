@@ -66,7 +66,6 @@ _CONFIG_NUMBER_FIELDS = (
     "ui.poll_interval_secs",
     "provider.connection_concurrency",
     "server.port",
-    "server.stream_buffer_size",
     "hooks.rd_update_delay_secs",
     "request_timeout_secs",
     "subtitles.search_delay_secs",
@@ -84,7 +83,6 @@ _CONFIG_TRACKED_FIELDS = (
     "provider.connection_concurrency",
     "server.bind",
     "server.port",
-    "server.stream_buffer_size",
     "hooks.on_library_change",
     "hooks.curator_url",
     "hooks.rd_update_delay_secs",
@@ -253,7 +251,6 @@ class ConfigValues(TypedDict):
     rd_update_delay_secs: int
     search_delay_secs: int
     selected_languages: list[str]
-    stream_buffer_size: int
     strategy: str
     subtitles_enabled: bool
     trigger_lib_scan: bool
@@ -1662,7 +1659,6 @@ def _config_values(
         "rd_update_delay_secs": effective["hooks"]["rd_update_delay_secs"],
         "search_delay_secs": subtitles["search_delay_secs"],
         "selected_languages": subtitles["languages"],
-        "stream_buffer_size": effective["server"]["stream_buffer_size"],
         "strategy": subtitles["strategy"],
         "subtitles_enabled": subtitles["enabled"],
         "trigger_lib_scan": effective["media_server"]["trigger_lib_scan"],

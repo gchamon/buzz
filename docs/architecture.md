@@ -136,11 +136,12 @@ Important DAV routes:
 When a media server reads a file, `rclone` translates that read into a WebDAV
 request. `buzz-dav` resolves the requested virtual file to the Real-Debrid
 resolution, obtains an unrestricted stream URL, and proxies the response with
-range support. `server.stream_buffer_size` and `provider.connection_concurrency`
-control stream behavior. `server.stream_buffer_size` is per active remote
-stream; keeping it at `0` avoids memory multiplying during Jellyfin scan storms
-or timeline scrubbing. `provider.connection_concurrency` caps upstream stream
-setup/opening only; active streams are not concurrency- or rate-limited.
+range support. Buzz does not keep a read-ahead media buffer in process;
+buffering is delegated to rclone and the upstream media server/player. The old
+application-level stream buffer was removed because it multiplied memory usage
+by active range streams during scans and timeline scrubbing.
+`provider.connection_concurrency` caps upstream stream setup/opening only;
+active streams are not concurrency- or rate-limited.
 Active media streams must stay outside the same concurrency mechanisms used for
 `PROPFIND`, GET setup, directory listing, and library scan metadata traffic,
 because media players rely on overlapping range streams during seek/scrub

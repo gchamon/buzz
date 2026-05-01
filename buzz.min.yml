@@ -1,9 +1,6 @@
 provider:
   token: your_rd_token
 
-server:
-  stream_buffer_size: 0
-
 media_server:
   kind: jellyfin
   trigger_lib_scan: true
