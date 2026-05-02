@@ -18,12 +18,16 @@
     </div>
   </div>
 
-  <div class="meta-bar">
+  <div class="meta-bar meta-bar-logs">
     <div class="meta-row">
       {% for item in meta_items %}
       <div class="meta-item">
         <b class="meta-item-label">[{{ item.label }}]</b>
+        {% if item.cycle_values_json %}
+        <span phx-hook="BuzzMetaCycle" data-values="{{ item.cycle_values_json }}">{{ item.value }}</span>
+        {% else %}
         <span>{{ item.value }}</span>
+        {% endif %}
       </div>
       {% endfor %}
       <div class="meta-item">
@@ -33,6 +37,7 @@
     <div class="meta-row meta-console">
       <b class="meta-item-label">console:</b>
       <span id="meta-console-msg" class="{{ console_class }}">{{ console_msg }}</span>
+      <button class="secondary btn-sm" phx-click="resync" {% if not token_configured %}disabled{% endif %} title="{% if not token_configured %}Resync library: requires a valid Real-Debrid token{% else %}Resync library{% endif %}">RESYNC LIB</button>
     </div>
   </div>
 
@@ -53,15 +58,8 @@
         <button
           type="button"
           class="secondary btn-sm"
-          phx-click="refresh"
-        >REFRESH</button>
-        <button
-          type="button"
-          class="secondary btn-sm"
-          phx-click="toggle_auto_refresh"
-        >
-          {% if auto_refresh %}AUTO ON{% else %}AUTO OFF{% endif %}
-        </button>
+          phx-click="clear_logs"
+        >CLEAR</button>
       </div>
     </div>
     <div class="log-container" id="log-container" role="log" aria-live="polite">

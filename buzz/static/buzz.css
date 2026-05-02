@@ -510,8 +510,13 @@ code {
   }
 
   .meta-bar {
+    display: none;
     gap: 10px;
     margin: 30px 0px;
+  }
+
+  .meta-bar-logs {
+    display: flex;
   }
 
   .nav-sep {

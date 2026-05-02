@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Literal, TypedDict, TypeVar, cast
+from typing import Any, Literal, NotRequired, TypedDict, TypeVar, cast
 from urllib.parse import ParseResult
 
 import yaml
@@ -115,6 +115,7 @@ _CONFIG_TRACKED_FIELDS = (
 class PageItem(TypedDict):
     label: str
     value: str
+    cycle_values_json: NotRequired[str]
 
 
 class PageNav(TypedDict):
@@ -213,7 +214,6 @@ class LogItem(TypedDict):
 
 
 class LogsContext(PageContext):
-    auto_refresh: bool
     log_items: list[LogItem]
     logs_loaded: bool
 
@@ -414,16 +414,29 @@ class _BaseBuzzLiveView(LiveView[_TContext]):
 
     def _meta_items(self) -> list[PageItem]:
         status = self.owner.state.status()
-        sync_state = "syncing" if status.get("sync_in_progress") else "idle"
         return [
             {"label": "cache", "value": str(len(self.owner.state.torrents()))},
             {
                 "label": "last_sync",
                 "value": status.get("last_sync_at") or "never",
             },
-            {"label": "state", "value": sync_state},
-            {"label": "hook", "value": self._hook_status_label(status)},
+            self._state_meta_item(status),
         ]
+
+    def _state_meta_item(self, status: dict[str, Any]) -> PageItem:
+        values = []
+        if status.get("sync_in_progress"):
+            values.append("syncing")
+        hook_label = self._hook_status_label(status)
+        if hook_label != "idle":
+            values.append(hook_label)
+        if not values:
+            values.append("idle")
+
+        item: PageItem = {"label": "state", "value": values[0]}
+        if len(values) > 1:
+            item["cycle_values_json"] = json.dumps(values)
+        return item
 
     def _hook_status_label(self, status: dict[str, Any]) -> str:
         phase = str(status.get("hook_phase") or "idle")
@@ -474,6 +487,13 @@ class _BaseBuzzLiveView(LiveView[_TContext]):
         }
         return context
 
+    def _resync_library(self) -> tuple[str, str]:
+        try:
+            self.owner.state.manual_rebuild()
+        except Exception as exc:
+            return f"resync failed: {exc}", CSS_STATUS_RED
+        return "library resynced!", CSS_STATUS_GREEN
+
     async def mount(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         socket: LiveViewSocket[_TContext],
@@ -492,6 +512,18 @@ class _BaseBuzzLiveView(LiveView[_TContext]):
 class CacheLiveView(_BaseBuzzLiveView):
     page_name = "cache"
     page_title = "buzz: cache"
+
+    @staticmethod
+    def _normalize_magnet_inputs(raw: Any) -> list[str]:
+        if isinstance(raw, str):
+            values = [raw]
+        elif isinstance(raw, list):
+            values = [str(value) for value in raw]
+        elif raw is None:
+            values = []
+        else:
+            values = [str(raw)]
+        return values or [""]
 
     async def mount(  # pyright: ignore[reportIncompatibleMethodOverride, reportArgumentType]
         self,
@@ -537,21 +569,22 @@ class CacheLiveView(_BaseBuzzLiveView):
             self._handle_resync(socket)
             return
         if event == "add_magnet_input":
-            socket.context["magnet_inputs"].append("")
+            socket.context["magnet_inputs"].insert(0, "")
             return
         if event == "remove_magnet_input":
             try:
                 idx = int(index) - 1
                 if 0 <= idx < len(socket.context["magnet_inputs"]):
                     socket.context["magnet_inputs"].pop(idx)
+                if not socket.context["magnet_inputs"]:
+                    socket.context["magnet_inputs"] = [""]
             except ValueError:
                 pass
             return
         if event == "update_magnets":
-            raw = (payload or {}).get("magnet", [])
-            if isinstance(raw, str):
-                raw = [raw]
-            socket.context["magnet_inputs"] = [str(v) for v in raw]
+            socket.context["magnet_inputs"] = self._normalize_magnet_inputs(
+                (payload or {}).get("magnet")
+            )
             return
         if event == "analyze":
             self._handle_analyze(socket, payload)
@@ -628,13 +661,9 @@ class CacheLiveView(_BaseBuzzLiveView):
     ) -> None:
         socket.context["console_msg"] = "resyncing library..."
         socket.context["console_class"] = "service-status-orange"
-        try:
-            self.owner.state.manual_rebuild()
-            socket.context["console_msg"] = "library resynced!"
-            socket.context["console_class"] = CSS_STATUS_GREEN
-        except Exception as exc:
-            socket.context["console_msg"] = f"resync failed: {exc}"
-            socket.context["console_class"] = CSS_STATUS_RED
+        msg, css_class = self._resync_library()
+        socket.context["console_msg"] = msg
+        socket.context["console_class"] = css_class
 
     def _handle_analyze(
         self,
@@ -996,8 +1025,7 @@ class LogsLiveView(_BaseBuzzLiveView):
         socket.context = self._context()
         if is_connected(socket):
             await socket.subscribe(TOPIC_STATUS)
-            if socket.context["auto_refresh"]:
-                await socket.subscribe(TOPIC_LOGS)
+            await socket.subscribe(TOPIC_LOGS)
 
     async def handle_event(
         self,
@@ -1008,12 +1036,16 @@ class LogsLiveView(_BaseBuzzLiveView):
         if event == EVENT_NAVIGATE:
             await socket.push_navigate(to)
             return
-        if event == "toggle_auto_refresh":
-            socket.context["auto_refresh"] = not socket.context["auto_refresh"]
-            if socket.context["auto_refresh"]:
-                await socket.subscribe(TOPIC_LOGS)
-            else:
-                await socket.pub_sub.unsubscribe_topic_async(TOPIC_LOGS)
+        if event == "clear_logs":
+            self.owner.clear_logs()
+            socket.context = self._context()
+            return
+        if event == "resync":
+            socket.context["console_msg"] = "resyncing library..."
+            socket.context["console_class"] = "service-status-orange"
+            msg, css_class = self._resync_library()
+            socket.context["console_msg"] = msg
+            socket.context["console_class"] = css_class
 
     async def handle_info(
         self,
@@ -1022,24 +1054,7 @@ class LogsLiveView(_BaseBuzzLiveView):
     ) -> None:
         if event.name not in {TOPIC_LOGS, TOPIC_STATUS}:
             return
-        if event.name == TOPIC_STATUS and not socket.context["auto_refresh"]:
-            base = self._base_context(
-                socket.context["console_msg"],
-                socket.context["console_class"],
-            )
-            socket.context = cast(
-                LogsContext,
-                {
-                    **base,
-                    "auto_refresh": socket.context["auto_refresh"],
-                    "log_items": socket.context["log_items"],
-                    "logs_loaded": socket.context["logs_loaded"],
-                },
-            )
-            return
-        socket.context = self._context(
-            auto_refresh=socket.context["auto_refresh"],
-        )
+        socket.context = self._context()
 
     async def render(
         self,
@@ -1048,16 +1063,12 @@ class LogsLiveView(_BaseBuzzLiveView):
     ) -> RenderedContent:
         return LiveRender(_load_template("logs_live.html"), assigns, meta)
 
-    def _context(
-        self,
-        auto_refresh: bool = True,
-    ) -> LogsContext:
+    def _context(self) -> LogsContext:
         base = self._base_context()
         return cast(
             LogsContext,
             {
                 **base,
-                "auto_refresh": auto_refresh,
                 "log_items": self.owner.formatted_logs(limit=100),
                 "logs_loaded": True,
             },
@@ -1428,8 +1439,7 @@ class BuzzLiveView(_BaseBuzzLiveView):
             await socket.subscribe(TOPIC_STATUS)
             await socket.subscribe(TOPIC_ARCHIVE)
             await socket.subscribe(TOPIC_CONFIG)
-            if socket.context["logs"]["auto_refresh"]:
-                await socket.subscribe(TOPIC_LOGS)
+            await socket.subscribe(TOPIC_LOGS)
 
     async def handle_params(
         self,
@@ -1544,24 +1554,7 @@ class BuzzLiveView(_BaseBuzzLiveView):
             sort_col=context["archive"]["sort_col"],
             sort_dir=context["archive"]["sort_dir"],
         )
-        if event.name == TOPIC_LOGS or context["logs"]["auto_refresh"]:
-            context["logs"] = self.logs_view._context(
-                auto_refresh=context["logs"]["auto_refresh"]
-            )
-        else:
-            logs_base = self.logs_view._base_context(
-                context["logs"]["console_msg"],
-                context["logs"]["console_class"],
-            )
-            context["logs"] = cast(
-                LogsContext,
-                {
-                    **logs_base,
-                    "auto_refresh": context["logs"]["auto_refresh"],
-                    "log_items": context["logs"]["log_items"],
-                    "logs_loaded": context["logs"]["logs_loaded"],
-                },
-            )
+        context["logs"] = self.logs_view._context()
         config_console_msg = context["config"]["console_msg"]
         config_console_class = context["config"]["console_class"]
         if (

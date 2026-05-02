@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
@@ -731,6 +732,34 @@ class BuzzStateTests(unittest.TestCase):
             self.assertTrue(first["changed"])
             self.assertFalse(second["changed"])
             self.assertEqual(second["changed_paths"], [])
+
+    def test_identical_sync_skips_rewriting_cache(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                provider_poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                rd_update_delay_secs=0,
+                curator_url="",
+            )
+            state = BuzzState(config, client=self._create_fake_rd())
+
+            with patch.object(
+                state, "_save_cache", wraps=state._save_cache
+            ) as save_cache:
+                state.sync(trigger_hook=False)
+                state.sync(trigger_hook=False)
+
+            self.assertEqual(save_cache.call_count, 1)
 
     def test_sync_excludes_internal_roots_from_changed_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1531,16 +1560,73 @@ class DavAppTests(unittest.TestCase):
             "movies/Little Shop [1986] + Extras",
         )
 
-    def test_hook_status_is_visible_in_ui_meta_items(self):
+    def test_hook_status_is_merged_into_state_meta_item(self):
         self.dav_app.state.hook_phase = "waiting_vfs"
         self.dav_app.state.hook_active_paths = ["movies/A", "shows/B"]
 
         meta_items = CacheLiveView(self.dav_app)._meta_items()
 
         self.assertIn(
-            {"label": "hook", "value": "waiting_vfs (2 roots)"},
+            {"label": "state", "value": "waiting_vfs (2 roots)"},
             meta_items,
         )
+        self.assertNotIn("hook", {item["label"] for item in meta_items})
+
+    def test_state_meta_item_cycles_sync_and_hook_states(self):
+        self.dav_app.state.sync_in_progress = True
+        self.dav_app.state.hook_phase = "waiting_vfs"
+        self.dav_app.state.hook_active_paths = ["movies/A", "shows/B"]
+
+        meta_items = CacheLiveView(self.dav_app)._meta_items()
+        state_item = next(item for item in meta_items if item["label"] == "state")
+
+        self.assertEqual(state_item["value"], "syncing")
+        self.assertIn(
+            "waiting_vfs (2 roots)",
+            state_item.get("cycle_values_json", ""),
+        )
+
+    def test_add_magnet_input_pushes_existing_inputs_down(self):
+        view = CacheLiveView(self.dav_app)
+        socket = SimpleNamespace(context=view._context(magnet_inputs=["magnet-a"]))
+
+        asyncio.run(view.handle_event("add_magnet_input", cast(Any, socket)))
+
+        self.assertEqual(socket.context["magnet_inputs"], ["", "magnet-a"])
+
+    def test_update_magnets_keeps_empty_textbox(self):
+        view = CacheLiveView(self.dav_app)
+        socket = SimpleNamespace(context=view._context(magnet_inputs=["magnet-a"]))
+
+        asyncio.run(
+            view.handle_event("update_magnets", cast(Any, socket), payload={})
+        )
+
+        self.assertEqual(socket.context["magnet_inputs"], [""])
+
+    def test_update_magnets_preserves_blank_textbox_value(self):
+        view = CacheLiveView(self.dav_app)
+        socket = SimpleNamespace(context=view._context(magnet_inputs=["magnet-a"]))
+
+        asyncio.run(
+            view.handle_event(
+                "update_magnets",
+                cast(Any, socket),
+                payload={"magnet": ""},
+            )
+        )
+
+        self.assertEqual(socket.context["magnet_inputs"], [""])
+
+    def test_remove_magnet_input_keeps_one_empty_textbox(self):
+        view = CacheLiveView(self.dav_app)
+        socket = SimpleNamespace(context=view._context(magnet_inputs=["magnet-a"]))
+
+        asyncio.run(
+            view.handle_event("remove_magnet_input", cast(Any, socket), index="1")
+        )
+
+        self.assertEqual(socket.context["magnet_inputs"], [""])
 
     def test_propfind_child_round_trips_encoded_directory_name(self):
         root_body = propfind_body(
@@ -1610,6 +1696,19 @@ class DavAppTests(unittest.TestCase):
         self.assertIn("data-marquee-clip", body)
         self.assertIn("data-marquee-label", body)
         self.assertIn('title="Movie &amp; Stuff"', body)
+
+    def test_ui_documents_are_not_cached(self):
+        for path in ("/", "/cache", "/archive", "/logs", "/config"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    response.headers["cache-control"],
+                    "no-store, no-cache, must-revalidate, max-age=0",
+                )
+                self.assertEqual(response.headers["pragma"], "no-cache")
+                self.assertEqual(response.headers["expires"], "0")
 
     def test_archive_page_renders_pyview_shell(self):
         self.state.trashcan = {
@@ -1681,6 +1780,12 @@ class DavAppTests(unittest.TestCase):
         self.assertIn("System Logs", body)
         self.assertNotIn("RESTART STACK", body)
         self.assertIn("COPY", body)
+        self.assertIn("CLEAR", body)
+        self.assertIn("RESYNC LIB", body)
+        self.assertIn('phx-click="resync"', body)
+        self.assertNotIn("REFRESH", body)
+        self.assertNotIn("AUTO ON", body)
+        self.assertNotIn("AUTO OFF", body)
 
     def test_config_page_renders_pyview_content(self):
         response = self.client.get("/config")
@@ -2341,12 +2446,21 @@ class DavAppTests(unittest.TestCase):
         ) as mock_invalidate, patch(
             "buzz.dav_protocol._open_upstream_response",
             side_effect=OSError("Connection reset by peer"),
-        ), patch("buzz.dav_protocol.time.sleep"):
+        ), patch("buzz.dav_protocol.time.sleep"), patch(
+            "buzz.dav_protocol.record_event"
+        ) as mock_record_event:
             with self.assertRaisesRegex(ValueError, "failed to connect to upstream"):
                 open_remote_media(self.state, node, None)
 
         self.assertEqual(mock_invalidate.call_count, 0)
         self.assertEqual(len(self.state.client.calls), 1)
+        self.assertTrue(mock_record_event.call_args_list)
+        self.assertTrue(
+            all(
+                call.kwargs.get("level") == "debug"
+                for call in mock_record_event.call_args_list
+            )
+        )
 
     def test_open_remote_media_invalidates_url_on_http_error(self):
         from email.message import Message
@@ -2983,6 +3097,36 @@ class DavRemoteStreamingTests(unittest.TestCase):
             captured_headers[1]["Content-Range"],
             f"bytes 0-0/{size}",
         )
+
+    def test_transient_remote_stream_failure_records_debug(self):
+        dav_app = self._make_dav_app()
+        node = dav_app.state.lookup("movies/Test Film/film.mkv")
+        if node is None:
+            self.fail("Expected snapshot node for streaming failure test")
+
+        def raise_transient_failure(*_args):
+            try:
+                raise ConnectionResetError(104, "Connection reset by peer")
+            except ConnectionResetError as exc:
+                raise ValueError(
+                    "failed to connect to upstream: "
+                    "[Errno 104] Connection reset by peer"
+                ) from exc
+
+        with patch(
+            "buzz.dav_app.open_remote_media",
+            side_effect=raise_transient_failure,
+        ), patch("buzz.dav_app.record_event") as mock_record_event:
+            response = dav_app._dav_remote_response(
+                node,
+                True,
+                None,
+                "movies/Test Film/film.mkv",
+            )
+
+        self.assertEqual(response.status_code, 502)
+        mock_record_event.assert_called_once()
+        self.assertEqual(mock_record_event.call_args.kwargs["level"], "debug")
 
     def _start_patches(self, fake_response):
         """Start patches and return the captured raw sync generator."""

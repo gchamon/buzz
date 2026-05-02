@@ -146,6 +146,49 @@ if (typeof window !== "undefined") {
     },
   };
 
+  hooks.BuzzMetaCycle = {
+    mounted() {
+      this._index = 0;
+      this._start();
+    },
+    updated() {
+      this._stop();
+      this._index = 0;
+      this._start();
+    },
+    destroyed() {
+      this._stop();
+    },
+    _values() {
+      try {
+        const values = JSON.parse(this.el.dataset.values || "[]");
+        return Array.isArray(values) ? values.map(String).filter(Boolean) : [];
+      } catch (_error) {
+        return [];
+      }
+    },
+    _start() {
+      const values = this._values();
+      if (values.length <= 1) {
+        if (values.length === 1) {
+          this.el.textContent = values[0];
+        }
+        return;
+      }
+      this.el.textContent = values[0];
+      this._timer = window.setInterval(() => {
+        this._index = (this._index + 1) % values.length;
+        this.el.textContent = values[this._index];
+      }, 3000);
+    },
+    _stop() {
+      if (this._timer) {
+        window.clearInterval(this._timer);
+        this._timer = null;
+      }
+    },
+  };
+
   hooks.BuzzOverflowMarquee = {
     mounted() {
       this._reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
