@@ -22,10 +22,10 @@ services:
       - ./buzz.yml:/app/buzz.yml:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9999/readyz"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-      start_period: 10s
+      interval: 2s
+      timeout: 2s
+      retries: 100
+      start_period: 2s
     networks:
       default:
         aliases:
@@ -55,10 +55,10 @@ services:
     command: "mount buzz: /data --allow-other --allow-non-empty --default-permissions --uid ${PUID:-1000} --gid ${PGID:-1000} --vfs-cache-mode writes"
     healthcheck:
       test: ["CMD-SHELL", "ls /data/movies >/dev/null 2>&1"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 10s
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
 
   plex:
     profiles: ["plex"]

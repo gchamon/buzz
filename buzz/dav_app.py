@@ -39,7 +39,11 @@ from .core.utils import (
     format_bytes,
     http_date,
 )
-from .dav_protocol import open_remote_media, propfind_body
+from .dav_protocol import (
+    is_transient_stream_error,
+    open_remote_media,
+    propfind_body,
+)
 from .models import (
     AddTorrentRequest,
     DavConfig,
@@ -73,6 +77,11 @@ TOPIC_LOGS = "buzz:logs"
 TOPIC_CONFIG = "buzz:config"
 HTTPS_PORT = 9443
 TLS_RENEWAL_CHECK_SECS = 7 * 24 * 60 * 60
+UI_DOCUMENT_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
 
 UI_REDIRECT_EXACT_PATHS = frozenset({
     "/",
@@ -397,39 +406,32 @@ class DavApp:
     def is_service_ready(self) -> bool:
         return self.state.is_ready()
 
+    async def _ui_document(self, request: Request) -> Response:
+        response = await liveview_container(
+            self.ui.rootTemplate,
+            self.ui.view_lookup,
+            request,
+        )
+        response.headers.update(UI_DOCUMENT_CACHE_HEADERS)
+        return response
+
     def _setup_routes(self):
         @self.app.get("/", response_class=HTMLResponse)
         @self.app.get("/cache", response_class=HTMLResponse)
         async def cache_page(request: Request):
-            return await liveview_container(
-                self.ui.rootTemplate,
-                self.ui.view_lookup,
-                request,
-            )
+            return await self._ui_document(request)
 
         @self.app.get("/archive", response_class=HTMLResponse)
         async def archive_page(request: Request):
-            return await liveview_container(
-                self.ui.rootTemplate,
-                self.ui.view_lookup,
-                request,
-            )
+            return await self._ui_document(request)
 
         @self.app.get("/logs", response_class=HTMLResponse)
         async def logs_page(request: Request):
-            return await liveview_container(
-                self.ui.rootTemplate,
-                self.ui.view_lookup,
-                request,
-            )
+            return await self._ui_document(request)
 
         @self.app.get("/config", response_class=HTMLResponse)
         async def config_page(request: Request):
-            return await liveview_container(
-                self.ui.rootTemplate,
-                self.ui.view_lookup,
-                request,
-            )
+            return await self._ui_document(request)
 
         @self.app.get("/api/config")
         def get_config():
@@ -763,7 +765,7 @@ class DavApp:
                 f"Real-Debrid stream failed: {exc}",
                 event="rd_stream_failed",
                 path=rel,
-                level="warning",
+                level="debug" if is_transient_stream_error(exc) else "warning",
             )
             return Response(status_code=502, content=str(exc))
 
@@ -925,9 +927,16 @@ class DavApp:
         logs.sort(key=lambda item: item.get("timestamp", ""))
         return logs[-limit:]
 
+    def clear_logs(self) -> None:
+        """Clear the in-memory log registry backing the UI."""
+        from .core.events import registry
+
+        registry.clear()
+        self._curator_log_level = "info"
+
     def formatted_logs(self, limit: int = 100) -> list[dict[str, str]]:
         formatted = []
-        for log in self.get_logs(limit):
+        for log in reversed(self.get_logs(limit)):
             timestamp = log.get("timestamp", "")
             display_timestamp = timestamp
             if "T" in timestamp and len(timestamp) >= 19:

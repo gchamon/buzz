@@ -34,6 +34,12 @@ When used in templates that write bash code, like the inline scripts in gitlab j
       fi
 ```
 
+When modifying HTML files or templates, always run htmlhint before finishing:
+
+```bash
+npx --yes htmlhint "buzz/pyview_templates/*.html"
+```
+
 ### python
 
 When writing python code, please use the best practices as recommended by the python community.
@@ -55,7 +61,7 @@ docker run --rm \
   -w /workspace \
   -e UV_CACHE_DIR=/tmp/uv-cache \
   ghcr.io/astral-sh/uv:python3.14-alpine \
-  uv run python -m unittest discover -s tests
+  uv run pytest
 ```
 
 The test suite buffers stdout/stderr by default so only test progress and

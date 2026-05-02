@@ -76,15 +76,40 @@ def source_relpath(source_root: Path, path: Path) -> str:
     return path.relative_to(source_root).as_posix()
 
 
-def find_companion_files(path: Path) -> list[Path]:
+type CompanionIndex = dict[Path, tuple[Path, ...]]
+
+
+def build_companion_index(files: list[Path]) -> CompanionIndex:
+    """Index sidecar files by parent directory for one rebuild pass."""
+    index: dict[Path, list[Path]] = {}
+    for path in files:
+        if is_sidecar_file(path):
+            index.setdefault(path.parent, []).append(path)
+    return {
+        parent: tuple(sorted(paths))
+        for parent, paths in index.items()
+    }
+
+
+def find_companion_files(
+    path: Path,
+    companion_index: CompanionIndex | None = None,
+) -> list[Path]:
     """Return sorted sidecar files sharing *path*'s stem."""
     parent = path.parent
     stem = path.stem
     companions = []
-    for sibling in parent.iterdir():
-        if not sibling.is_file() or sibling == path:
+    siblings = (
+        companion_index.get(parent, ())
+        if companion_index is not None
+        else tuple(parent.iterdir())
+    )
+    for sibling in siblings:
+        if sibling == path:
             continue
-        if not is_sidecar_file(sibling):
+        if companion_index is None and (
+            not sibling.is_file() or not is_sidecar_file(sibling)
+        ):
             continue
         if (
             sibling.name == f"{stem}{sibling.suffix}"
@@ -364,6 +389,7 @@ def _process_movie_file(
     used_targets: set[str],
     report: dict,
     mapping: list[dict],
+    companion_index: CompanionIndex,
 ) -> bool:
     rel_path = source_relpath(all_source_root, path)
     source_rel = path.relative_to(source_root)
@@ -405,7 +431,7 @@ def _process_movie_file(
     )
     report["movies"] += 1
 
-    for companion in find_companion_files(path):
+    for companion in find_companion_files(path, companion_index):
         extra = companion.name[len(path.stem) :]
         companion_target = target_root / folder_name / f"{folder_name}{extra}"
         ensure_symlink(companion, companion_target)
@@ -424,13 +450,15 @@ def build_movies(
     target_root.mkdir(parents=True, exist_ok=True)
     if not source_root.exists():
         return
+    files = list(iter_files(source_root))
+    companion_index = build_companion_index(files)
     used_targets: set[str] = set()
-    for path in iter_files(source_root):
+    for path in files:
         if not is_video_file(path):
             continue
         _process_movie_file(
             path, source_root, target_root, all_source_root,
-            overrides, used_targets, report, mapping,
+            overrides, used_targets, report, mapping, companion_index,
         )
 
 
@@ -516,6 +544,7 @@ def _apply_show_planned(
     global_targets: set[str],
     mapping: list[dict],
     report: dict,
+    companion_index: CompanionIndex,
 ) -> None:
     for item in planned:
         path = item["path"]
@@ -534,7 +563,7 @@ def _apply_show_planned(
             }
         )
         report["show_files"] += 1
-        for companion in find_companion_files(path):
+        for companion in find_companion_files(path, companion_index):
             extra = companion.name[len(path.stem) :]
             companion_target = target_file.parent / f"{base_name}{extra}"
             ensure_symlink(companion, companion_target)
@@ -552,9 +581,11 @@ def build_shows(
     target_root.mkdir(parents=True, exist_ok=True)
     if not source_root.exists():
         return
+    files = list(iter_files(source_root))
+    companion_index = build_companion_index(files)
     grouped: dict[str, list[Path]] = {}
     global_targets: set[str] = set()
-    for path in iter_files(source_root):
+    for path in files:
         if not is_video_file(path):
             continue
         rel = path.relative_to(source_root)
@@ -571,7 +602,14 @@ def build_shows(
                 {"group": group_name, "errors": group_errors}
             )
             continue
-        _apply_show_planned(planned, target_root, global_targets, mapping, report)
+        _apply_show_planned(
+            planned,
+            target_root,
+            global_targets,
+            mapping,
+            report,
+            companion_index,
+        )
 
 
 def build_anime(
@@ -741,4 +779,3 @@ class Curator:
         """Rebuild the library and trigger Jellyfin scan."""
         with self.lock:
             return rebuild_and_trigger(self.config, changed_roots)
-

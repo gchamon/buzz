@@ -1,6 +1,7 @@
 """FastAPI application for the curator service."""
 
 import json
+import logging
 import os
 import traceback
 from contextlib import asynccontextmanager
@@ -24,6 +25,8 @@ from .core.subtitles import (
     state as subtitle_state,
 )
 from .models import CuratorConfig
+
+logger = logging.getLogger(__name__)
 
 
 class CuratorApp:
@@ -203,15 +206,12 @@ class CuratorApp:
         try:
             with request.urlopen(req, timeout=2) as response:
                 if response.status not in (200, 204):
-                    print(
-                        f"[WARN] DAV UI notify returned HTTP {response.status}",
-                        flush=True,
+                    logger.debug(
+                        "dav UI notify returned HTTP %s",
+                        response.status,
                     )
         except Exception as exc:
-            print(
-                f"[WARN] DAV UI notify failed: {exc}",
-                flush=True,
-            )
+            logger.debug("dav UI notify failed: %s", exc)
 
 
 def run_curator_server(config: CuratorConfig) -> None:

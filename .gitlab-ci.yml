@@ -4,11 +4,21 @@ stages:
   - security
   - tag
 
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TITLE =~ /^(\[Draft\]|\(Draft\)|Draft:|Draft\s)/'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH'
+    - when: never
+
 include:
   - local: .gitlab/ci/gitleaks.gitlab-ci.yml
     rules:
       - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      - if: "$CI_COMMIT_BRANCH"
       - when: never
   - local: .gitlab/ci/test.gitlab-ci.yml
     rules:
@@ -25,7 +35,6 @@ include:
           - maint-scripts/update_dependency_refs.py
           - .gitlab-ci.yml
           - .gitlab/ci/*.gitlab-ci.yml
-      - if: "$CI_COMMIT_BRANCH"
       - when: never
   - local: .gitlab/ci/image-publish.gitlab-ci.yml
     rules:

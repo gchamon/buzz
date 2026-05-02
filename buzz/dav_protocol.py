@@ -51,6 +51,11 @@ def _is_transient_connection_error(exc: BaseException) -> bool:
     return False
 
 
+def is_transient_stream_error(exc: BaseException) -> bool:
+    """Return True when a stream failure is a transient upstream transport error."""
+    return _is_transient_connection_error(exc)
+
+
 def _build_upstream_ssl_context() -> ssl.SSLContext:
     """Return a defensive default SSL context for upstream streaming."""
     ctx = ssl.create_default_context()
@@ -208,7 +213,7 @@ def _try_resolve_download_url(
         if attempt < max_attempts - 1:
             record_event(
                 f"retrying Real-Debrid stream resolution after failure: {exc}",
-                level="warning",
+                level="debug",
                 event="rd_stream_retry",
                 path=source_url,
                 attempt=attempt + 1,
@@ -298,7 +303,7 @@ def _try_open_stream(
         if attempt < max_attempts - 1:
             record_event(
                 f"retrying Real-Debrid stream after upstream HTTP {exc.code}",
-                level="warning",
+                level="debug",
                 event="rd_stream_retry",
                 path=source_url,
                 attempt=attempt + 1,
@@ -387,7 +392,7 @@ def open_remote_media(
             if response is not None:
                 record_event(
                     f"retrying Real-Debrid stream after validation error: {exc}",
-                    level="warning",
+                    level="debug",
                     event="rd_stream_retry",
                     path=source_url,
                     attempt=attempt + 1,
@@ -400,7 +405,10 @@ def open_remote_media(
     record_event(
         f"Real-Debrid stream exhausted retries ({max_attempts} attempts); "
         f"last error: {last_error}",
-        level="error",
+        level="debug" if (
+            last_exception is not None
+            and is_transient_stream_error(last_exception)
+        ) else "error",
         event="rd_stream_exhausted",
         path=source_url,
     )

@@ -99,6 +99,43 @@ class EventRegistryTests(unittest.TestCase):
             formatted[0]["copy_text"],
         )
 
+    def test_clear_removes_existing_events(self):
+        registry = EventRegistry(maxlen=10)
+        registry.record("first")
+        registry.record("second")
+
+        registry.clear()
+        registry.record("third")
+
+        events = registry.get_recent()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["message"], "third")
+
+    def test_formatted_logs_are_newest_first(self):
+        class FakeApp:
+            def get_logs(self, limit: int = 100):
+                return [
+                    {
+                        "timestamp": "2026-04-30T10:40:09Z",
+                        "level": "info",
+                        "message": "older",
+                        "source": "dav",
+                    },
+                    {
+                        "timestamp": "2026-04-30T10:41:09Z",
+                        "level": "info",
+                        "message": "newer",
+                        "source": "dav",
+                    },
+                ]
+
+        formatted = DavApp.formatted_logs(cast(Any, FakeApp()), limit=100)
+
+        self.assertEqual(
+            [item["message"] for item in formatted],
+            ["newer", "older"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

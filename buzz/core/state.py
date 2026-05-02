@@ -377,6 +377,8 @@ class BuzzState:
         self.trashcan = self._load_archive()
         snapshot, digest = self._load_snapshot()
         self.snapshot = snapshot
+        self._snapshot_index_source_id = 0
+        self._rebuild_snapshot_indexes()
         self.snapshot_digest = digest
         self.snapshot_loaded = self._snapshot_exists_in_db()
         self.last_sync_at = None
@@ -404,6 +406,46 @@ class BuzzState:
         with self.lock:
             self.config = config
             self.builder = LibraryBuilder(config)
+
+    def _rebuild_snapshot_indexes(self) -> None:
+        """Rebuild derived lookup indexes for the active snapshot."""
+        dirs = set(self.snapshot.get("dirs", []))
+        files = self.snapshot.get("files", {})
+        children_by_dir: dict[str, set[str]] = {}
+
+        for directory in dirs:
+            normalized = normalize_posix_path(directory)
+            if not normalized:
+                continue
+            parent = posixpath.dirname(normalized)
+            if parent == ".":
+                parent = ""
+            name = posixpath.basename(normalized)
+            if name:
+                children_by_dir.setdefault(parent, set()).add(name)
+
+        for file_path in files:
+            normalized = normalize_posix_path(file_path)
+            if not normalized:
+                continue
+            parent = posixpath.dirname(normalized)
+            if parent == ".":
+                parent = ""
+            name = posixpath.basename(normalized)
+            if name:
+                children_by_dir.setdefault(parent, set()).add(name)
+
+        self._dirs_set = dirs
+        self._children_by_dir = {
+            directory: tuple(sorted(children))
+            for directory, children in children_by_dir.items()
+        }
+        self._snapshot_index_source_id = id(self.snapshot)
+
+    def _ensure_snapshot_indexes(self) -> None:
+        """Refresh indexes after direct ``snapshot`` replacement."""
+        if self._snapshot_index_source_id != id(self.snapshot):
+            self._rebuild_snapshot_indexes()
 
     def _snapshot_exists_in_db(self) -> bool:
         row = self.conn.execute(
@@ -641,6 +683,7 @@ class BuzzState:
 
             with self.lock:
                 self._archive_removed_torrents(new_cache)
+                cache_changed = new_cache != self.cache
                 changed = digest != self.snapshot_digest
                 classified_changes = (
                     self._classified_changed_roots(self.snapshot, snapshot)
@@ -665,11 +708,13 @@ class BuzzState:
                 report["synced_torrents"] = len(infos)
                 report["timestamp"] = utc_now_iso()
 
-                self.cache = new_cache
-                self._save_cache(self.cache)
+                if cache_changed:
+                    self.cache = new_cache
+                    self._save_cache(self.cache)
 
                 if changed:
                     self.snapshot = snapshot
+                    self._rebuild_snapshot_indexes()
                     self.snapshot_digest = digest
                     self._save_snapshot(self.snapshot, self.snapshot_digest)
                     self.snapshot_loaded = True
@@ -1120,31 +1165,21 @@ class BuzzState:
         """Return the snapshot node for a path, or None if not found."""
         normalized = normalize_posix_path(path)
         with self.lock:
+            self._ensure_snapshot_indexes()
             if not normalized:
                 return {"type": "dir", "modified": self.last_sync_at}
             if normalized in self.snapshot.get("files", {}):
                 return self.snapshot["files"][normalized]
-            if normalized in set(self.snapshot.get("dirs", [])):
+            if normalized in self._dirs_set:
                 return {"type": "dir", "modified": self.last_sync_at}
         return None
 
     def list_children(self, path: str) -> list[str]:
         """Return sorted names of immediate children for a directory path."""
         normalized = normalize_posix_path(path)
-        children = set()
         with self.lock:
-            prefix = normalized + "/" if normalized else ""
-            for child in self.snapshot.get("dirs", []):
-                if child.startswith(prefix):
-                    rel = child[len(prefix) :].split("/", 1)[0]
-                    if rel:
-                        children.add(rel)
-            for child in self.snapshot.get("files", {}):
-                if child.startswith(prefix):
-                    rel = child[len(prefix) :].split("/", 1)[0]
-                    if rel:
-                        children.add(rel)
-        return sorted(children)
+            self._ensure_snapshot_indexes()
+            return list(self._children_by_dir.get(normalized, ()))
 
     def status(self) -> StatusReport:
         """Return current sync and hook status as a plain dict."""

@@ -79,6 +79,11 @@ class EventRegistry:
         with self.lock:
             return list(self.events)[-limit:]
 
+    def clear(self) -> None:
+        """Remove all currently stored events."""
+        with self.lock:
+            self.events.clear()
+
     def reconfigure(self, maxlen: int) -> None:
         """Resize the ring buffer, preserving existing events."""
         with self.lock:
