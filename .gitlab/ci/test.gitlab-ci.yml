@@ -1,6 +1,6 @@
 pytest:
   stage: test
-  image: ghcr.io/astral-sh/uv:python3.14-alpine@sha256:9e24cef9880ce029f2a14a914dc2d03c640c2b71de5cf11167516b36980e16fd
+  image: ghcr.io/astral-sh/uv:python3.14-alpine@sha256:e5d88be0bc6a7ee7945a3efe25503827c0e621923ce7655c71c6a1f98e7b58e5
   script:
     - uv sync --group dev
     - uv run pytest --cov=buzz --cov-report=xml --cov-report=term

@@ -33,7 +33,7 @@ services:
     command: ["dav"]
 
   rclone:
-    image: rclone/rclone:latest@sha256:1619a625f845e169c34b952cf40c483c0392965b821c5155cde8cbfd35254a96
+    image: rclone/rclone:latest@sha256:d2e0e88359d0b2e67cfcd2c43d5405185eb8adfc207079df27c42da82c5207bc
     container_name: rclone
     restart: unless-stopped
     environment:
@@ -62,7 +62,7 @@ services:
 
   plex:
     profiles: ["plex"]
-    image: lscr.io/linuxserver/plex:latest@sha256:e5c7c283b242966416a4bed2d666acf6f3fb8f957c704be8333f8dc987364825
+    image: lscr.io/linuxserver/plex:latest@sha256:c5e295f023b4e92b3ca467626dbc2ba8a9b5e53934810df74d99c14e38ae1857
     container_name: plex
     network_mode: host
     depends_on:
