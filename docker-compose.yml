@@ -52,7 +52,7 @@ services:
     depends_on:
       buzz-dav:
         condition: service_healthy
-    command: "mount buzz: /data --allow-other --allow-non-empty --default-permissions --uid ${PUID:-1000} --gid ${PGID:-1000} --vfs-cache-mode writes"
+    command: "mount buzz: /data --allow-other --allow-non-empty --default-permissions --uid ${PUID:-1000} --gid ${PGID:-1000} --vfs-cache-mode writes --poll-interval 20s"
     healthcheck:
       test: ["CMD-SHELL", "ls /data/movies >/dev/null 2>&1"]
       interval: 2s

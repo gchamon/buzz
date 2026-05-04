@@ -64,7 +64,7 @@
     </div>
     <div class="log-container" id="log-container" role="log" aria-live="polite">
       {% for log in log_items %}
-      <div class="log-entry" data-copy-text="{{ log.copy_text }}">
+      <div class="log-entry" data-copy-text="{{ log.copy_text }}" onclick="buzzCopyLogLine(this)">
         <div class="log-content">
           <span class="log-source">{{ log.source }}</span>
           <span class="log-ts">{{ log.timestamp }}</span>
