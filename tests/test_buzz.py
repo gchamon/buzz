@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import yaml
 from fastapi import FastAPI, Response
@@ -1334,6 +1334,10 @@ class BuzzStateTests(unittest.TestCase):
             self.assertIsNotNone(state.lookup("movies/Movie 2026/Movie.2026.1080p.mkv"))
             self.assertTrue(state.status()["hook_in_progress"])
             state.release_hook.set()
+            deadline = time.time() + 5
+            while time.time() < deadline and state.status()["hook_in_progress"]:
+                time.sleep(0.01)
+            self.assertFalse(state.status()["hook_in_progress"])
 
     def test_hook_requests_are_coalesced_while_busy(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1586,47 +1590,51 @@ class DavAppTests(unittest.TestCase):
             state_item.get("cycle_values_json", ""),
         )
 
-    def test_add_magnet_input_pushes_existing_inputs_down(self):
+    def test_analyze_splits_multiline_magnet_textarea(self):
         view = CacheLiveView(self.dav_app)
-        socket = SimpleNamespace(context=view._context(magnet_inputs=["magnet-a"]))
+        socket = SimpleNamespace(context=view._context())
 
-        asyncio.run(view.handle_event("add_magnet_input", cast(Any, socket)))
-
-        self.assertEqual(socket.context["magnet_inputs"], ["", "magnet-a"])
-
-    def test_update_magnets_keeps_empty_textbox(self):
-        view = CacheLiveView(self.dav_app)
-        socket = SimpleNamespace(context=view._context(magnet_inputs=["magnet-a"]))
-
-        asyncio.run(
-            view.handle_event("update_magnets", cast(Any, socket), payload={})
+        self.state.add_magnet = MagicMock(
+            side_effect=[
+                {
+                    "id": "TORRENT1",
+                    "filename": "Movie One",
+                    "files": [],
+                },
+                {
+                    "id": "TORRENT2",
+                    "filename": "Movie Two",
+                    "files": [],
+                },
+            ]
         )
-
-        self.assertEqual(socket.context["magnet_inputs"], [""])
-
-    def test_update_magnets_preserves_blank_textbox_value(self):
-        view = CacheLiveView(self.dav_app)
-        socket = SimpleNamespace(context=view._context(magnet_inputs=["magnet-a"]))
 
         asyncio.run(
             view.handle_event(
-                "update_magnets",
+                "analyze",
                 cast(Any, socket),
-                payload={"magnet": ""},
+                payload={"magnet": " magnet-a \n\nmagnet-b\n "},
             )
         )
 
-        self.assertEqual(socket.context["magnet_inputs"], [""])
+        self.assertEqual(
+            self.state.add_magnet.call_args_list,
+            [call("magnet-a"), call("magnet-b")],
+        )
+        self.assertEqual(len(socket.context["analysis_results"]), 2)
 
-    def test_remove_magnet_input_keeps_one_empty_textbox(self):
-        view = CacheLiveView(self.dav_app)
-        socket = SimpleNamespace(context=view._context(magnet_inputs=["magnet-a"]))
-
-        asyncio.run(
-            view.handle_event("remove_magnet_input", cast(Any, socket), index="1")
+    def test_cache_template_uses_local_textarea_for_bulk_magnets(self):
+        cache_template = Path("buzz/pyview_templates/cache_live.html").read_text(
+            encoding="utf-8"
         )
 
-        self.assertEqual(socket.context["magnet_inputs"], [""])
+        self.assertIn('name="magnet"', cache_template)
+        self.assertIn("<textarea", cache_template)
+        self.assertIn('phx-hook="BuzzBulkMagnetDraft"', cache_template)
+        self.assertNotIn("line-numbers", cache_template)
+        self.assertNotIn('phx-change="update_magnets"', cache_template)
+        self.assertNotIn('phx-click="add_magnet_input"', cache_template)
+        self.assertNotIn('phx-click="remove_magnet_input"', cache_template)
 
     def test_propfind_child_round_trips_encoded_directory_name(self):
         root_body = propfind_body(
@@ -2845,9 +2853,17 @@ class DavAppTests(unittest.TestCase):
 
     def test_languages_refreshing_flag_set_while_fetching(self):
         config = self._config_with_credentials(self.tmpdir.name)
+
+        def _slow_language_fetch(*_args):
+            time.sleep(0.05)
+            return [("de", "German")]
+
         with (
             patch("buzz.dav_app.RD", return_value=self.FakeRD()),
-            patch("buzz.dav_app._fetch_opensubtitles_languages", return_value=[("de", "German")]),
+            patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                side_effect=_slow_language_fetch,
+            ),
         ):
             app = DavApp(config)
             self.assertFalse(app.languages_refreshing)

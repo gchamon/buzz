@@ -47,34 +47,20 @@
     <div class="add-torrent-header">
       <span>ADD NEW MAGNET TO THE CACHE:</span>
     </div>
-    <form phx-change="update_magnets" phx-submit="analyze">
+    <form phx-submit="analyze">
       <div id="magnet-input-area">
-        <div id="magnet-inputs-container">
-          {% for input in magnet_inputs %}
-          <div class="input-group {% if not loop.is_last %}m-b-5{% endif %}">
-            <input
-              type="text"
-              name="magnet"
-              value="{{ input }}"
-              class="bulk-magnet-input"
-              placeholder="magnet:?xt=urn:btih:..."
-            >
-            {% if not loop.is_first %}
-            <button
-              type="button"
-              class="secondary bulk-magnet-remove"
-              phx-click="remove_magnet_input"
-              phx-value-index="{{ loop.index }}"
-            >-</button>
-            {% else %}
-            <button
-              type="button"
-              class="secondary bulk-magnet-remove"
-              phx-click="add_magnet_input"
-            >+</button>
-            {% endif %}
-          </div>
-          {% endfor %}
+        <div
+          id="bulk-magnet-editor"
+          class="bulk-magnet-editor"
+          phx-hook="BuzzBulkMagnetDraft"
+        >
+          <textarea
+            id="bulk-magnet-input"
+            name="magnet"
+            class="bulk-magnet-input"
+            placeholder="magnet:?xt=urn:btih:..."
+            rows="5"
+          ></textarea>
         </div>
         <button
           type="submit"
@@ -110,9 +96,7 @@
     </div>
     <div class="file-list" id="file-list">
       {% for result in analysis_results %}
-      {% if has_multiple_analysis_results %}
       <div class="file-torrent-header">{{ result.filename }}</div>
-      {% endif %}
       {% for file in result.files %}
       <div class="file-item">
         <input

@@ -510,12 +510,16 @@ code {
   }
 
   .meta-bar {
-    display: none;
+    display: flex;
     gap: 10px;
     margin: 30px 0px;
   }
 
-  .meta-bar-logs {
+  .meta-bar > .meta-row:first-child {
+    display: none;
+  }
+
+  .meta-bar-logs > .meta-row:first-child {
     display: flex;
   }
 
@@ -653,12 +657,6 @@ code {
   border-radius: 4px;
 }
 
-.bulk-magnet-remove {
-  padding: 0 10px;
-  font-size: 1rem;
-  color: var(--red);
-}
-
 /* --- Page: Cache --- */
 .add-torrent-section {
   background: var(--selection);
@@ -685,9 +683,21 @@ code {
   align-items: flex-start;
 }
 
-#magnet-inputs-container {
+.bulk-magnet-editor {
+  display: flex;
   flex: 1;
   min-width: 0;
+  border: 1px solid var(--comment);
+}
+
+.bulk-magnet-editor:focus-within {
+  border-color: var(--purple);
+}
+
+.bulk-magnet-input {
+  min-width: 0;
+  resize: vertical;
+  min-height: 112px;
 }
 
 #resolve-btn {
@@ -699,7 +709,8 @@ code {
   display: flex;
 }
 
-input[type="text"] {
+input[type="text"],
+textarea {
   flex: 1;
   background: var(--bg);
   border: 1px solid var(--comment);
@@ -709,8 +720,17 @@ input[type="text"] {
   outline: none;
 }
 
-input[type="text"]:focus {
+input[type="text"]:focus,
+textarea:focus {
   border-color: var(--purple);
+}
+
+.bulk-magnet-editor textarea {
+  border: 0;
+}
+
+.bulk-magnet-editor textarea:focus {
+  border-color: transparent;
 }
 
 .file-list {

@@ -184,9 +184,7 @@ class CacheContext(PageContext):
     analyzing: bool
     caching: bool
     confirm_delete_id: str | None
-    has_multiple_analysis_results: bool
     has_torrents: bool
-    magnet_inputs: list[str]
     show_overlay: bool
     sort_col: int
     sort_dir: str
@@ -513,18 +511,6 @@ class CacheLiveView(_BaseBuzzLiveView):
     page_name = "cache"
     page_title = "buzz: cache"
 
-    @staticmethod
-    def _normalize_magnet_inputs(raw: Any) -> list[str]:
-        if isinstance(raw, str):
-            values = [raw]
-        elif isinstance(raw, list):
-            values = [str(value) for value in raw]
-        elif raw is None:
-            values = []
-        else:
-            values = [str(raw)]
-        return values or [""]
-
     async def mount(  # pyright: ignore[reportIncompatibleMethodOverride, reportArgumentType]
         self,
         socket: LiveViewSocket[CacheContext],
@@ -568,24 +554,6 @@ class CacheLiveView(_BaseBuzzLiveView):
         if event == "resync":
             self._handle_resync(socket)
             return
-        if event == "add_magnet_input":
-            socket.context["magnet_inputs"].insert(0, "")
-            return
-        if event == "remove_magnet_input":
-            try:
-                idx = int(index) - 1
-                if 0 <= idx < len(socket.context["magnet_inputs"]):
-                    socket.context["magnet_inputs"].pop(idx)
-                if not socket.context["magnet_inputs"]:
-                    socket.context["magnet_inputs"] = [""]
-            except ValueError:
-                pass
-            return
-        if event == "update_magnets":
-            socket.context["magnet_inputs"] = self._normalize_magnet_inputs(
-                (payload or {}).get("magnet")
-            )
-            return
         if event == "analyze":
             self._handle_analyze(socket, payload)
             return
@@ -611,11 +579,15 @@ class CacheLiveView(_BaseBuzzLiveView):
             self._handle_confirm_cache(socket)
             return
         if event == "cancel_cache":
+            for result in socket.context["analysis_results"]:
+                try:
+                    self.owner.state.delete_torrent(result["torrent_id"])
+                except Exception:
+                    pass
             socket.context = self._context(
                 console_msg=socket.context["console_msg"],
                 console_class=socket.context["console_class"],
                 confirm_delete_id=socket.context["confirm_delete_id"],
-                magnet_inputs=socket.context["magnet_inputs"],
                 sort_col=socket.context["sort_col"],
                 sort_dir=socket.context["sort_dir"],
             )
@@ -633,7 +605,6 @@ class CacheLiveView(_BaseBuzzLiveView):
                 console_msg=str(warning or "item moved to archive"),
                 console_class=CSS_STATUS_YELLOW if warning else CSS_STATUS_GREEN,
                 confirm_delete_id=None,
-                magnet_inputs=socket.context["magnet_inputs"],
                 analysis_results=socket.context["analysis_results"],
                 analysis_error=socket.context["analysis_error"],
                 analyzing=socket.context["analyzing"],
@@ -672,8 +643,11 @@ class CacheLiveView(_BaseBuzzLiveView):
     ) -> None:
         raw = (payload or {}).get("magnet", [])
         if isinstance(raw, str):
-            raw = [raw]
-        magnets = [str(m).strip() for m in raw if str(m).strip()]
+            raw = raw.splitlines()
+        lines: list[str] = []
+        for item in raw:
+            lines.extend(str(item).splitlines())
+        magnets = [m.strip() for m in lines if m.strip()]
         if not magnets:
             return
         socket.context["analyzing"] = True
@@ -766,7 +740,6 @@ class CacheLiveView(_BaseBuzzLiveView):
             console_msg=socket.context["console_msg"],
             console_class=socket.context["console_class"],
             confirm_delete_id=socket.context["confirm_delete_id"],
-            magnet_inputs=socket.context["magnet_inputs"],
             analysis_results=socket.context["analysis_results"],
             analysis_error=socket.context["analysis_error"],
             analyzing=socket.context["analyzing"],
@@ -786,7 +759,6 @@ class CacheLiveView(_BaseBuzzLiveView):
             console_msg=socket.context["console_msg"],
             console_class=socket.context["console_class"],
             confirm_delete_id=socket.context["confirm_delete_id"],
-            magnet_inputs=socket.context["magnet_inputs"],
             analysis_results=socket.context["analysis_results"],
             analysis_error=socket.context["analysis_error"],
             analyzing=socket.context["analyzing"],
@@ -807,7 +779,6 @@ class CacheLiveView(_BaseBuzzLiveView):
         console_msg: str = "",
         console_class: str = "",
         confirm_delete_id: str | None = None,
-        magnet_inputs: list[str] | None = None,
         analysis_results: list[CacheAnalysisResult] | None = None,
         analysis_error: str = "",
         analyzing: bool = False,
@@ -843,9 +814,7 @@ class CacheLiveView(_BaseBuzzLiveView):
                 "analyzing": analyzing,
                 "caching": caching,
                 "confirm_delete_id": confirm_delete_id,
-                "has_multiple_analysis_results": len(analysis_results) > 1,
                 "has_torrents": bool(torrents),
-                "magnet_inputs": magnet_inputs or [""],
                 "show_overlay": analyzing or caching,
                 "sort_col": sort_col,
                 "sort_dir": sort_dir,
@@ -1538,7 +1507,6 @@ class BuzzLiveView(_BaseBuzzLiveView):
             console_msg=context["cache"]["console_msg"],
             console_class=context["cache"]["console_class"],
             confirm_delete_id=context["cache"]["confirm_delete_id"],
-            magnet_inputs=context["cache"]["magnet_inputs"],
             analysis_results=context["cache"]["analysis_results"],
             analysis_error=context["cache"]["analysis_error"],
             analyzing=context["cache"]["analyzing"],

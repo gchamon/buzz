@@ -50,9 +50,7 @@ Here are the core best practices to follow when writing Python:
 
 Always use `uvx pyright {folder}` to scan projects after implementing changes.
 
-When running the test suite, prefer an ephemeral Docker container so the
-environment matches the Python version in the project and avoids local sandbox
-issues with `TestClient`:
+When running the test suite, always use an ephemeral Docker container to run the tests:
 
 ```bash
 docker run --rm \

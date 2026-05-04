@@ -189,6 +189,36 @@ if (typeof window !== "undefined") {
     },
   };
 
+  hooks.BuzzBulkMagnetDraft = {
+    mounted() {
+      this._textarea = this.el.querySelector(".bulk-magnet-input");
+      this._onInput = () => {
+        if (!this._textarea) return;
+        window.buzzBulkMagnetDraft = this._textarea.value;
+      };
+      this._restore();
+      if (this._textarea) {
+        this._textarea.addEventListener("input", this._onInput);
+      }
+    },
+    updated() {
+      this._restore();
+    },
+    destroyed() {
+      this._textarea?.removeEventListener("input", this._onInput);
+    },
+    _restore() {
+      const consoleMsg = document.getElementById("meta-console-msg");
+      if (consoleMsg?.textContent === "Items added and synced.") {
+        window.buzzBulkMagnetDraft = "";
+      }
+      if (typeof window.buzzBulkMagnetDraft === "string") {
+        if (!this._textarea) return;
+        this._textarea.value = window.buzzBulkMagnetDraft;
+      }
+    },
+  };
+
   hooks.BuzzOverflowMarquee = {
     mounted() {
       this._reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
