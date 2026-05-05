@@ -3285,6 +3285,13 @@ class ConfigUITests(unittest.TestCase):
                     "media_server:\n"
                     "  kind: plex\n"
                     "  trigger_lib_scan: true\n"
+                    "  scan_probe:\n"
+                    "    enabled: true\n"
+                    "    sample_ratio_percent: 25\n"
+                    "    min_files: 2\n"
+                    "    max_attempts: 4\n"
+                    "    read_bytes: 1024\n"
+                    "    retry_delay_secs: 1.5\n"
                     "  jellyfin:\n"
                     "    url: http://jellyfin.local:8096/\n"
                     "    api_key: jf-secret\n"
@@ -3305,6 +3312,12 @@ class ConfigUITests(unittest.TestCase):
             self.assertEqual(config.jellyfin_scan_task_id, "scan-task")
             self.assertEqual(config.plex_url, "http://plex.local:32400")
             self.assertEqual(config.plex_token, "plex-secret")
+            self.assertTrue(config.scan_probe.enabled)
+            self.assertEqual(config.scan_probe.sample_ratio_percent, 25)
+            self.assertEqual(config.scan_probe.min_files, 2)
+            self.assertEqual(config.scan_probe.max_attempts, 4)
+            self.assertEqual(config.scan_probe.read_bytes, 1024)
+            self.assertEqual(config.scan_probe.retry_delay_secs, 1.5)
 
     def test_curator_config_library_map_default_empty_when_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3350,6 +3363,13 @@ class ConfigUITests(unittest.TestCase):
                     "media_server:\n"
                     "  kind: jellyfin\n"
                     "  trigger_lib_scan: true\n"
+                    "  scan_probe:\n"
+                    "    enabled: false\n"
+                    "    sample_ratio_percent: 25\n"
+                    "    min_files: 2\n"
+                    "    max_attempts: 4\n"
+                    "    read_bytes: 1024\n"
+                    "    retry_delay_secs: 1.5\n"
                     "  jellyfin:\n"
                     "    url: http://jellyfin.local:8096\n"
                     "    api_key: jf-secret\n"
@@ -3368,6 +3388,17 @@ class ConfigUITests(unittest.TestCase):
 
             self.assertEqual(nested["media_server"]["kind"], "jellyfin")
             self.assertTrue(nested["media_server"]["trigger_lib_scan"])
+            self.assertEqual(
+                nested["media_server"]["scan_probe"],
+                {
+                    "enabled": False,
+                    "sample_ratio_percent": 25,
+                    "min_files": 2,
+                    "max_attempts": 4,
+                    "read_bytes": 1024,
+                    "retry_delay_secs": 1.5,
+                },
+            )
             self.assertEqual(
                 nested["media_server"]["jellyfin"],
                 {
@@ -3423,11 +3454,47 @@ class ConfigUITests(unittest.TestCase):
         self.assertIn('name="provider.connection_concurrency"', template)
         self.assertIn('name="media_server.kind"', template)
         self.assertIn('name="media_server.trigger_lib_scan"', template)
+        self.assertIn('name="media_server.scan_probe.enabled"', template)
+        self.assertIn(
+            'name="media_server.scan_probe.sample_ratio_percent"', template
+        )
+        self.assertIn('name="media_server.scan_probe.min_files"', template)
+        self.assertIn('name="media_server.scan_probe.max_attempts"', template)
+        self.assertIn('name="media_server.scan_probe.read_bytes"', template)
+        self.assertIn(
+            'name="media_server.scan_probe.retry_delay_secs"', template
+        )
         self.assertIn('name="media_server.jellyfin.url"', template)
         self.assertIn('name="media_server.jellyfin.api_key"', template)
         self.assertIn('name="media_server.jellyfin.scan_task_id"', template)
         self.assertIn('name="media_server.plex.url"', template)
         self.assertIn('name="media_server.plex.token"', template)
+
+    def test_config_form_parses_scan_probe_fields(self):
+        from buzz.ui_live import _config_overrides_from_payload
+
+        overrides = _config_overrides_from_payload(
+            {
+                "media_server.scan_probe.enabled": "on",
+                "media_server.scan_probe.sample_ratio_percent": "25",
+                "media_server.scan_probe.min_files": "2",
+                "media_server.scan_probe.max_attempts": "4",
+                "media_server.scan_probe.read_bytes": "1024",
+                "media_server.scan_probe.retry_delay_secs": "1.5",
+            }
+        )
+
+        self.assertEqual(
+            overrides["media_server"]["scan_probe"],
+            {
+                "enabled": True,
+                "sample_ratio_percent": 25,
+                "min_files": 2,
+                "max_attempts": 4,
+                "read_bytes": 1024,
+                "retry_delay_secs": 1.5,
+            },
+        )
 
     def test_config_load_with_overrides(self):
         with tempfile.TemporaryDirectory() as tmpdir:

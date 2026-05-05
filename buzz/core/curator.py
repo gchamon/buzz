@@ -5,7 +5,9 @@ directories, applying metadata overrides, detecting changes, and
 triggering downstream media server scans.
 """
 
+import math
 import os
+import random
 import shutil
 import tempfile
 import threading
@@ -47,6 +49,10 @@ class RebuildError(RuntimeError):
 
 class MediaServerAuthError(RuntimeError):
     """Raised when startup media server auth validation fails."""
+
+
+class ScanProbeError(RuntimeError):
+    """Raised when media files cannot be read before a server scan."""
 
 
 def load_overrides(path: Path) -> dict:
@@ -298,6 +304,105 @@ def log_mapping_event(diff: dict, report: dict, mapping_entries: int) -> None:
         removed=diff["removed"],
         changed=diff["changed"],
     )
+
+
+def scan_probe_sample_size(pool_size: int, ratio_percent: int, min_files: int) -> int:
+    """Return the number of files to sample from a probe pool."""
+    if pool_size <= 0:
+        return 0
+    ratio_size = math.ceil(pool_size * max(0, ratio_percent) / 100)
+    return min(pool_size, max(max(0, min_files), ratio_size))
+
+
+def _changed_root_matches(source: str, changed_roots: list[str]) -> bool:
+    return any(
+        source == root or source.startswith(f"{root}/")
+        for root in changed_roots
+    )
+
+
+def _scan_probe_pool(mapping: list[dict], changed_roots: list[str] | None) -> list[str]:
+    roots = [root.strip("/") for root in changed_roots or [] if root.strip("/")]
+    sources = [
+        source
+        for entry in mapping
+        if isinstance((source := entry.get("source")), str)
+    ]
+    if not roots:
+        return sorted(dict.fromkeys(sources))
+    return sorted(
+        dict.fromkeys(
+            source for source in sources if _changed_root_matches(source, roots)
+        )
+    )
+
+
+def _read_probe_file(path: Path, read_bytes: int) -> None:
+    with path.open("rb") as handle:
+        data = handle.read(read_bytes)
+    if not data:
+        raise ScanProbeError(f"probe read returned no bytes for {path}")
+
+
+def validate_scan_probe(
+    config: CuratorConfig,
+    mapping: list[dict],
+    changed_roots: list[str] | None,
+) -> None:
+    """Read a sample of source files before triggering a media-server scan."""
+    probe = config.scan_probe
+    if not probe.enabled:
+        return
+
+    pool = _scan_probe_pool(mapping, changed_roots)
+    sample_size = scan_probe_sample_size(
+        len(pool), probe.sample_ratio_percent, probe.min_files
+    )
+    if sample_size <= 0:
+        raise ScanProbeError("no media files available for scan probe")
+
+    record_event(
+        f"starting Jellyfin scan probe: {sample_size} of {len(pool)} file(s)",
+        event="jellyfin_scan_probe_started",
+        sample_size=sample_size,
+        pool_size=len(pool),
+    )
+
+    last_error: Exception | None = None
+    for attempt in range(probe.max_attempts):
+        sample = random.sample(pool, sample_size)
+        try:
+            for source in sample:
+                _read_probe_file(config.source_root / source, probe.read_bytes)
+        except Exception as exc:
+            last_error = exc
+            if attempt < probe.max_attempts - 1:
+                record_event(
+                    f"retrying Jellyfin scan probe after failure: {exc}",
+                    level="warning",
+                    event="jellyfin_scan_probe_retry",
+                    attempt=attempt + 1,
+                    sample_size=sample_size,
+                )
+                time.sleep(probe.retry_delay_secs)
+                continue
+            break
+        record_event(
+            "jellyfin scan probe succeeded",
+            event="jellyfin_scan_probe_succeeded",
+            sample_size=sample_size,
+            pool_size=len(pool),
+        )
+        return
+
+    record_event(
+        "jellyfin scan probe failed",
+        level="error",
+        event="jellyfin_scan_probe_exhausted",
+        sample_size=sample_size,
+        pool_size=len(pool),
+    )
+    raise ScanProbeError(str(last_error) if last_error else "scan probe failed")
 
 
 def build_library(config: CuratorConfig) -> dict:
@@ -708,6 +813,22 @@ def rebuild_and_trigger(
         report["jellyfin_scan_triggered"] = False
         report["jellyfin_scan_status"] = "skipped_unsupported"
         report["jellyfin_scan_error"] = None
+        return report
+
+    conn = db.connect(config.state_dir / "buzz.sqlite")
+    try:
+        mapping = db.load_curator_mapping(conn)
+    finally:
+        conn.close()
+
+    try:
+        validate_scan_probe(config, mapping, changed_roots)
+    except ScanProbeError as exc:
+        msg = f"jellyfin scan skipped: Real-Debrid probe failed: {exc}"
+        record_event(msg, level="error", event="jellyfin_scan_probe_failed")
+        report["jellyfin_scan_triggered"] = False
+        report["jellyfin_scan_status"] = "skipped_probe_failed"
+        report["jellyfin_scan_error"] = str(exc)
         return report
 
     # Validate auth first to avoid cascading failures
