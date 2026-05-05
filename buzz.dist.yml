@@ -73,6 +73,16 @@ media_server:
     movies: Movies
     shows: TV Shows
     anime: Anime
+  # Before triggering Jellyfin scans, Buzz reads a sample of files through the
+  # mounted raw library. If Real-Debrid is down or returning gateway errors,
+  # the scan is skipped so Jellyfin keeps its existing metadata.
+  scan_probe:
+    enabled: true
+    sample_ratio_percent: 10
+    min_files: 1
+    max_attempts: 3
+    read_bytes: 524288
+    retry_delay_secs: 10
 
 subtitles:
   enabled: false

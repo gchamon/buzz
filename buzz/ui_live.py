@@ -56,6 +56,7 @@ _CONFIG_BOOL_FIELDS = (
     "compat.enable_unplayable_dir",
     "logging.verbose",
     "media_server.trigger_lib_scan",
+    "media_server.scan_probe.enabled",
     "subtitles.enabled",
     "subtitles.fetch_on_resync",
     "subtitles.filters.exclude_ai",
@@ -67,6 +68,11 @@ _CONFIG_NUMBER_FIELDS = (
     "provider.connection_concurrency",
     "server.port",
     "hooks.rd_update_delay_secs",
+    "media_server.scan_probe.sample_ratio_percent",
+    "media_server.scan_probe.min_files",
+    "media_server.scan_probe.max_attempts",
+    "media_server.scan_probe.read_bytes",
+    "media_server.scan_probe.retry_delay_secs",
     "request_timeout_secs",
     "subtitles.search_delay_secs",
     "subtitles.download_delay_secs",
@@ -94,6 +100,12 @@ _CONFIG_TRACKED_FIELDS = (
     "version_label",
     "media_server.kind",
     "media_server.trigger_lib_scan",
+    "media_server.scan_probe.enabled",
+    "media_server.scan_probe.sample_ratio_percent",
+    "media_server.scan_probe.min_files",
+    "media_server.scan_probe.max_attempts",
+    "media_server.scan_probe.read_bytes",
+    "media_server.scan_probe.retry_delay_secs",
     "media_server.jellyfin.url",
     "media_server.jellyfin.api_key",
     "media_server.jellyfin.scan_task_id",
@@ -239,6 +251,12 @@ class ConfigValues(TypedDict):
     jellyfin_url: str
     library_map: dict[str, str]
     media_server_kind: str
+    scan_probe_enabled: bool
+    scan_probe_max_attempts: int
+    scan_probe_min_files: int
+    scan_probe_read_bytes: int
+    scan_probe_retry_delay_secs: int | float
+    scan_probe_sample_ratio_percent: int
     provider_poll_interval_secs: int
     ui_poll_interval_secs: int
     port: int
@@ -1580,6 +1598,7 @@ def _config_values(
     effective = deep_merge(to_nested_dict(config), draft)
     subtitles = effective["subtitles"]
     subtitle_filters = subtitles["filters"]
+    scan_probe = effective["media_server"]["scan_probe"]
     return {
         "anime_patterns": "\n".join(
             effective["directories"]["anime"]["patterns"]
@@ -1618,6 +1637,14 @@ def _config_values(
         "plex_url": effective["media_server"]["plex"]["url"],
         "request_timeout_secs": effective["request_timeout_secs"],
         "rd_update_delay_secs": effective["hooks"]["rd_update_delay_secs"],
+        "scan_probe_enabled": scan_probe["enabled"],
+        "scan_probe_max_attempts": scan_probe["max_attempts"],
+        "scan_probe_min_files": scan_probe["min_files"],
+        "scan_probe_read_bytes": scan_probe["read_bytes"],
+        "scan_probe_retry_delay_secs": scan_probe["retry_delay_secs"],
+        "scan_probe_sample_ratio_percent": scan_probe[
+            "sample_ratio_percent"
+        ],
         "search_delay_secs": subtitles["search_delay_secs"],
         "selected_languages": subtitles["languages"],
         "strategy": subtitles["strategy"],

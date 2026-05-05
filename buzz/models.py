@@ -40,6 +40,12 @@ UI_MANAGED_CONFIG_FIELDS = (
     "logging.verbose",
     "media_server.kind",
     "media_server.trigger_lib_scan",
+    "media_server.scan_probe.enabled",
+    "media_server.scan_probe.sample_ratio_percent",
+    "media_server.scan_probe.min_files",
+    "media_server.scan_probe.max_attempts",
+    "media_server.scan_probe.read_bytes",
+    "media_server.scan_probe.retry_delay_secs",
     "media_server.jellyfin.url",
     "media_server.jellyfin.api_key",
     "media_server.jellyfin.scan_task_id",
@@ -307,6 +313,14 @@ _OVERRIDE_SCHEMA = {
             "token": True,
         },
         "library_map": True,
+        "scan_probe": {
+            "enabled": True,
+            "sample_ratio_percent": True,
+            "min_files": True,
+            "max_attempts": True,
+            "read_bytes": True,
+            "retry_delay_secs": True,
+        },
     },
     "subtitles": {
         "enabled": True,
@@ -443,6 +457,16 @@ def to_nested_dict(config: DavConfig) -> dict:
                 "token": config.plex_token,
             },
             "library_map": dict(config.library_map),
+            "scan_probe": {
+                "enabled": config.scan_probe.enabled,
+                "sample_ratio_percent": (
+                    config.scan_probe.sample_ratio_percent
+                ),
+                "min_files": config.scan_probe.min_files,
+                "max_attempts": config.scan_probe.max_attempts,
+                "read_bytes": config.scan_probe.read_bytes,
+                "retry_delay_secs": config.scan_probe.retry_delay_secs,
+            },
         },
         "subtitles": {
             "enabled": config.subtitles.enabled,
@@ -535,6 +559,35 @@ class TlsConfig(BaseModel):
     key_path: str = DEFAULT_TLS_KEY_PATH
 
 
+class ScanProbeConfig(BaseModel):
+    """Media-server scan safety probe configuration."""
+
+    enabled: bool = True
+    sample_ratio_percent: int = 10
+    min_files: int = 1
+    max_attempts: int = 3
+    read_bytes: int = 524288
+    retry_delay_secs: float = 10.0
+
+    @classmethod
+    def from_raw(cls, raw: object) -> "ScanProbeConfig":
+        """Build scan probe config from a nested YAML value."""
+        if not isinstance(raw, dict):
+            return cls()
+        return cls(
+            enabled=bool(raw.get("enabled", True)),
+            sample_ratio_percent=max(
+                0, int(raw.get("sample_ratio_percent", 10))
+            ),
+            min_files=max(0, int(raw.get("min_files", 1))),
+            max_attempts=max(1, int(raw.get("max_attempts", 3))),
+            read_bytes=max(1, int(raw.get("read_bytes", 524288))),
+            retry_delay_secs=max(
+                0.0, float(raw.get("retry_delay_secs", 10.0))
+            ),
+        )
+
+
 class DavConfig(BaseModel):
     """Configuration for the WebDAV / Real-Debrid front-end."""
 
@@ -567,6 +620,7 @@ class DavConfig(BaseModel):
     plex_url: str = ""
     plex_token: str = ""
     library_map: dict[str, str] = Field(default_factory=dict)
+    scan_probe: ScanProbeConfig = Field(default_factory=ScanProbeConfig)
     subtitles: SubtitleConfig = Field(default_factory=SubtitleConfig)
     subtitle_root: str = "/mnt/buzz/subs"
     tls: TlsConfig = Field(default_factory=TlsConfig)
@@ -659,6 +713,9 @@ class DavConfig(BaseModel):
                 str(k): str(v)
                 for k, v in (media_server_raw.get("library_map") or {}).items()
             },
+            scan_probe=ScanProbeConfig.from_raw(
+                media_server_raw.get("scan_probe")
+            ),
             subtitles=SubtitleConfig.from_raw(raw.get("subtitles")),
             subtitle_root=str(
                 (raw.get("subtitles") or {}).get("root", "/mnt/buzz/subs")
@@ -746,6 +803,7 @@ class CuratorConfig(BaseModel):
     jellyfin_library_map: dict[str, str] = Field(default_factory=dict)
     media_server_kind: str = "jellyfin"
     trigger_lib_scan: bool = False
+    scan_probe: ScanProbeConfig = Field(default_factory=ScanProbeConfig)
     plex_url: str = ""
     plex_token: str = ""
     build_on_start: bool = Field(
@@ -813,6 +871,9 @@ class CuratorConfig(BaseModel):
                     data["trigger_lib_scan"] = bool(
                         media_server["trigger_lib_scan"]
                     )
+                data["scan_probe"] = ScanProbeConfig.from_raw(
+                    media_server.get("scan_probe")
+                )
                 jellyfin = media_server.get("jellyfin") or {}
                 if "url" in jellyfin:
                     data["jellyfin_url"] = str(jellyfin["url"]).rstrip("/")

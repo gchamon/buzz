@@ -14,11 +14,12 @@ from buzz.core.curator import (
     RebuildError,
     build_library,
     rebuild_and_trigger,
+    scan_probe_sample_size,
     validate_media_server_startup_auth,
 )
 from buzz.core.media_server import JellyfinAuthProbe
 from buzz.curator_app import CuratorApp
-from buzz.models import CuratorConfig
+from buzz.models import CuratorConfig, ScanProbeConfig
 
 
 class CuratorAppTests(unittest.TestCase):
@@ -44,6 +45,37 @@ class CuratorAppTests(unittest.TestCase):
         shows.mkdir(parents=True, exist_ok=True)
         anime.mkdir(parents=True, exist_ok=True)
         (movies / "Movie.2026.1080p.mkv").write_text("video", encoding="utf-8")
+
+    def test_scan_probe_sample_size_uses_percent_with_minimum(self):
+        self.assertEqual(scan_probe_sample_size(125, 10, 1), 13)
+        self.assertEqual(scan_probe_sample_size(9, 10, 1), 1)
+        self.assertEqual(scan_probe_sample_size(0, 10, 1), 0)
+        self.assertEqual(scan_probe_sample_size(5, 0, 1), 1)
+
+    @patch("buzz.core.curator.validate_jellyfin_auth")
+    def test_scan_probe_logs_start_and_success_counts(self, mock_validate):
+        mock_validate.return_value = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(
+                root,
+                trigger_lib_scan=True,
+                jellyfin_api_key="token",
+                scan_probe=ScanProbeConfig(sample_ratio_percent=100),
+            )
+            self._create_source_tree(config.source_root)
+
+            stdout = io.StringIO()
+            with patch("sys.stdout", stdout), patch(
+                "buzz.core.curator.trigger_jellyfin_scan"
+            ):
+                rebuild_and_trigger(config)
+
+            logged = stdout.getvalue()
+            self.assertIn(
+                "starting Jellyfin scan probe: 1 of 1 file(s)", logged
+            )
+            self.assertIn("jellyfin scan probe succeeded", logged)
 
     def test_build_library_accepts_canonical_curator_config(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -618,16 +650,68 @@ class CuratorAppTests(unittest.TestCase):
                 "buzz.core.curator.trigger_jellyfin_selective_refresh"
             ) as trigger_selective:
                 report = rebuild_and_trigger(
-                    config, changed_roots=["movies/MyMovie"]
+                    config, changed_roots=["movies/Movie.2026.1080p.mkv"]
                 )
 
             trigger_selective.assert_called_once_with(
-                config, ["movies/MyMovie"]
+                config, ["movies/Movie.2026.1080p.mkv"]
             )
             self.assertTrue(report["jellyfin_scan_triggered"])
             self.assertEqual(
                 report["jellyfin_scan_status"], "selective_triggered"
             )
+
+    @patch("buzz.core.curator.validate_jellyfin_auth")
+    def test_rebuild_and_trigger_skips_scan_when_probe_fails(
+        self, mock_validate
+    ):
+        mock_validate.return_value = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(
+                root,
+                trigger_lib_scan=True,
+                jellyfin_api_key="token",
+                scan_probe=ScanProbeConfig(max_attempts=2, retry_delay_secs=0),
+            )
+            self._create_source_tree(config.source_root)
+
+            stdout = io.StringIO()
+            with patch("sys.stdout", stdout), patch(
+                "buzz.core.curator._read_probe_file",
+                side_effect=OSError("upstream returned HTTP 503"),
+            ), patch("buzz.core.curator.trigger_jellyfin_scan") as trigger_scan:
+                report = rebuild_and_trigger(config)
+
+            trigger_scan.assert_not_called()
+            self.assertFalse(report["jellyfin_scan_triggered"])
+            self.assertEqual(
+                report["jellyfin_scan_status"], "skipped_probe_failed"
+            )
+            self.assertIn("HTTP 503", report["jellyfin_scan_error"])
+            self.assertIn("jellyfin scan skipped", stdout.getvalue())
+
+    @patch("buzz.core.curator.validate_jellyfin_auth")
+    def test_rebuild_and_trigger_can_disable_scan_probe(self, mock_validate):
+        mock_validate.return_value = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(
+                root,
+                trigger_lib_scan=True,
+                jellyfin_api_key="token",
+                scan_probe=ScanProbeConfig(enabled=False),
+            )
+            self._create_source_tree(config.source_root)
+
+            with patch(
+                "buzz.core.curator._read_probe_file",
+                side_effect=OSError("should not probe"),
+            ), patch("buzz.core.curator.trigger_jellyfin_scan") as trigger_scan:
+                report = rebuild_and_trigger(config)
+
+            trigger_scan.assert_called_once_with(config)
+            self.assertTrue(report["jellyfin_scan_triggered"])
 
     @patch("buzz.core.media_server.discover_jellyfin_libraries")
     @patch("urllib.request.urlopen")
@@ -724,7 +808,7 @@ class CuratorAppTests(unittest.TestCase):
                 return_value=True,
             ):
                 report = rebuild_and_trigger(
-                    config, changed_roots=["movies/MyMovie"]
+                    config, changed_roots=["movies/Movie.2026.1080p.mkv"]
                 )
 
             self.assertFalse(report["jellyfin_scan_triggered"])

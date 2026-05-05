@@ -268,6 +268,78 @@
               <span class="config-reload-mode">{{ field_states.media_server_trigger_lib_scan.reload_mode }}</span>
               <span class="config-baseline"># Default: {{ field_states.media_server_trigger_lib_scan.baseline_value }}</span>
             </div>
+            <div class="config-field checkbox-field {{ field_states.media_server_scan_probe_enabled.css_class }}">
+              <input
+                type="checkbox"
+                id="media_server.scan_probe.enabled"
+                name="media_server.scan_probe.enabled"
+                {% if values.scan_probe_enabled %}checked{% endif %}
+              >
+              <label for="media_server.scan_probe.enabled">scan_probe enabled</label>
+              <span class="config-reload-mode">{{ field_states.media_server_scan_probe_enabled.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_scan_probe_enabled.baseline_value }}</span>
+            </div>
+            <div class="config-field {{ field_states.media_server_scan_probe_sample_ratio_percent.css_class }}">
+              <label for="media_server.scan_probe.sample_ratio_percent">scan_probe sample_ratio_percent</label>
+              <span class="config-reload-mode">{{ field_states.media_server_scan_probe_sample_ratio_percent.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_scan_probe_sample_ratio_percent.baseline_value }}</span>
+              <input
+                type="number"
+                min="0"
+                id="media_server.scan_probe.sample_ratio_percent"
+                name="media_server.scan_probe.sample_ratio_percent"
+                value="{{ values.scan_probe_sample_ratio_percent }}"
+              >
+            </div>
+            <div class="config-field {{ field_states.media_server_scan_probe_min_files.css_class }}">
+              <label for="media_server.scan_probe.min_files">scan_probe min_files</label>
+              <span class="config-reload-mode">{{ field_states.media_server_scan_probe_min_files.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_scan_probe_min_files.baseline_value }}</span>
+              <input
+                type="number"
+                min="0"
+                id="media_server.scan_probe.min_files"
+                name="media_server.scan_probe.min_files"
+                value="{{ values.scan_probe_min_files }}"
+              >
+            </div>
+            <div class="config-field {{ field_states.media_server_scan_probe_max_attempts.css_class }}">
+              <label for="media_server.scan_probe.max_attempts">scan_probe max_attempts</label>
+              <span class="config-reload-mode">{{ field_states.media_server_scan_probe_max_attempts.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_scan_probe_max_attempts.baseline_value }}</span>
+              <input
+                type="number"
+                min="1"
+                id="media_server.scan_probe.max_attempts"
+                name="media_server.scan_probe.max_attempts"
+                value="{{ values.scan_probe_max_attempts }}"
+              >
+            </div>
+            <div class="config-field {{ field_states.media_server_scan_probe_read_bytes.css_class }}">
+              <label for="media_server.scan_probe.read_bytes">scan_probe read_bytes</label>
+              <span class="config-reload-mode">{{ field_states.media_server_scan_probe_read_bytes.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_scan_probe_read_bytes.baseline_value }}</span>
+              <input
+                type="number"
+                min="1"
+                id="media_server.scan_probe.read_bytes"
+                name="media_server.scan_probe.read_bytes"
+                value="{{ values.scan_probe_read_bytes }}"
+              >
+            </div>
+            <div class="config-field {{ field_states.media_server_scan_probe_retry_delay_secs.css_class }}">
+              <label for="media_server.scan_probe.retry_delay_secs">scan_probe retry_delay_secs</label>
+              <span class="config-reload-mode">{{ field_states.media_server_scan_probe_retry_delay_secs.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_scan_probe_retry_delay_secs.baseline_value }}</span>
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                id="media_server.scan_probe.retry_delay_secs"
+                name="media_server.scan_probe.retry_delay_secs"
+                value="{{ values.scan_probe_retry_delay_secs }}"
+              >
+            </div>
             <div class="config-field {{ field_states.media_server_jellyfin_url.css_class }}">
               <label for="media_server.jellyfin.url">jellyfin url</label>
               <span class="config-reload-mode">{{ field_states.media_server_jellyfin_url.reload_mode }}</span>
