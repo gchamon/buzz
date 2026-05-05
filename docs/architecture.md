@@ -310,6 +310,33 @@ input and available configuration.
 The curator report records enough information for operators and tests to see
 whether a rebuild used full or selective scanning.
 
+Several safeguards gate the refresh path so a flaky Real-Debrid or rclone
+mount can't drive Jellyfin to destructive conclusions:
+
+- `validate_scan_probe` in `buzz/core/curator.py` reads a sample of source
+  files through the rclone mount before each scan; if the sample fails after
+  `max_attempts`, the scan is not triggered. Parallelized via
+  `media_server.scan_probe.concurrency`.
+- `validate_media_server_startup_auth` (also in `buzz/core/curator.py`)
+  validates the Jellyfin API key on curator startup using
+  `probe_jellyfin_auth` in `buzz/core/media_server.py`, distinguishing
+  invalid tokens (401/403) from transient unreachability.
+- `_torrent_modified_iso` in `buzz/core/state.py` derives per-file mtimes
+  from the Real-Debrid torrent's `added` field, so DAV exposes stable
+  timestamps and Jellyfin's "File changed, pruning extracted data" path stays
+  quiet for unchanged content.
+- `_merge_tree` in `buzz/core/curator.py` rebuilds the curated symlink farm
+  in place: symlinks whose target is unchanged are left untouched, so
+  Jellyfin sees no inode/ctime churn.
+- `_wait_for_vfs_visibility` in `buzz/core/state.py` polls the rclone mount
+  for newly added roots before triggering a scan, avoiding the "scan empty
+  path" failure mode.
+- `canonical_snapshot` in `buzz/core/state.py` strips volatile fields
+  (`modified`, `generated_at`) before computing changed roots, so only real
+  content deltas reach the media server.
+- `is_internal_category` in `buzz/core/state.py` filters virtual
+  (`__all__`, `__unplayable__`) categories out of refresh triggers.
+
 ## Deployment And CI Architecture
 
 GitLab is the canonical repository:

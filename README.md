@@ -21,6 +21,50 @@ The canonical repository for Buzz is https://gitlab.com/gabriel.chamon/buzz.
 For the full service topology and data flow, see [Runtime
 Topology](./docs/architecture.md#runtime-topology).
 
+## Library Safety
+
+Debrid mounts are flaky: Real-Debrid hosters go offline, rclone VFS listings
+lag behind reality, and a torrent can briefly look empty before it reappears.
+Naively forwarding every "something changed" signal to Jellyfin will cause it
+to mark items as deleted, prune extracted metadata for every file, and rescan
+the entire library. Buzz inserts a few safeguards between Real-Debrid and the
+media server so the library survives those transients:
+
+- **Scan probe** before triggering a Jellyfin scan. Buzz reads a sample of
+  source files through the rclone mount; if the mount is empty or unreadable,
+  the scan is *not* triggered. Prevents Jellyfin from "discovering" that a
+  flaky Real-Debrid mount has zero files and removing items it shouldn't.
+  Tunable under `media_server.scan_probe.*`.
+- **Stable per-file mtimes**. Files exposed via WebDAV use the Real-Debrid
+  torrent's `added` time, not "now-at-snapshot-rebuild". Prevents Jellyfin's
+  `File changed, pruning extracted data` storm on libraries that haven't
+  actually changed.
+- **Symlink-preserving curator merge**. Curator rebuilds keep unchanged
+  symlinks in place by target, so Jellyfin doesn't see ctime/inode churn for
+  unmodified content.
+- **Selective per-library refresh**. Only refreshes the Jellyfin library
+  whose category actually changed (e.g. only `Movies` when a movie was added),
+  falling back to a full scan only when categories can't be mapped via
+  `media_server.library_map`.
+- **VFS visibility wait**. Curator waits for rclone to surface new files at
+  the mount before triggering a scan, so Jellyfin doesn't scan a path that's
+  about to fill in and treat it as empty.
+- **Jellyfin auth probe on startup**. Curator validates
+  `media_server.jellyfin.api_key` against the live server before doing any
+  scan-triggering work, distinguishing an invalid token from a transient
+  unreachable Jellyfin.
+- **Canonical snapshot diff**. Internal change detection strips volatile
+  fields before comparing snapshots, so only genuine content deltas count as
+  "changed roots".
+- **Real-Debrid error caching**. Non-transient hoster errors are cached for a
+  short TTL so retries don't hammer the Real-Debrid API.
+- **Internal categories never trigger scans**. The virtual `__unplayable__`
+  and `__all__` directories are filtered out of scan triggers — only real
+  category changes (`movies`, `shows`, `anime`) reach the media server.
+
+For the underlying flow, see [Media Server
+Refresh](./docs/architecture.md#media-server-refresh).
+
 ## Host Preparation
 
 Before starting the stack, ensure the required host directories exist and have
@@ -192,6 +236,21 @@ Key used to trigger library scans. | | `media_server.jellyfin.scan_task_id` |
 *(Empty)* | Plex Access Token for library update API calls. *(untested)* | |
 `media_server.library_map.{movies,shows,anime}` | `Movies` / `TV Shows` /
 `Anime` | Maps debrid category directories to Jellyfin library names. |
+
+These settings control the Jellyfin scan probe — buzz reads a sample of
+source files through the rclone mount before each scan; if the read fails,
+the scan is skipped to prevent Jellyfin from removing items because of a
+flaky mount. See [Library Safety](#library-safety).
+
+| Key | Default | Description |
+| :--- | :--- | :--- |
+| `media_server.scan_probe.enabled` | `true` | Enable the pre-scan probe (boolean). |
+| `media_server.scan_probe.sample_ratio_percent` | `10` | Percentage of source files to read in each probe attempt (integer). |
+| `media_server.scan_probe.min_files` | `1` | Minimum number of files to sample, regardless of `sample_ratio_percent` (integer). |
+| `media_server.scan_probe.max_attempts` | `3` | How many times the probe re-rolls a fresh sample before giving up (integer). |
+| `media_server.scan_probe.read_bytes` | `524288` | Bytes to read from each sampled file (integer, default 512 KiB). |
+| `media_server.scan_probe.retry_delay_secs` | `10` | Delay between probe attempts (seconds). |
+| `media_server.scan_probe.concurrency` | `4` | Maximum parallel file reads within a single probe attempt (integer). |
 
 These settings control the automatic subtitle fetcher.
 

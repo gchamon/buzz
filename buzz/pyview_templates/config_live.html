@@ -340,6 +340,19 @@
                 value="{{ values.scan_probe_retry_delay_secs }}"
               >
             </div>
+            <div class="config-field {{ field_states.media_server_scan_probe_concurrency.css_class }}">
+              <label for="media_server.scan_probe.concurrency">scan_probe concurrency</label>
+              <span class="config-reload-mode">{{ field_states.media_server_scan_probe_concurrency.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_scan_probe_concurrency.baseline_value }}</span>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                id="media_server.scan_probe.concurrency"
+                name="media_server.scan_probe.concurrency"
+                value="{{ values.scan_probe_concurrency }}"
+              >
+            </div>
             <div class="config-field {{ field_states.media_server_jellyfin_url.css_class }}">
               <label for="media_server.jellyfin.url">jellyfin url</label>
               <span class="config-reload-mode">{{ field_states.media_server_jellyfin_url.reload_mode }}</span>

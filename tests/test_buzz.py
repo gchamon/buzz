@@ -142,6 +142,128 @@ class LibraryBuilderTests(unittest.TestCase):
         )
         self.assertEqual(changed, ["__unplayable__/Broken Torrent"])
 
+    def test_file_modified_uses_torrent_added_and_is_stable_across_rebuilds(self):
+        # Regression: previously every rebuild stamped each file with
+        # utc_now_iso(), making rclone surface a fresh mtime to Jellyfin and
+        # causing the "File changed, pruning extracted data" storm.
+        infos = [
+            {
+                "id": "ABC123",
+                "status": "downloaded",
+                "filename": "Movie.mkv",
+                "added": "2024-01-15T12:34:56.000Z",
+                "links": ["https://example.invalid/file"],
+                "files": [
+                    {"id": 1, "path": "/Movie.mkv", "bytes": 123, "selected": 1}
+                ],
+            },
+            {
+                "id": "BROKEN1",
+                "status": "error",
+                "filename": "Broken Torrent",
+                "added": "2024-02-20T08:00:00.000Z",
+                "links": [],
+                "files": [
+                    {"id": 1, "path": "/Broken.Movie.mkv", "bytes": 42, "selected": 1}
+                ],
+            },
+        ]
+
+        first, _ = self.builder.build(infos)
+        second, _ = self.builder.build(infos)
+
+        movie_path = "movies/Movie.mkv/Movie.mkv"
+        # Canonicalized: fractional seconds dropped, trailing Z preserved.
+        self.assertEqual(
+            first["files"][movie_path]["modified"], "2024-01-15T12:34:56Z"
+        )
+        self.assertEqual(
+            first["files"][movie_path]["modified"],
+            second["files"][movie_path]["modified"],
+        )
+
+        unplayable_path = "__unplayable__/Broken Torrent/Broken.Movie.mkv"
+        self.assertEqual(
+            first["files"][unplayable_path]["modified"], "2024-02-20T08:00:00Z"
+        )
+        self.assertEqual(
+            first["files"][unplayable_path]["modified"],
+            second["files"][unplayable_path]["modified"],
+        )
+
+    def test_file_modified_canonicalizes_various_added_formats(self):
+        cases = [
+            ("2024-03-04T05:06:07.000Z", "2024-03-04T05:06:07Z"),
+            ("2024-03-04T05:06:07Z", "2024-03-04T05:06:07Z"),
+            ("2024-03-04T05:06:07+00:00", "2024-03-04T05:06:07Z"),
+            ("2024-03-04T07:06:07+02:00", "2024-03-04T05:06:07Z"),
+            ("2024-03-04T05:06:07", "2024-03-04T05:06:07Z"),
+        ]
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                snapshot, _ = self.builder.build(
+                    [
+                        {
+                            "id": "ABC",
+                            "status": "downloaded",
+                            "filename": "Movie.mkv",
+                            "added": raw,
+                            "links": ["https://example.invalid/file"],
+                            "files": [
+                                {
+                                    "id": 1,
+                                    "path": "/Movie.mkv",
+                                    "bytes": 1,
+                                    "selected": 1,
+                                }
+                            ],
+                        }
+                    ]
+                )
+                self.assertEqual(
+                    snapshot["files"]["movies/Movie.mkv/Movie.mkv"]["modified"],
+                    expected,
+                )
+
+    def test_file_modified_falls_back_to_stable_epoch_for_unparseable_added(self):
+        snapshot, _ = self.builder.build(
+            [
+                {
+                    "id": "ABC",
+                    "status": "downloaded",
+                    "filename": "Movie.mkv",
+                    "added": "not-a-date",
+                    "links": ["https://example.invalid/file"],
+                    "files": [
+                        {"id": 1, "path": "/Movie.mkv", "bytes": 1, "selected": 1}
+                    ],
+                }
+            ]
+        )
+        self.assertEqual(
+            snapshot["files"]["movies/Movie.mkv/Movie.mkv"]["modified"],
+            "1970-01-01T00:00:00Z",
+        )
+
+    def test_file_modified_falls_back_to_stable_epoch_when_added_missing(self):
+        snapshot, _ = self.builder.build(
+            [
+                {
+                    "id": "ABC123",
+                    "status": "downloaded",
+                    "filename": "Movie.mkv",
+                    "links": ["https://example.invalid/file"],
+                    "files": [
+                        {"id": 1, "path": "/Movie.mkv", "bytes": 123, "selected": 1}
+                    ],
+                }
+            ]
+        )
+        self.assertEqual(
+            snapshot["files"]["movies/Movie.mkv/Movie.mkv"]["modified"],
+            "1970-01-01T00:00:00Z",
+        )
+
     def test_remote_entries_store_source_url(self):
         snapshot, _ = self.builder.build(
             [
@@ -1571,7 +1693,7 @@ class DavAppTests(unittest.TestCase):
         meta_items = CacheLiveView(self.dav_app)._meta_items()
 
         self.assertIn(
-            {"label": "state", "value": "waiting_vfs (2 roots)"},
+            {"label": "state", "value": "waiting_vfs"},
             meta_items,
         )
         self.assertNotIn("hook", {item["label"] for item in meta_items})
@@ -1586,7 +1708,7 @@ class DavAppTests(unittest.TestCase):
 
         self.assertEqual(state_item["value"], "syncing")
         self.assertIn(
-            "waiting_vfs (2 roots)",
+            "waiting_vfs",
             state_item.get("cycle_values_json", ""),
         )
 
@@ -3397,6 +3519,7 @@ class ConfigUITests(unittest.TestCase):
                     "max_attempts": 4,
                     "read_bytes": 1024,
                     "retry_delay_secs": 1.5,
+                    "concurrency": 4,
                 },
             )
             self.assertEqual(
@@ -3463,6 +3586,9 @@ class ConfigUITests(unittest.TestCase):
         self.assertIn('name="media_server.scan_probe.read_bytes"', template)
         self.assertIn(
             'name="media_server.scan_probe.retry_delay_secs"', template
+        )
+        self.assertIn(
+            'name="media_server.scan_probe.concurrency"', template
         )
         self.assertIn('name="media_server.jellyfin.url"', template)
         self.assertIn('name="media_server.jellyfin.api_key"', template)

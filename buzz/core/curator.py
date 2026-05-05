@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from pathlib import Path
 
 import yaml
@@ -368,17 +369,34 @@ def validate_scan_probe(
         pool_size=len(pool),
     )
 
-    last_error: Exception | None = None
+    workers = max(1, min(probe.concurrency, sample_size))
+
+    last_error: BaseException | None = None
     for attempt in range(probe.max_attempts):
         sample = random.sample(pool, sample_size)
-        try:
-            for source in sample:
-                _read_probe_file(config.source_root / source, probe.read_bytes)
-        except Exception as exc:
-            last_error = exc
+        attempt_error: BaseException | None = None
+        with ThreadPoolExecutor(max_workers=workers) as pool_exec:
+            futures = [
+                pool_exec.submit(
+                    _read_probe_file,
+                    config.source_root / source,
+                    probe.read_bytes,
+                )
+                for source in sample
+            ]
+            done, not_done = wait(futures, return_when=FIRST_EXCEPTION)
+            for future in not_done:
+                future.cancel()
+            for future in done:
+                exc = future.exception()
+                if exc is not None:
+                    attempt_error = exc
+                    break
+        if attempt_error is not None:
+            last_error = attempt_error
             if attempt < probe.max_attempts - 1:
                 record_event(
-                    f"retrying Jellyfin scan probe after failure: {exc}",
+                    f"retrying Jellyfin scan probe after failure: {attempt_error}",
                     level="warning",
                     event="jellyfin_scan_probe_retry",
                     attempt=attempt + 1,

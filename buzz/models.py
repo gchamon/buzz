@@ -46,6 +46,7 @@ UI_MANAGED_CONFIG_FIELDS = (
     "media_server.scan_probe.max_attempts",
     "media_server.scan_probe.read_bytes",
     "media_server.scan_probe.retry_delay_secs",
+    "media_server.scan_probe.concurrency",
     "media_server.jellyfin.url",
     "media_server.jellyfin.api_key",
     "media_server.jellyfin.scan_task_id",
@@ -320,6 +321,7 @@ _OVERRIDE_SCHEMA = {
             "max_attempts": True,
             "read_bytes": True,
             "retry_delay_secs": True,
+            "concurrency": True,
         },
     },
     "subtitles": {
@@ -466,6 +468,7 @@ def to_nested_dict(config: DavConfig) -> dict:
                 "max_attempts": config.scan_probe.max_attempts,
                 "read_bytes": config.scan_probe.read_bytes,
                 "retry_delay_secs": config.scan_probe.retry_delay_secs,
+                "concurrency": config.scan_probe.concurrency,
             },
         },
         "subtitles": {
@@ -568,6 +571,7 @@ class ScanProbeConfig(BaseModel):
     max_attempts: int = 3
     read_bytes: int = 524288
     retry_delay_secs: float = 10.0
+    concurrency: int = 4
 
     @classmethod
     def from_raw(cls, raw: object) -> "ScanProbeConfig":
@@ -585,6 +589,7 @@ class ScanProbeConfig(BaseModel):
             retry_delay_secs=max(
                 0.0, float(raw.get("retry_delay_secs", 10.0))
             ),
+            concurrency=max(1, int(raw.get("concurrency", 4))),
         )
 
 

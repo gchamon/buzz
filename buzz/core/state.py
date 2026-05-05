@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any
+from datetime import UTC, datetime
 from urllib import parse, request
 
 from ..models import DavConfig
@@ -35,6 +36,39 @@ type SyncReport = dict[str, Any]
 type StatusReport = dict[str, Any]
 type ChangeClassification = dict[str, list[str]]
 type OperationResult = dict[str, Any]
+
+
+# Stable epoch used for synthetic nodes (version.txt etc.) whose mtime must
+# not churn. Real-Debrid does not expose per-file mtimes, so file nodes use
+# the parent torrent's `added` timestamp instead — see _torrent_modified_iso.
+STABLE_EPOCH_ISO = "1970-01-01T00:00:00Z"
+
+
+def _torrent_modified_iso(info: TorrentInfo) -> str:
+    """Return a stable ISO-8601 mtime derived from the torrent's `added` field.
+
+    Real-Debrid returns `added` as an ISO-8601 timestamp that does not change
+    once the torrent is in the user's account. Using it as the per-file mtime
+    means Jellyfin's "File changed" detection only fires when content really
+    changes, instead of on every DAV snapshot rebuild.
+
+    The value is parsed through `datetime.fromisoformat` and re-emitted in a
+    canonical `YYYY-MM-DDTHH:MM:SSZ` form, so any minor format drift from RD
+    (offset suffix, fractional seconds, naive form) lands on the same string.
+    Falls back to `STABLE_EPOCH_ISO` if the field is missing or unparseable.
+    """
+    raw = info.get("added")
+    if not isinstance(raw, str) or not raw.strip():
+        return STABLE_EPOCH_ISO
+    try:
+        parsed = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return STABLE_EPOCH_ISO
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    else:
+        parsed = parsed.astimezone(UTC)
+    return parsed.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 # RD application errors that don't recover within seconds: caching the
@@ -138,7 +172,7 @@ class LibraryBuilder:
                 "content": self.config.version_label + "\n",
                 "size": len(self.config.version_label) + 1,
                 "mime_type": "text/plain; charset=utf-8",
-                "modified": utc_now_iso(),
+                "modified": STABLE_EPOCH_ISO,
                 "etag": self._etag("version.txt", self.config.version_label),
             }
         }
@@ -160,13 +194,27 @@ class LibraryBuilder:
                 for item in playable
                 if item.get("url") and info.get("status") == "downloaded"
             ]
+            modified = _torrent_modified_iso(info)
             if linked_playable:
                 self._add_playable_tree(
-                    files, dirs, torrent_name, linked_playable, report, current_roots
+                    files,
+                    dirs,
+                    torrent_name,
+                    linked_playable,
+                    report,
+                    current_roots,
+                    modified,
                 )
             elif self.config.enable_unplayable_dir:
                 self._add_unplayable_entry(
-                    files, dirs, torrent_name, selected, info, report, current_roots
+                    files,
+                    dirs,
+                    torrent_name,
+                    selected,
+                    info,
+                    report,
+                    current_roots,
+                    modified,
                 )
 
         snapshot = {
@@ -185,11 +233,14 @@ class LibraryBuilder:
         linked_playable: list[dict],
         report: dict,
         current_roots: set[str],
+        modified: str,
     ) -> None:
         category = self._category_for(linked_playable)
-        self._add_tree(files, dirs, category, torrent_name, linked_playable)
+        self._add_tree(files, dirs, category, torrent_name, linked_playable, modified)
         if self.config.enable_all_dir:
-            self._add_tree(files, dirs, "__all__", torrent_name, linked_playable)
+            self._add_tree(
+                files, dirs, "__all__", torrent_name, linked_playable, modified
+            )
         current_roots.add(f"{category}/{torrent_name}")
         if category == "movies":
             report["movies"] += len(linked_playable)
@@ -207,10 +258,11 @@ class LibraryBuilder:
         info: TorrentInfo,
         report: dict,
         current_roots: set[str],
+        modified: str,
     ) -> None:
         reason = self._unplayable_reason(info, selected)
         count = self._add_unplayable_tree(
-            files, dirs, torrent_name, selected, reason
+            files, dirs, torrent_name, selected, reason, modified
         )
         if count:
             current_roots.add(f"__unplayable__/{torrent_name}")
@@ -258,6 +310,7 @@ class LibraryBuilder:
         prefix: str,
         torrent_name: str,
         entries: list[TorrentInfo],
+        modified: str,
     ) -> None:
         root = f"{prefix}/{torrent_name}"
         self._ensure_dirs(dirs, root)
@@ -272,7 +325,7 @@ class LibraryBuilder:
                 "size": int(entry["bytes"]),
                 "source_url": entry["url"],
                 "mime_type": mimetypes.guess_type(rel)[0] or "application/octet-stream",
-                "modified": utc_now_iso(),
+                "modified": modified,
                 "etag": self._etag(path, entry["url"], entry["bytes"]),
             }
 
@@ -283,6 +336,7 @@ class LibraryBuilder:
         torrent_name: str,
         entries: list[TorrentInfo],
         reason: str,
+        modified: str,
     ) -> int:
         root = f"__unplayable__/{torrent_name}"
         self._ensure_dirs(dirs, root)
@@ -303,7 +357,7 @@ class LibraryBuilder:
             "content": summary_content,
             "size": len(summary_content.encode("utf-8")),
             "mime_type": "application/json; charset=utf-8",
-            "modified": utc_now_iso(),
+            "modified": modified,
             "etag": self._etag(root, reason, summary_content),
         }
         count = 1
@@ -318,7 +372,7 @@ class LibraryBuilder:
                 "content": "",
                 "size": 0,
                 "mime_type": "application/octet-stream",
-                "modified": utc_now_iso(),
+                "modified": modified,
                 "etag": self._etag(path, reason, entry["bytes"]),
             }
             count += 1

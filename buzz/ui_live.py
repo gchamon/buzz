@@ -73,6 +73,7 @@ _CONFIG_NUMBER_FIELDS = (
     "media_server.scan_probe.max_attempts",
     "media_server.scan_probe.read_bytes",
     "media_server.scan_probe.retry_delay_secs",
+    "media_server.scan_probe.concurrency",
     "request_timeout_secs",
     "subtitles.search_delay_secs",
     "subtitles.download_delay_secs",
@@ -106,6 +107,7 @@ _CONFIG_TRACKED_FIELDS = (
     "media_server.scan_probe.max_attempts",
     "media_server.scan_probe.read_bytes",
     "media_server.scan_probe.retry_delay_secs",
+    "media_server.scan_probe.concurrency",
     "media_server.jellyfin.url",
     "media_server.jellyfin.api_key",
     "media_server.jellyfin.scan_task_id",
@@ -251,6 +253,7 @@ class ConfigValues(TypedDict):
     jellyfin_url: str
     library_map: dict[str, str]
     media_server_kind: str
+    scan_probe_concurrency: int
     scan_probe_enabled: bool
     scan_probe_max_attempts: int
     scan_probe_min_files: int
@@ -456,22 +459,9 @@ class _BaseBuzzLiveView(LiveView[_TContext]):
 
     def _hook_status_label(self, status: dict[str, Any]) -> str:
         phase = str(status.get("hook_phase") or "idle")
-        active_count = len(status.get("hook_active_paths") or [])
         pending_count = int(status.get("hook_pending_count") or 0)
         if phase in {"idle", "complete"} and pending_count == 0:
             return "idle"
-        if phase == "queued":
-            return f"queued ({pending_count} roots)"
-        if phase == "waiting_vfs":
-            return f"waiting_vfs ({active_count} roots)"
-        if phase == "waiting_delay":
-            return f"waiting_delay ({active_count} roots)"
-        if phase == "triggering_curator":
-            return f"curator ({active_count} roots)"
-        if phase == "running_hook":
-            return f"command ({active_count} roots)"
-        if phase == "failed":
-            return "failed"
         return phase
 
     def _base_context(
@@ -520,7 +510,9 @@ class _BaseBuzzLiveView(LiveView[_TContext]):
             await socket.subscribe(TOPIC_STATUS)
 
     @info(TOPIC_STATUS)
-    async def handle_status(self, _event: InfoEvent, _socket: LiveViewSocket[PageContext]) -> None:
+    async def handle_status(
+        self, _event: InfoEvent, _socket: LiveViewSocket[PageContext]
+    ) -> None:
         """Re-render nav when curator sends a status update."""
         pass
 
@@ -618,10 +610,14 @@ class CacheLiveView(_BaseBuzzLiveView):
     ) -> None:
         try:
             result = self.owner.state.delete_torrent(hash)
-            warning = result.get("warning") if isinstance(result, dict) else None
+            warning = (
+                result.get("warning") if isinstance(result, dict) else None
+            )
             socket.context = self._context(
                 console_msg=str(warning or "item moved to archive"),
-                console_class=CSS_STATUS_YELLOW if warning else CSS_STATUS_GREEN,
+                console_class=CSS_STATUS_YELLOW
+                if warning
+                else CSS_STATUS_GREEN,
                 confirm_delete_id=None,
                 analysis_results=socket.context["analysis_results"],
                 analysis_error=socket.context["analysis_error"],
@@ -639,10 +635,14 @@ class CacheLiveView(_BaseBuzzLiveView):
     ) -> None:
         result = self.owner.fetch_subtitles(torrent_name)
         if result.get("error"):
-            socket.context["console_msg"] = f"subs fetch failed: {result['error']}"
+            socket.context["console_msg"] = (
+                f"subs fetch failed: {result['error']}"
+            )
             socket.context["console_class"] = CSS_STATUS_RED
         else:
-            socket.context["console_msg"] = f"subs fetch triggered for: {torrent_name}"
+            socket.context["console_msg"] = (
+                f"subs fetch triggered for: {torrent_name}"
+            )
             socket.context["console_class"] = CSS_STATUS_GREEN
 
     def _handle_resync(
@@ -697,7 +697,9 @@ class CacheLiveView(_BaseBuzzLiveView):
                 results.append(
                     {
                         "torrent_id": str(info["id"]),
-                        "filename": str(info.get("filename") or "Torrent Files"),
+                        "filename": str(
+                            info.get("filename") or "Torrent Files"
+                        ),
                         "files": files,
                     }
                 )
@@ -727,7 +729,9 @@ class CacheLiveView(_BaseBuzzLiveView):
             for result in socket.context["analysis_results"]:
                 selected = [f["id"] for f in result["files"] if f["selected"]]
                 if selected:
-                    self.owner.state.select_files(result["torrent_id"], selected)
+                    self.owner.state.select_files(
+                        result["torrent_id"], selected
+                    )
             self.owner.state.sync()
             socket.context = self._context(
                 console_msg="Items added and synced.",
@@ -907,7 +911,9 @@ class ArchiveLiveView(_BaseBuzzLiveView):
             except ValueError:
                 return
             if socket.context["sort_col"] == new_col:
-                sort_dir = "desc" if socket.context["sort_dir"] == "asc" else "asc"
+                sort_dir = (
+                    "desc" if socket.context["sort_dir"] == "asc" else "asc"
+                )
                 sort_col = new_col
             else:
                 sort_col = new_col
@@ -1105,7 +1111,9 @@ class ConfigLiveView(_BaseBuzzLiveView):
             socket.context = self._context(
                 is_editing=True,
                 draft_payload=form_payload,
-                language_query=form_payload.get("language_query", language_query),
+                language_query=form_payload.get(
+                    "language_query", language_query
+                ),
                 console_msg=socket.context["console_msg"],
                 console_class=socket.context["console_class"],
             )
@@ -1153,9 +1161,8 @@ class ConfigLiveView(_BaseBuzzLiveView):
         console_msg = "saved."
         console_class = CSS_STATUS_GREEN
         if result["restart_required"]:
-            console_msg = (
-                "saved. restart required for "
-                + ", ".join(result["restart_required_fields"])
+            console_msg = "saved. restart required for " + ", ".join(
+                result["restart_required_fields"]
             )
             console_class = CSS_STATUS_YELLOW
         socket.context = self._context(
@@ -1204,7 +1211,9 @@ class ConfigLiveView(_BaseBuzzLiveView):
         console_class: str = "",
     ) -> ConfigContext:
         base = self._base_context(console_msg, console_class)
-        effective_config = getattr(self.owner, "saved_config", self.owner.config)
+        effective_config = getattr(
+            self.owner, "saved_config", self.owner.config
+        )
         effective = to_nested_dict(effective_config)
         masked = mask_secrets(effective)
         config_path = Path(effective_config._config_path)
@@ -1233,7 +1242,9 @@ class ConfigLiveView(_BaseBuzzLiveView):
             effective,
             baseline_values,
             current_overrides,
-            _config_overrides_from_payload(draft_payload) if is_editing and draft_payload else {},
+            _config_overrides_from_payload(draft_payload)
+            if is_editing and draft_payload
+            else {},
         )
         languages = _language_rows(
             self.owner.opensubtitles_languages,
@@ -1317,7 +1328,9 @@ class BuzzLiveView(_BaseBuzzLiveView):
         base["nav"] = self._nav_for_page(page)
         return base
 
-    def _page_context(self, page: PageName, context: ShellContext) -> PageContext:
+    def _page_context(
+        self, page: PageName, context: ShellContext
+    ) -> PageContext:
         if page == "archive":
             return context["archive"]
         if page == "logs":
@@ -1353,8 +1366,12 @@ class BuzzLiveView(_BaseBuzzLiveView):
         active_context = self._page_context(active_page, context)
         base = self._base_context_for_page(
             active_page,
-            active_context["console_msg"] if console_msg is None else console_msg,
-            active_context["console_class"] if console_class is None else console_class,
+            active_context["console_msg"]
+            if console_msg is None
+            else console_msg,
+            active_context["console_class"]
+            if console_class is None
+            else console_class,
         )
         context["console_class"] = base["console_class"]
         context["console_msg"] = base["console_msg"]
@@ -1369,19 +1386,25 @@ class BuzzLiveView(_BaseBuzzLiveView):
         context["active_page"] = active_page
         context["page_content"] = self._render_page_body(active_page, context)
 
-    def _render_page_body(self, page: PageName, context: ShellContext) -> Markup:
+    def _render_page_body(
+        self, page: PageName, context: ShellContext
+    ) -> Markup:
         if page == "archive":
             rendered = _load_template("archive_live.html").render(
                 context["archive"], None
             )
         elif page == "logs":
-            rendered = _load_template("logs_live.html").render(context["logs"], None)
+            rendered = _load_template("logs_live.html").render(
+                context["logs"], None
+            )
         elif page == "config":
             rendered = _load_template("config_live.html").render(
                 context["config"], None
             )
         else:
-            rendered = _load_template("cache_live.html").render(context["cache"], None)
+            rendered = _load_template("cache_live.html").render(
+                context["cache"], None
+            )
         return _extract_page_body(rendered)
 
     def _context(self, active_page: PageName = "cache") -> ShellContext:
@@ -1518,7 +1541,12 @@ class BuzzLiveView(_BaseBuzzLiveView):
         event: InfoEvent,
         socket: ConnectedLiveViewSocket[ShellContext],
     ) -> None:
-        if event.name not in {TOPIC_ARCHIVE, TOPIC_CONFIG, TOPIC_LOGS, TOPIC_STATUS}:
+        if event.name not in {
+            TOPIC_ARCHIVE,
+            TOPIC_CONFIG,
+            TOPIC_LOGS,
+            TOPIC_STATUS,
+        }:
             return
         context = socket.context
         context["cache"] = self.cache_view._context(
@@ -1582,11 +1610,13 @@ def _language_rows(
     for code, name in ordered:
         normalized_name = name.lower()
         normalized_code = code.lower()
-        if term and term not in normalized_name and term not in normalized_code:
+        if (
+            term
+            and term not in normalized_name
+            and term not in normalized_code
+        ):
             continue
-        rows.append(
-            {"checked": code in selected, "code": code, "name": name}
-        )
+        rows.append({"checked": code in selected, "code": code, "name": name})
     return rows
 
 
@@ -1630,21 +1660,22 @@ def _config_values(
         },
         "media_server_kind": effective["media_server"]["kind"],
         "on_library_change": effective["hooks"]["on_library_change"],
-        "provider_poll_interval_secs": effective["provider"]["poll_interval_secs"],
+        "provider_poll_interval_secs": effective["provider"][
+            "poll_interval_secs"
+        ],
         "ui_poll_interval_secs": effective["ui"]["poll_interval_secs"],
         "port": effective["server"]["port"],
         "plex_token": effective["media_server"]["plex"]["token"],
         "plex_url": effective["media_server"]["plex"]["url"],
         "request_timeout_secs": effective["request_timeout_secs"],
         "rd_update_delay_secs": effective["hooks"]["rd_update_delay_secs"],
+        "scan_probe_concurrency": scan_probe["concurrency"],
         "scan_probe_enabled": scan_probe["enabled"],
         "scan_probe_max_attempts": scan_probe["max_attempts"],
         "scan_probe_min_files": scan_probe["min_files"],
         "scan_probe_read_bytes": scan_probe["read_bytes"],
         "scan_probe_retry_delay_secs": scan_probe["retry_delay_secs"],
-        "scan_probe_sample_ratio_percent": scan_probe[
-            "sample_ratio_percent"
-        ],
+        "scan_probe_sample_ratio_percent": scan_probe["sample_ratio_percent"],
         "search_delay_secs": subtitles["search_delay_secs"],
         "selected_languages": subtitles["languages"],
         "strategy": subtitles["strategy"],
@@ -1664,9 +1695,7 @@ def _parse_number_value(raw_value: Any) -> int | float:
 
 def _extract_pattern_lines(patterns: list[Any]) -> list[str]:
     return [
-        line.strip()
-        for line in str(patterns[0]).splitlines()
-        if line.strip()
+        line.strip() for line in str(patterns[0]).splitlines() if line.strip()
     ]
 
 
@@ -1713,7 +1742,9 @@ def _config_overrides_from_payload(
             _set_nested_value(overrides, field, str(normalized[field][0]))
 
     patterns = normalized.get(FIELD_ANIME_PATTERNS, [""])
-    _set_nested_value(overrides, FIELD_ANIME_PATTERNS, _extract_pattern_lines(patterns))
+    _set_nested_value(
+        overrides, FIELD_ANIME_PATTERNS, _extract_pattern_lines(patterns)
+    )
 
     languages = _extract_language_values(
         normalized.get(FIELD_SUBTITLES_LANGUAGES, [])
@@ -1747,7 +1778,11 @@ def _field_states(
         effective_override_field_paths(baseline, current_overrides)
     )
     dirty_paths = set(
-        diff_fields(effective, deep_merge(effective, draft_overrides), _CONFIG_TRACKED_FIELDS)
+        diff_fields(
+            effective,
+            deep_merge(effective, draft_overrides),
+            _CONFIG_TRACKED_FIELDS,
+        )
     )
     states: dict[str, ConfigFieldState] = {}
     for path in _CONFIG_TRACKED_FIELDS:
@@ -1775,7 +1810,9 @@ def _field_states(
             "is_dirty": is_dirty,
             "is_overridden": is_overridden,
             "reload_mode": reload_mode,
-            "baseline_value": _render_default_comment_value(get_nested_value(baseline, path)),
+            "baseline_value": _render_default_comment_value(
+                get_nested_value(baseline, path)
+            ),
         }
     return states
 
@@ -1784,7 +1821,9 @@ def _field_alias(path: str) -> str:
     return path.replace(".", "_")
 
 
-def _config_baseline_values(config: Any, baseline: dict[str, Any]) -> dict[str, Any]:
+def _config_baseline_values(
+    config: Any, baseline: dict[str, Any]
+) -> dict[str, Any]:
     try:
         baseline_config = config.__class__._from_merged_dict(baseline)
     except Exception:
@@ -1820,7 +1859,9 @@ def _yaml_dict_lines(
         if child_path in override_paths:
             default_value = get_nested_value(baseline, child_path)
             default_text = _render_default_comment_value(default_value)
-            lines.append(f"{prefix}# Overriden via UI. Default: {default_text}")
+            lines.append(
+                f"{prefix}# Overriden via UI. Default: {default_text}"
+            )
         if isinstance(child, dict):
             lines.append(f"{prefix}{key}:")
             lines.extend(
