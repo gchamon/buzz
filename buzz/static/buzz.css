@@ -504,7 +504,11 @@ code {
 
   .mobile-ready-indicator {
     display: inline-block;
+    width: 0.72rem;
+    height: 0.72rem;
     margin-left: 0.45rem;
+    border-radius: 50%;
+    background: currentColor;
   }
 
   .menu-options {
