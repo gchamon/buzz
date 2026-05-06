@@ -9,7 +9,8 @@ RUN apk add --no-cache \
   bash \
   ca-certificates \
   curl \
-  libxml2-utils && \
+  libxml2-utils \
+  tzdata && \
   python -m pip install --no-cache-dir uv
 
 # Install dependencies first to improve Docker layer caching

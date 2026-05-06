@@ -1,3 +1,5 @@
+import os
+import time
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -98,6 +100,35 @@ class EventRegistryTests(unittest.TestCase):
             "[WARNING] background sync failed: eof (3)",
             formatted[0]["copy_text"],
         )
+
+    def test_formatted_logs_use_process_timezone(self):
+        class FakeApp:
+            def get_logs(self, limit: int = 100):
+                return [
+                    {
+                        "timestamp": "2026-04-30T10:40:09Z",
+                        "level": "info",
+                        "message": "startup sync complete",
+                        "source": "dav",
+                    }
+                ]
+
+        previous_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "America/Sao_Paulo"
+        if hasattr(time, "tzset"):
+            time.tzset()
+        try:
+            formatted = DavApp.formatted_logs(cast(Any, FakeApp()), limit=100)
+        finally:
+            if previous_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = previous_tz
+            if hasattr(time, "tzset"):
+                time.tzset()
+
+        self.assertEqual(formatted[0]["timestamp"], "07:40:09")
+        self.assertIn("buzz-dav 07:40:09 [INFO]", formatted[0]["copy_text"])
 
     def test_clear_removes_existing_events(self):
         registry = EventRegistry(maxlen=10)

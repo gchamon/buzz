@@ -934,13 +934,25 @@ class DavApp:
         registry.clear()
         self._curator_log_level = "info"
 
+    @staticmethod
+    def _display_log_timestamp(timestamp: str) -> str:
+        """Return a log timestamp formatted in the process local timezone."""
+        if "T" not in timestamp or len(timestamp) < 19:
+            return timestamp
+        try:
+            parsed = datetime.fromisoformat(
+                timestamp.replace("Z", "+00:00")
+            )
+        except ValueError:
+            return timestamp[11:19]
+        return parsed.astimezone().strftime("%H:%M:%S")
+
     def formatted_logs(self, limit: int = 100) -> list[dict[str, str]]:
         formatted = []
         for log in reversed(self.get_logs(limit)):
-            timestamp = log.get("timestamp", "")
-            display_timestamp = timestamp
-            if "T" in timestamp and len(timestamp) >= 19:
-                display_timestamp = timestamp[11:19]
+            display_timestamp = DavApp._display_log_timestamp(
+                str(log.get("timestamp", ""))
+            )
             level = str(log.get("level", "info")).lower()
             level_label = f"[{level.upper()}]"
             source = "buzz-curator" if log.get("source") == "curator" else "buzz-dav"
