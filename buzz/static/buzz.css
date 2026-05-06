@@ -143,6 +143,15 @@ main {
   display: block;
 }
 
+.prompt-brand {
+  display: flex;
+  align-items: center;
+}
+
+.mobile-ready-indicator {
+  display: none;
+}
+
 .meta-bar {
   display: flex;
   flex-direction: column;
@@ -489,8 +498,13 @@ code {
     align-items: center;
   }
 
-  .prompt b {
+  .prompt-brand {
     margin-bottom: 5px;
+  }
+
+  .mobile-ready-indicator {
+    display: inline-block;
+    margin-left: 0.45rem;
   }
 
   .menu-options {
@@ -521,6 +535,10 @@ code {
 
   .meta-bar-logs > .meta-row:first-child {
     display: flex;
+  }
+
+  .meta-bar > .meta-row:first-child .meta-status-item {
+    display: none;
   }
 
   .nav-sep {

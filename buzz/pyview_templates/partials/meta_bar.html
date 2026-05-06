@@ -11,8 +11,8 @@
       {% endif %}
     </div>
     {% endfor %}
-    <div class="meta-item">
-      <b id="status-ready-label" class="{{ status_class }}">{{ status_label }}</b>
+    <div class="meta-item meta-status-item">
+      <b id="status-ready-label" class="{{ status_class }}" title="{{ status_label }}" aria-label="{{ status_label }}">{{ status_label }}</b>
     </div>
   </div>
   <div class="meta-row meta-console">
