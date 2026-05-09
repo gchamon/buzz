@@ -20,15 +20,9 @@ async function buzzCopyToClipboard(text, successMsg = "copied to clipboard!") {
     } else {
       fallbackCopy(text);
     }
-    if (consoleMsg) {
-      consoleMsg.innerText = successMsg;
-      consoleMsg.className = "service-status-green";
-    }
+    setBuzzConsole(successMsg, "service-status-green");
   } catch (_error) {
-    if (consoleMsg) {
-      consoleMsg.innerText = "failed to copy.";
-      consoleMsg.className = "service-status-red";
-    }
+    setBuzzConsole("failed to copy.", "service-status-red");
   }
 }
 

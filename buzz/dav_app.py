@@ -12,6 +12,7 @@ from typing import Any, Protocol, cast
 
 from fastapi import FastAPI, Request, Response
 from starlette.types import ASGIApp
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (
     HTMLResponse,
@@ -325,6 +326,8 @@ class DavApp:
             StaticFiles(packages=[("pyview", "static")]),
             name="pyview",
         )
+
+        self.app.add_middleware(GZipMiddleware, minimum_size=1024)
 
         self._setup_routes()
         websocket_route = next(

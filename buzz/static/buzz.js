@@ -15,21 +15,38 @@ function setBuzzStatus(label, className) {
   });
 }
 
-function setBuzzConsole(message, className) {
+function setBuzzConsole(message, className, fadeTimeout = 5000) {
   const element = document.getElementById("meta-console-msg");
   if (!element) return;
+  if (element._fadeTimer) {
+    clearTimeout(element._fadeTimer);
+    element._fadeTimer = null;
+  }
   element.textContent = message;
   element.className = className;
+  if (fadeTimeout > 0) {
+    element._fadeTimer = setTimeout(() => {
+      element.textContent = "";
+      element.className = "";
+      element._fadeTimer = null;
+    }, fadeTimeout);
+  }
 }
 
 function createBuzzSocketStatusMonitor() {
   const probeIntervalMs = 1000;
   const probeTimeoutMs = 1500;
+  const wakeCooldownMs = 750;
+  const reconnectCooldownMs = 5000;
   let socket = null;
   let callbackRefs = [];
+  let wakeListeners = [];
   let retryTimer = null;
   let probeTimer = null;
+  let wakeCooldownTimer = null;
   let probeInFlight = false;
+  let reconnectInFlight = false;
+  let lastReconnectAt = 0;
   let stopped = false;
 
   function clearTimer(timer) {
@@ -52,7 +69,7 @@ function createBuzzSocketStatusMonitor() {
 
   function showReachableStatus(payload) {
     const isReady = payload.ui_status === "ready" || payload.status === "ready";
-    if (isReady) {
+    if (isReady && isSocketConnected()) {
       setBuzzStatus("[ready]", "service-status-green");
     } else {
       setBuzzStatus("[starting]", "service-status-orange");
@@ -67,7 +84,19 @@ function createBuzzSocketStatusMonitor() {
     if (isSocketConnected()) {
       return;
     }
+    if (reconnectInFlight) {
+      return;
+    }
+    const now = Date.now();
+    if (now - lastReconnectAt < reconnectCooldownMs) {
+      return;
+    }
+    reconnectInFlight = true;
+    lastReconnectAt = now;
     liveSocket.connect();
+    setTimeout(() => {
+      reconnectInFlight = false;
+    }, reconnectCooldownMs);
   }
 
   function scheduleProbe(delay = probeIntervalMs) {
@@ -78,8 +107,8 @@ function createBuzzSocketStatusMonitor() {
     probeTimer = window.setTimeout(runProbe, delay);
   }
 
-  async function runProbe() {
-    if (stopped || probeInFlight || isSocketConnected()) {
+  async function runProbe(immediate = false) {
+    if (stopped || probeInFlight || (!immediate && isSocketConnected())) {
       return;
     }
 
@@ -94,11 +123,15 @@ function createBuzzSocketStatusMonitor() {
       });
       const payload = await response.json();
       showReachableStatus(payload);
-      reconnectLiveSocket();
-      scheduleProbe();
+
+      if (!isSocketConnected()) {
+        scheduleProbe();
+      }
     } catch (_error) {
-      setBuzzStatus("[offline]", "service-status-red");
-      scheduleProbe();
+      if (!isSocketConnected()) {
+        setBuzzStatus("[offline]", "service-status-red");
+        scheduleProbe();
+      }
     } finally {
       window.clearTimeout(timeout);
       probeInFlight = false;
@@ -116,6 +149,17 @@ function createBuzzSocketStatusMonitor() {
     probeTimer = clearTimer(probeTimer);
   }
 
+  function handleWakeEvent() {
+    wakeCooldownTimer = clearTimer(wakeCooldownTimer);
+    if (stopped || isSocketConnected()) {
+      return;
+    }
+    wakeCooldownTimer = window.setTimeout(() => {
+      wakeCooldownTimer = null;
+      runProbe(true);
+    }, wakeCooldownMs);
+  }
+
   function bindSocketCallbacks() {
     const liveSocket = window.liveSocket;
     socket = liveSocket && typeof liveSocket.getSocket === "function"
@@ -127,6 +171,8 @@ function createBuzzSocketStatusMonitor() {
     callbackRefs = [
       socket.onOpen(() => {
         stopOfflineProbe();
+        showReachableStatus({ ui_status: "ready", status: "ready" });
+        setBuzzConsole("connected to the server!", "service-status-green");
       }),
       socket.onClose(() => {
         showOffline();
@@ -143,16 +189,39 @@ function createBuzzSocketStatusMonitor() {
     return true;
   }
 
+  function bindWakeListeners() {
+    wakeListeners = [
+      { event: "visibilitychange", target: document, handler: handleWakeEvent },
+      { event: "pageshow", target: window, handler: handleWakeEvent },
+      { event: "focus", target: window, handler: handleWakeEvent },
+      { event: "online", target: window, handler: handleWakeEvent },
+    ];
+    wakeListeners.forEach(({ event, target, handler }) => {
+      target.addEventListener(event, handler);
+    });
+  }
+
+  function unbindWakeListeners() {
+    wakeListeners.forEach(({ event, target, handler }) => {
+      target.removeEventListener(event, handler);
+    });
+    wakeListeners = [];
+  }
+
   function start() {
     if (!bindSocketCallbacks()) {
       retryTimer = window.setTimeout(start, 100);
+      return;
     }
+    bindWakeListeners();
   }
 
   function stop() {
     stopped = true;
     retryTimer = clearTimer(retryTimer);
     probeTimer = clearTimer(probeTimer);
+    wakeCooldownTimer = clearTimer(wakeCooldownTimer);
+    unbindWakeListeners();
     if (socket && typeof socket.off === "function" && callbackRefs.length > 0) {
       socket.off(callbackRefs);
     }
