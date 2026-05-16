@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-05-09T00:00:00.000Z",
+  "title": "Design System: buzz",
+  "extensions": {
+    "colorMeta": {
+      "terminal-bg": {
+        "role": "neutral",
+        "displayName": "Terminal Background",
+        "canonical": "#282a36",
+        "usage": "Body background, panel bodies, code blocks, inputs, and scroll tracks."
+      },
+      "terminal-fg": {
+        "role": "neutral",
+        "displayName": "Terminal Foreground",
+        "canonical": "#f8f8f2",
+        "usage": "Primary text and high-priority data."
+      },
+      "selection-surface": {
+        "role": "neutral",
+        "displayName": "Selection Surface",
+        "canonical": "#44475a",
+        "usage": "Hover rows, panel headers, selected table background, and subtle grouping."
+      },
+      "comment-muted": {
+        "role": "neutral",
+        "displayName": "Comment Muted",
+        "canonical": "#6272a4",
+        "usage": "Secondary text, inactive navigation, borders, baselines, timestamps, and disabled-adjacent metadata."
+      },
+      "cyan-action": {
+        "role": "secondary",
+        "displayName": "Archive Cyan",
+        "canonical": "#8be9fd",
+        "usage": "Hover links, upload or in-progress status, file size data, metadata values, and secondary action hints."
+      },
+      "green-ready": {
+        "role": "secondary",
+        "displayName": "Ready Green",
+        "canonical": "#50fa7b",
+        "usage": "Active navigation, successful state, downloaded state, and positive confirmation actions."
+      },
+      "orange-working": {
+        "role": "secondary",
+        "displayName": "Working Orange",
+        "canonical": "#ffb86c",
+        "usage": "Warnings, dirty state, labels, reload markers, and operational attention."
+      },
+      "pink-heading": {
+        "role": "secondary",
+        "displayName": "Terminal Pink",
+        "canonical": "#ff79c6",
+        "usage": "Section headers, table headers, logs/config headers, and high-level page titles."
+      },
+      "purple-primary": {
+        "role": "primary",
+        "displayName": "Operator Purple",
+        "canonical": "#bd93f9",
+        "usage": "Primary buttons, focus borders, brand prompt accent, and selected control emphasis."
+      },
+      "red-error": {
+        "role": "secondary",
+        "displayName": "Error Red",
+        "canonical": "#ff5555",
+        "usage": "Errors, destructive hover states, offline status, and failed cache or log states."
+      },
+      "yellow-override": {
+        "role": "secondary",
+        "displayName": "Override Yellow",
+        "canonical": "#f1fa8c",
+        "usage": "Explicit override state and rare caution markers."
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Prompt Display",
+        "purpose": "The buzz prompt and rare high-emphasis console labels."
+      },
+      "title": {
+        "displayName": "Panel Title",
+        "purpose": "Uppercase panel and table headers with one-pixel letter spacing."
+      },
+      "body": {
+        "displayName": "Terminal Body",
+        "purpose": "Default UI copy, metadata, and control text."
+      },
+      "data": {
+        "displayName": "Dense Data",
+        "purpose": "Tables, logs, YAML blocks, and configuration bodies."
+      },
+      "label": {
+        "displayName": "Compact Label",
+        "purpose": "Chips, reload modes, timestamps, baselines, and compact metadata."
+      }
+    },
+    "elevation": {
+      "philosophy": "Flat terminal panels with structural borders. Glow and shadow only indicate active or changed state.",
+      "tokens": {
+        "dirty-field-glow": "0 0 12px rgba(255, 184, 108, 0.18)",
+        "override-field-glow": "0 0 12px rgba(241, 250, 140, 0.14)",
+        "warning-nav-glow": "0 0 10px rgba(255, 184, 108, 0.8)",
+        "error-nav-glow": "0 0 10px rgba(255, 85, 85, 0.8)",
+        "active-nav-glow": "0 0 5px rgba(80, 250, 123, 0.5)"
+      }
+    },
+    "motion": {
+      "philosophy": "Avoid decorative animation and layout movement. Motion is limited to state attention and overflowing text support.",
+      "reducedMotion": "Disable marquee-style overflow motion when prefers-reduced-motion is reduce."
+    },
+    "breakpoints": {
+      "mobile": "700px"
+    },
+    "componentMeta": {
+      "navigation": {
+        "character": "Prompt-style top navigation with compact links, inline counts, route color states, and mobile icon-only collapse.",
+        "states": ["inactive", "hover", "active", "warning", "error"]
+      },
+      "tables": {
+        "character": "Dense operational tables with sticky uppercase headers, compact row height, hover selection, and mobile column pruning.",
+        "rowHeight": "35px"
+      },
+      "forms": {
+        "character": "Raw configuration fields grouped by fieldset with visible defaults, reload mode, dirty state, and override state."
+      },
+      "logs": {
+        "character": "Terminal pane with timestamp, source, level, message, and quiet copy controls."
+      }
+    },
+    "rules": {
+      "northStar": "One-Stop Operator Console",
+      "dos": [
+        "Keep the interface compact, dense, and self-guiding.",
+        "Use Dracula colors for state, syntax, categories, and affordances.",
+        "Keep panels flat, bordered, and stable during polling or refreshes.",
+        "Preserve raw configuration visibility and direct form controls."
+      ],
+      "donts": [
+        "Do not make buzz look like flashy SaaS, a gamified media app, a mobile-first consumer product, or a cloud-account dashboard.",
+        "Do not hide raw configuration details behind opaque wizards.",
+        "Do not add heavy JavaScript requirements for basic navigation, configuration, or inspection.",
+        "Do not introduce repaint-heavy updates that shift the UI around while users read or interact."
+      ]
+    }
+  }
+}
