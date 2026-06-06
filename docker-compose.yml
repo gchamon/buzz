@@ -33,7 +33,7 @@ services:
     command: ["dav"]
 
   rclone:
-    image: rclone/rclone:latest@sha256:d2e0e88359d0b2e67cfcd2c43d5405185eb8adfc207079df27c42da82c5207bc
+    image: rclone/rclone:latest@sha256:623378ad0ff3ebd5cebf77720843c0e02edfe46e2d5b5ac6bed54c6371780dfb
     container_name: rclone
     restart: unless-stopped
     environment:
@@ -62,7 +62,7 @@ services:
 
   plex:
     profiles: ["plex"]
-    image: lscr.io/linuxserver/plex:latest@sha256:c5e295f023b4e92b3ca467626dbc2ba8a9b5e53934810df74d99c14e38ae1857
+    image: lscr.io/linuxserver/plex:latest@sha256:626eb0d52b4522db3be91110a89161be6ccffc0741e9abf0e93aaf4fea98ccb9
     container_name: plex
     network_mode: host
     depends_on:
@@ -82,7 +82,7 @@ services:
     restart: unless-stopped
 
   jellyfin:
-    image: jellyfin/jellyfin:latest@sha256:1694ff069f0c9dafb283c36765175606866769f5d72f2ed56b6a0f1be922fc37
+    image: jellyfin/jellyfin:latest@sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db
     container_name: jellyfin
     depends_on:
       rclone:
