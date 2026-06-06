@@ -71,9 +71,12 @@ Before starting the stack, ensure the required host directories exist and have
 the correct permissions (User/Group ID `1000` is the default for most
 containers):
 
-```sh # 1. Create mountpoints and state directories sudo mkdir -p /mnt/buzz/raw
-/mnt/buzz/curated /mnt/buzz/subs/{movies,shows,anime} mkdir -p data
-cache/jellyfin config/plex config/jellyfin
+```sh
+# 1. Create mountpoints and state directories 
+
+sudo mkdir -p /mnt/buzz/{raw,curated} /mnt/buzz/subs/{movies,shows,anime}
+sudo chown -R $USER: /mnt/buzz
+mkdir -p data cache/jellyfin config/plex config/jellyfin
 
 # 2. Set ownership to the container user (1000:1000) sudo chown -R 1000:1000
 /mnt/buzz data cache/jellyfin config/plex config/jellyfin ```
