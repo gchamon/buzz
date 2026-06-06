@@ -1,9 +1,10 @@
 """FastAPI application for the WebDAV / Real-Debrid front-end."""
 
+import asyncio
 import json
+import logging
 import os
 import threading
-import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
@@ -112,6 +113,33 @@ class DavOwner(Protocol):
 
     @property
     def app(self) -> ASGIApp: ...
+
+
+class UvicornReadyzAccessFilter(logging.Filter):
+    """Suppress repetitive uvicorn access logs for readiness probes."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not isinstance(record.args, tuple) or len(record.args) < 3:
+            return True
+
+        try:
+            method = record.args[1]
+            path = record.args[2]
+        except IndexError:
+            return True
+
+        return not (method == "GET" and path == "/readyz")
+
+
+def install_uvicorn_readyz_access_filter() -> None:
+    """Install the readiness-probe access-log filter once."""
+    access_logger = logging.getLogger("uvicorn.access")
+    if any(
+        isinstance(filter_, UvicornReadyzAccessFilter)
+        for filter_ in access_logger.filters
+    ):
+        return
+    access_logger.addFilter(UvicornReadyzAccessFilter())
 
 
 def is_ui_redirect_path(path: str) -> bool:
@@ -1051,6 +1079,7 @@ def run_dav_server(config: DavConfig) -> None:
     from uvicorn import Config, Server
 
     dav_app = DavApp(config)
+    install_uvicorn_readyz_access_filter()
 
     if config.tls.cert_path and config.tls.key_path:
         tls_result = ensure_tls_certificate(

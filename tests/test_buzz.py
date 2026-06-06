@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import logging
 import os
 import subprocess
 import tempfile
@@ -28,6 +29,8 @@ from buzz.core.state import (
 from buzz.core import db
 from buzz.core.tls import ensure_tls_certificate
 from buzz.dav_app import DavApp
+from buzz.dav_app import UvicornReadyzAccessFilter
+from buzz.dav_app import install_uvicorn_readyz_access_filter
 from buzz.dav_protocol import open_remote_media, propfind_body
 from buzz.ui_live import CacheLiveView
 from buzz.models import (
@@ -42,6 +45,51 @@ from buzz.models import (
     mask_secrets,
     to_nested_dict,
 )
+
+
+class UvicornReadyzAccessFilterTests(unittest.TestCase):
+    def _record(self, method: str, path: str) -> logging.LogRecord:
+        return logging.LogRecord(
+            name="uvicorn.access",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg='%s - "%s %s HTTP/%s" %s',
+            args=("127.0.0.1:12345", method, path, "1.1", 200),
+            exc_info=None,
+        )
+
+    def test_filter_suppresses_readyz_get_access_logs(self):
+        filter_ = UvicornReadyzAccessFilter()
+
+        self.assertFalse(filter_.filter(self._record("GET", "/readyz")))
+
+    def test_filter_keeps_other_access_logs(self):
+        filter_ = UvicornReadyzAccessFilter()
+
+        self.assertTrue(filter_.filter(self._record("GET", "/healthz")))
+        self.assertTrue(filter_.filter(self._record("POST", "/readyz")))
+
+    def test_install_filter_is_idempotent(self):
+        access_logger = logging.getLogger("uvicorn.access")
+        original_filters = list(access_logger.filters)
+        self.addCleanup(setattr, access_logger, "filters", original_filters)
+
+        access_logger.filters = [
+            filter_
+            for filter_ in access_logger.filters
+            if not isinstance(filter_, UvicornReadyzAccessFilter)
+        ]
+
+        install_uvicorn_readyz_access_filter()
+        install_uvicorn_readyz_access_filter()
+
+        installed = [
+            filter_
+            for filter_ in access_logger.filters
+            if isinstance(filter_, UvicornReadyzAccessFilter)
+        ]
+        self.assertEqual(len(installed), 1)
 
 
 class LibraryBuilderTests(unittest.TestCase):
