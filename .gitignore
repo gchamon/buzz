@@ -1,4 +1,5 @@
 config/
+cache/
 config.yml
 buzz.yml
 .codex
