@@ -103,7 +103,7 @@ ready-made component covers the required behavior cleanly.
     tracked release image; do not ask Renovate to update it.
 
 - **Document the policy**:
-  - Update `README.md` or `docs/architecture.md` with a short supply-chain
+  - Update `README.md` or `docs/architecture/system.md` with a short supply-chain
     section explaining scanners, blocking severity, Renovate's seven-day hold,
     and the reason Docker images are pinned.
 

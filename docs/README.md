@@ -19,5 +19,6 @@ Note: Epics are currently deferred in this seedling to avoid premature coordinat
 ## Product Documentation
 
 The following documents represent the seedling's boundary and live outside the methodology core:
-- `architecture.md`: Product-scope architectural overview.
+- `architecture/system.md`: Product-scope architectural overview.
+- `architecture/subsystems.md`: Runtime state subsystem overview.
 - `incus-dev-vm.md`: Development environment setup.

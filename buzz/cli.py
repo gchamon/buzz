@@ -6,7 +6,7 @@ import json
 from .core.curator import rebuild_and_trigger
 from .curator_app import run_curator_server
 from .dav_app import run_dav_server
-from .models import DavConfig, CuratorConfig
+from .models import CuratorConfig, DavConfig
 
 
 def main() -> None:

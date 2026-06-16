@@ -19,6 +19,15 @@ from buzz.core.subtitles import (
 from buzz.models import CuratorConfig, SubtitleConfig, SubtitleFilters
 
 
+def _test_subtitle_config() -> SubtitleConfig:
+    return SubtitleConfig(
+        enabled=True,
+        api_key="key",
+        search_delay_secs=0,
+        download_delay_secs=0,
+    )
+
+
 class SubtitleTests(unittest.TestCase):
     def test_release_similarity(self):
         self.assertAlmostEqual(release_similarity("Movie.2024.1080p.mkv", "Movie.2024.1080p.BluRay.srt"), 0.5, places=1)
@@ -122,7 +131,7 @@ class SubtitleTests(unittest.TestCase):
                 source_root=root / "raw",
                 target_root=root / "curated",
                 state_dir=root / "state",
-                subtitles=SubtitleConfig(enabled=True, api_key="key"),
+                subtitles=_test_subtitle_config(),
                 subtitle_root=root / "subs"
             )
 
@@ -181,7 +190,7 @@ class SubtitleTests(unittest.TestCase):
                 source_root=root / "raw",
                 target_root=root / "curated",
                 state_dir=root / "state",
-                subtitles=SubtitleConfig(enabled=True, api_key="key"),
+                subtitles=_test_subtitle_config(),
                 subtitle_root=root / "subs"
             )
 
@@ -215,7 +224,7 @@ class SubtitleTests(unittest.TestCase):
                 source_root=root / "raw",
                 target_root=root / "curated",
                 state_dir=root / "state",
-                subtitles=SubtitleConfig(enabled=True, api_key="key"),
+                subtitles=_test_subtitle_config(),
                 subtitle_root=root / "subs",
                 jellyfin_api_key="jf_key",
                 trigger_lib_scan=True,
@@ -244,7 +253,7 @@ class SubtitleTests(unittest.TestCase):
                 source_root=root / "raw",
                 target_root=root / "curated",
                 state_dir=root / "state",
-                subtitles=SubtitleConfig(enabled=True, api_key="key"),
+                subtitles=_test_subtitle_config(),
                 subtitle_root=root / "subs",
             )
             sub_path = config.subtitle_root / "movie.en.srt"
@@ -287,7 +296,7 @@ class SubtitleTests(unittest.TestCase):
                 source_root=root / "raw",
                 target_root=root / "curated",
                 state_dir=root / "state",
-                subtitles=SubtitleConfig(enabled=True, api_key="key"),
+                subtitles=_test_subtitle_config(),
                 subtitle_root=root / "subs"
             )
 
@@ -329,7 +338,7 @@ class SubtitleTests(unittest.TestCase):
                 source_root=root / "raw",
                 target_root=root / "curated",
                 state_dir=root / "state",
-                subtitles=SubtitleConfig(enabled=True, api_key="key"),
+                subtitles=_test_subtitle_config(),
                 subtitle_root=root / "subs"
             )
 
@@ -382,7 +391,7 @@ class SubtitleTests(unittest.TestCase):
                 source_root=root / "raw",
                 target_root=root / "curated",
                 state_dir=root / "state",
-                subtitles=SubtitleConfig(enabled=True, api_key="key"),
+                subtitles=_test_subtitle_config(),
                 subtitle_root=root / "subs"
             )
 
@@ -407,6 +416,51 @@ class SubtitleTests(unittest.TestCase):
             if meta is None:
                 self.fail("Expected subtitle metadata after download")
             self.assertEqual(meta["file_id"], 999)
+
+    def test_fetch_subtitles_fails_for_missing_scoped_mapping(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = CuratorConfig(
+                source_root=root / "raw",
+                target_root=root / "curated",
+                state_dir=root / "state",
+                subtitles=_test_subtitle_config(),
+                subtitle_root=root / "subs",
+            )
+
+            with self.assertRaisesRegex(
+                RuntimeError, "no library mapping found"
+            ):
+                fetch_subtitles_for_library(
+                    config,
+                    mapping=[],
+                    torrent_names=["Missing.Movie.2026"],
+                )
+
+    @patch("buzz.core.subtitles.OpenSubtitlesClient")
+    def test_fetch_subtitles_fails_when_entry_errors(self, mock_client_cls):
+        mock_client = mock_client_cls.return_value.__enter__.return_value
+        mock_client.search.side_effect = RuntimeError("search failed")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = CuratorConfig(
+                source_root=root / "raw",
+                target_root=root / "curated",
+                state_dir=root / "state",
+                subtitles=_test_subtitle_config(),
+                subtitle_root=root / "subs",
+            )
+            mapping = [
+                {
+                    "type": "movie",
+                    "source": "movies/Movie.2026.mkv",
+                    "target": "movies/Movie (2026)/Movie (2026).mkv",
+                }
+            ]
+
+            with self.assertRaisesRegex(RuntimeError, "1 errors"):
+                fetch_subtitles_for_library(config, mapping)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,12 @@
+version: 2
+
 provider:
-  token: your_rd_token
+  real_debrid:
+    enabled: true
+    token: your_rd_token
+  torbox:
+    enabled: true
+    token: ""
 
 media_server:
   kind: jellyfin

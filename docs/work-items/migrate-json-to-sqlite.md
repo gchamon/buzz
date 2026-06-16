@@ -7,7 +7,7 @@ done
 ## Outcome
 
 All machine-managed persistent state — the torrent cache, the archived
-(trashcan) entries, the library snapshot, the Curator mapping and report, and
+(archive) entries, the library snapshot, the Curator mapping and report, and
 per-subtitle metadata — lives in a single SQLite database at
 `{state_dir}/buzz.sqlite`. JSON files on disk are reserved for user-edited
 configuration (`buzz.yml`, `buzz.overrides.yml`). Operators gain indexed
@@ -67,7 +67,7 @@ legacy JSON files are renamed to `<name>.migrated` as a safety trail.
     ordered list (each migration is a Python string of SQL), and records the
     new version in the same transaction.
   - `migrate_legacy_files(conn, state_dir)` — idempotent one-shot importer
-    for `torrent_cache.json`, `trashcan.json`, `library_snapshot.json`,
+    for `torrent_cache.json`, `archive.json`, `library_snapshot.json`,
     `mapping.json`, `report.json`. Each file is imported only if the
     corresponding table is empty and the file exists; on success the file is
     renamed to `<name>.migrated`.
@@ -86,7 +86,7 @@ legacy JSON files are renamed to `<name>.migrated` as a safety trail.
     do not shred RD fields into columns because the current code treats
     `info` as an opaque dict.
   - `archive(hash TEXT PRIMARY KEY, name TEXT, bytes INTEGER, files_json
-    TEXT, deleted_at TEXT NOT NULL)` — replaces `trashcan.json`. Retains the
+    TEXT, deleted_at TEXT NOT NULL)` — replaces `archive.json`. Retains the
     same payload shape so the restore flow needs no additional reshaping.
   - `library_snapshot(singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     snapshot_json TEXT NOT NULL, digest TEXT NOT NULL, generated_at TEXT NOT
@@ -112,7 +112,7 @@ legacy JSON files are renamed to `<name>.migrated` as a safety trail.
     `_delete_cache_entry`, `_load_archive`, `_save_archive_entry`,
     `_load_snapshot`, `_save_snapshot`). Each helper wraps SQL in
     `with self.conn:` for implicit transactions. The in-memory
-    `self.cache`, `self.trashcan`, and `self.snapshot` are retained as
+    `self.cache`, `self.archive`, and `self.snapshot` are retained as
     read-through caches hydrated from the DB at startup.
   - In `subtitles.py`, replace `_subtitle_meta_path` /
     `_read_subtitle_meta` / `_write_subtitle_meta` with

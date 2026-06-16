@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import ssl
 import stat
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from cryptography import x509
@@ -18,6 +20,12 @@ DEFAULT_CERT_PATH = Path("data/tls/buzz.crt")
 DEFAULT_KEY_PATH = Path("data/tls/buzz.key")
 DEFAULT_VALID_DAYS = 3650
 DEFAULT_RENEWAL_WINDOW_DAYS = 30
+
+# Hostnames the certificate must be valid for. Used both when generating the
+# cert and when validating an existing one, so adding an entry here triggers a
+# regeneration of certs that predate it.
+EXPECTED_DNS_NAMES = ("localhost", "buzz-dav", "buzz", "buzz-curator")
+EXPECTED_IP_ADDRESSES = ("127.0.0.1",)
 
 
 @dataclass(frozen=True)
@@ -38,6 +46,23 @@ def resolve_tls_path(path: str | Path, cwd: Path | None = None) -> Path:
     return (cwd or Path.cwd()) / raw_path
 
 
+def httpx_verify(
+    value: bool | str | Path | None,
+) -> bool | ssl.SSLContext:
+    """Return an httpx verify value, converting CA paths to SSL contexts."""
+    if value is False:
+        return False
+    if value is True or not value:
+        return True
+    cafile = str(value)
+    if not os.path.isfile(cafile):
+        raise FileNotFoundError(
+            f"TLS CA certificate is configured but missing: {cafile}. "
+            "Ensure the cert is in place or unset the TLS cert configuration."
+        )
+    return ssl.create_default_context(cafile=cafile)
+
+
 def ensure_tls_certificate(
     cert_path: str | Path = DEFAULT_CERT_PATH,
     key_path: str | Path = DEFAULT_KEY_PATH,
@@ -51,7 +76,11 @@ def ensure_tls_certificate(
     resolved_key_path = resolve_tls_path(key_path, cwd)
 
     cert = _load_valid_cert(resolved_cert_path, resolved_key_path)
-    if cert is not None and not _is_near_expiry(cert, renewal_window_days):
+    if (
+        cert is not None
+        and not _is_near_expiry(cert, renewal_window_days)
+        and _has_expected_san(cert)
+    ):
         return TlsCertificateResult(
             cert_path=resolved_cert_path,
             key_path=resolved_key_path,
@@ -95,7 +124,24 @@ def _is_near_expiry(
 ) -> bool:
     expires_at = cert.not_valid_after_utc
     renewal_window = timedelta(days=renewal_window_days)
-    return expires_at <= datetime.now(timezone.utc) + renewal_window
+    return expires_at <= datetime.now(UTC) + renewal_window
+
+
+def _has_expected_san(cert: x509.Certificate) -> bool:
+    """Return whether the cert covers every expected hostname and IP."""
+    try:
+        san = cert.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName
+        ).value
+    except x509.ExtensionNotFound:
+        return False
+    dns_names = set(san.get_values_for_type(x509.DNSName))
+    ip_addresses = {
+        str(ip) for ip in san.get_values_for_type(x509.IPAddress)
+    }
+    return set(EXPECTED_DNS_NAMES) <= dns_names and set(
+        EXPECTED_IP_ADDRESSES
+    ) <= ip_addresses
 
 
 def _generate_cert_pair(
@@ -114,7 +160,7 @@ def _generate_cert_pair(
             x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
         ]
     )
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
@@ -124,7 +170,13 @@ def _generate_cert_pair(
         .not_valid_before(now)
         .not_valid_after(now + timedelta(days=valid_days))
         .add_extension(
-            x509.SubjectAlternativeName([x509.DNSName("localhost")]),
+            x509.SubjectAlternativeName(
+                [x509.DNSName(name) for name in EXPECTED_DNS_NAMES]
+                + [
+                    x509.IPAddress(ipaddress.IPv4Address(ip))
+                    for ip in EXPECTED_IP_ADDRESSES
+                ]
+            ),
             critical=False,
         )
         .sign(key, hashes.SHA256())

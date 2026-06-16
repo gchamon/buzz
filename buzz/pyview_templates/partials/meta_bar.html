@@ -5,9 +5,9 @@
     <div class="meta-item">
       <b class="meta-item-label">[{{ item.label }}]</b>
       {% if item.cycle_values_json %}
-      <span phx-hook="BuzzMetaCycle" data-values="{{ item.cycle_values_json }}">{{ item.value }}</span>
+      <span class="{{ item.css_class }}" phx-hook="BuzzMetaCycle" data-values="{{ item.cycle_values_json }}" data-classes="{{ item.cycle_classes_json }}">{{ item.value }}</span>
       {% else %}
-      <span>{{ item.value }}</span>
+      <span class="{{ item.css_class }}">{{ item.value }}</span>
       {% endif %}
     </div>
     {% endfor %}
@@ -15,11 +15,22 @@
       <b id="status-ready-label" class="{{ status_class }}" title="{{ status_label }}" aria-label="{{ status_label }}">{{ status_label }}</b>
     </div>
   </div>
-  <div class="meta-row meta-console">
+  <div class="meta-row meta-console" phx-hook="BuzzOverflowMarquee">
     <b class="meta-item-label">console:</b>
-    <span id="meta-console-msg" class="{{ console_class }}">{{ console_msg }}</span>
+    <span class="marquee-clip always-animate" data-marquee-clip phx-click="clear_console" onclick="buzzCopyToClipboard(document.getElementById('meta-console-msg').title, ''); setBuzzConsole('', '');" style="cursor: pointer;">
+      <span id="meta-console-msg" class="{{ console_class }} marquee-label" data-marquee-label title="{{ console_msg }}">{{ console_msg }}</span>
+    </span>
     {% if active_page == "cache" or active_page == "logs" %}
     <button class="secondary btn-sm" phx-click="resync" {% if not token_configured %}disabled{% endif %} title="{% if not token_configured %}Resync library: requires a valid Real-Debrid token{% else %}Resync library{% endif %}">RESYNC LIB</button>
+    {% endif %}
+    {% if active_page == "threads" %}
+    {% if real_debrid_enabled %}
+    <button type="button" class="secondary btn-sm" phx-click="scan_rd" title="Scan Real-Debrid links for infringing_file responses">SCAN RD</button>
+    {% endif %}
+    {% if real_debrid_enabled and torbox_enabled %}
+    <button type="button" class="secondary btn-sm" phx-click="migrate_rd_tb" title="Collect Real-Debrid torrents missing from TorBox">MIGRATE RD-&gt;TB</button>
+    <button type="button" class="secondary btn-sm" phx-click="migrate_tb_rd" title="Collect TorBox torrents missing from Real-Debrid">MIGRATE TB-&gt;RD</button>
+    {% endif %}
     {% endif %}
   </div>
 </div>

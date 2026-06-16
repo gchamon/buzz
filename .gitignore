@@ -1,6 +1,7 @@
 config/
 cache/
 data/
+mount/
 config.yml
 buzz.yml
 .codex
@@ -226,3 +227,4 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+

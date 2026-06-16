@@ -11,7 +11,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-
 MAX_PARALLEL_RESOLVERS = 4
 PROJECT_IMAGE_PREFIX = "registry.gitlab.com/gabriel.chamon/buzz/buzz:"
 TARGETS = (
@@ -170,8 +169,7 @@ def fetch_digest(image: ImageRef) -> str:
             f"docker://{image.inspect_ref}",
         ],
         check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
     )
     digest = result.stdout.strip()

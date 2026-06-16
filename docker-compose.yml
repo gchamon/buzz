@@ -1,6 +1,6 @@
 services:
   buzz-dav:
-    image: registry.gitlab.com/gabriel.chamon/buzz/buzz:v1
+    image: registry.gitlab.com/gabriel.chamon/buzz/buzz:${BUZZ_VERSION:-v2}
     container_name: buzz-dav
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
@@ -13,12 +13,13 @@ services:
     environment:
       - UV_CACHE_DIR=/app/cache/uv-buzz
       - TZ=${TZ:-UTC}
+      - BUZZ_MOUNT_ROOT=${BUZZ_MOUNT_ROOT:-/mnt/buzz}
     ports:
       - 9999:9999
       - 9443:9443
     volumes:
       - ./data:/app/data
-      - /mnt/buzz/raw:/mnt/buzz/raw
+      - ${BUZZ_MOUNT_ROOT:-/mnt/buzz}/raw:${BUZZ_MOUNT_ROOT:-/mnt/buzz}/raw
       - ./buzz.yml:/app/buzz.yml:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9999/readyz"]
@@ -41,7 +42,7 @@ services:
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
     volumes:
-      - /mnt/buzz/raw:/data:shared
+      - ${BUZZ_MOUNT_ROOT:-/mnt/buzz}/raw:/data:shared
       - ./rclone.conf:/config/rclone/rclone.conf
     cap_add:
       - SYS_ADMIN
@@ -52,7 +53,7 @@ services:
     depends_on:
       buzz-dav:
         condition: service_healthy
-    command: "mount buzz: /data --allow-other --allow-non-empty --default-permissions --uid ${PUID:-1000} --gid ${PGID:-1000} --vfs-cache-mode writes --poll-interval 20s"
+    command: "mount buzz: /data --allow-other --allow-non-empty --default-permissions --uid ${PUID:-1000} --gid ${PGID:-1000} --vfs-cache-mode full --vfs-cache-max-size 8G --dir-cache-time 10s --poll-interval 10s --rc --rc-no-auth --rc-addr :5572"
     healthcheck:
       test: ["CMD-SHELL", "ls /data/movies >/dev/null 2>&1"]
       interval: 2s
@@ -62,7 +63,7 @@ services:
 
   plex:
     profiles: ["plex"]
-    image: lscr.io/linuxserver/plex:latest@sha256:626eb0d52b4522db3be91110a89161be6ccffc0741e9abf0e93aaf4fea98ccb9
+    image: lscr.io/linuxserver/plex:latest@sha256:58f13a1df833fcb7b3499c6b52aec9d7473b93b1a1e2d2219db57e761e57903b
     container_name: plex
     network_mode: host
     depends_on:
@@ -76,9 +77,9 @@ services:
       - PLEX_CLAIM=${PLEX_CLAIM:-} # Plex only
     volumes:
       - ./config/plex:/config
-      - /mnt/buzz/curated:/mnt/buzz/curated:ro
-      - /mnt/buzz/raw:/mnt/buzz/raw:ro
-      - /mnt/buzz/subs:/mnt/buzz/subs:ro
+      - ${BUZZ_MOUNT_ROOT:-/mnt/buzz}/curated:${BUZZ_MOUNT_ROOT:-/mnt/buzz}/curated:ro
+      - ${BUZZ_MOUNT_ROOT:-/mnt/buzz}/raw:${BUZZ_MOUNT_ROOT:-/mnt/buzz}/raw:ro
+      - ${BUZZ_MOUNT_ROOT:-/mnt/buzz}/subs:${BUZZ_MOUNT_ROOT:-/mnt/buzz}/subs:ro
     restart: unless-stopped
 
   jellyfin:
@@ -95,15 +96,15 @@ services:
     volumes:
       - ./config/jellyfin:/config
       - ./cache/jellyfin:/cache
-      - /mnt/buzz/curated:/mnt/buzz/curated:ro
-      - /mnt/buzz/raw:/mnt/buzz/raw:ro
-      - /mnt/buzz/subs:/mnt/buzz/subs:ro
+      - ${BUZZ_MOUNT_ROOT:-/mnt/buzz}/curated:${BUZZ_MOUNT_ROOT:-/mnt/buzz}/curated:ro
+      - ${BUZZ_MOUNT_ROOT:-/mnt/buzz}/raw:${BUZZ_MOUNT_ROOT:-/mnt/buzz}/raw:ro
+      - ${BUZZ_MOUNT_ROOT:-/mnt/buzz}/subs:${BUZZ_MOUNT_ROOT:-/mnt/buzz}/subs:ro
     devices:
       - "/dev/dri:/dev/dri"
     restart: unless-stopped
 
   buzz-curator:
-    image: registry.gitlab.com/gabriel.chamon/buzz/buzz:v1
+    image: registry.gitlab.com/gabriel.chamon/buzz/buzz:${BUZZ_VERSION:-v2}
     container_name: buzz-curator
     user: "${PUID:-1000}:${PGID:-1000}"
     working_dir: /app
@@ -114,20 +115,20 @@ services:
       - CURATOR_BIND=0.0.0.0
       - CURATOR_PORT=${CURATOR_PORT:-8400}
       - CURATOR_BUILD_ON_START=${CURATOR_BUILD_ON_START:-true}
-      - CURATOR_SOURCE_ROOT=/mnt/buzz/raw
-      - CURATOR_TARGET_ROOT=/mnt/buzz/curated
+      - BUZZ_MOUNT_ROOT=${BUZZ_MOUNT_ROOT:-/mnt/buzz}
+      - CURATOR_SOURCE_ROOT=${BUZZ_MOUNT_ROOT:-/mnt/buzz}/raw
+      - CURATOR_TARGET_ROOT=${BUZZ_MOUNT_ROOT:-/mnt/buzz}/curated
       - CURATOR_STATE_DIR=/app/data
       - CURATOR_OVERRIDES=/config/overrides.yml
       - UV_CACHE_DIR=/app/cache/uv-pres
       - UV_PROJECT_ENVIRONMENT=/app/.venv-pres
       - TZ=${TZ:-UTC}
-    entrypoint: ["sh", "/app/scripts/curator-entrypoint.sh"]
     command: ["curator", "server"]
     volumes:
       - ./presentation/overrides.yml:/config/overrides.yml:ro
       - ./data:/app/data
       - ./buzz.yml:/app/buzz.yml:ro
-      - /mnt/buzz/curated:/mnt/buzz/curated
-      - /mnt/buzz/raw:/mnt/buzz/raw:ro
-      - /mnt/buzz/subs:/mnt/buzz/subs
+      - ${BUZZ_MOUNT_ROOT:-/mnt/buzz}/curated:${BUZZ_MOUNT_ROOT:-/mnt/buzz}/curated
+      - ${BUZZ_MOUNT_ROOT:-/mnt/buzz}/raw:${BUZZ_MOUNT_ROOT:-/mnt/buzz}/raw:ro
+      - ${BUZZ_MOUNT_ROOT:-/mnt/buzz}/subs:${BUZZ_MOUNT_ROOT:-/mnt/buzz}/subs
     restart: unless-stopped

@@ -1,4 +1,13 @@
 {
+  "include": [
+    "buzz",
+    "scripts",
+    "tests"
+  ],
+  "exclude": [
+    "cache",
+    "**/cache"
+  ],
   "venvPath": ".",
   "venv": ".venv"
 }

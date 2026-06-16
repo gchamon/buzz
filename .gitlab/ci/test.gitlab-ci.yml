@@ -1,7 +1,8 @@
 pytest:
   stage: test
-  image: ghcr.io/astral-sh/uv:python3.14-alpine@sha256:1054a8c47beacaea07c0bbdb073e6b80a26deeb36c270593bb92c75a653d71d5
+  image: ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:bebc7d6de6dd015a483903461eaedea12805728be6f9a044ca7106a2f7e11ddf
   script:
+    - apt-get update && apt-get install -y libatomic1
     - uv sync --group dev
     - uv run pytest --cov=buzz --cov-report=xml --cov-report=term
   rules:
@@ -12,9 +13,29 @@ pytest:
         coverage_format: cobertura
         path: coverage.xml
 
+ruff:
+  stage: test
+  image: ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:bebc7d6de6dd015a483903461eaedea12805728be6f9a044ca7106a2f7e11ddf
+  script:
+    - apt-get update && apt-get install -y libatomic1
+    - uv sync --group dev
+    - uv run ruff check
+  rules:
+    - when: always
+
+pyright:
+  stage: test
+  image: ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:bebc7d6de6dd015a483903461eaedea12805728be6f9a044ca7106a2f7e11ddf
+  script:
+    - apt-get update && apt-get install -y libatomic1
+    - uv sync --group dev
+    - uv run pyright
+  rules:
+    - when: always
+
 htmlhint:
   stage: test
-  image: node:alpine@sha256:144769ec3f32e8ee36b3cfde91e82bee25d9367b20f31a151f3f7eea3a2a8541
+  image: node:alpine@sha256:3ad34ca6292aec4a91d8ddeb9229e29d9c2f689efd0dd242860889ac71842eba
   script:
     - npx --yes htmlhint "buzz/pyview_templates/*.html"
   rules:

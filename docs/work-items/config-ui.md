@@ -95,7 +95,7 @@ file-only.
 
 - **Nav link update** (all templates):
   - Add config nav link after `logs` in `torrents.html`, `logs.html`, and
-    `trashcan.html`.
+    `archive.html`.
 
 - **CSS additions** (`buzz/static/buzz.css`):
   - `.config-yaml` — pre block with border, background, scrollable, consistent

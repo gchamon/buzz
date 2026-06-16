@@ -28,6 +28,14 @@
       <span class="nav-icon-emoji">📜</span><span class="nav-label">logs(<span id="nav-log-count">{{ nav.log_count }}</span>)</span>
     </a>
     <span class="nav-sep">◈</span>
+    {% if nav.threads_active %}
+    <a class="nav-link active" id="nav-threads">
+    {% else %}
+    <a phx-click="navigate" phx-value-to="/threads" class="nav-link" id="nav-threads">
+    {% endif %}
+      <span class="nav-icon-emoji">🧵</span><span class="nav-label">threads(<span id="nav-thread-count">{{ nav.thread_count }}</span>)</span>
+    </a>
+    <span class="nav-sep">◈</span>
     {% if nav.config_active %}
     <a class="nav-link active"><span class="nav-icon-emoji">⚙️</span><span class="nav-label">config</span></a>
     {% else %}

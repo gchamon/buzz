@@ -23,11 +23,13 @@ function setBuzzConsole(message, className, fadeTimeout = 5000) {
     element._fadeTimer = null;
   }
   element.textContent = message;
-  element.className = className;
+  element.title = message;
+  element.className = className ? `${className} marquee-label` : "marquee-label";
   if (fadeTimeout > 0) {
     element._fadeTimer = setTimeout(() => {
       element.textContent = "";
-      element.className = "";
+      element.title = "";
+      element.className = "marquee-label";
       element._fadeTimer = null;
     }, fadeTimeout);
   }
@@ -69,7 +71,9 @@ function createBuzzSocketStatusMonitor() {
 
   function showReachableStatus(payload) {
     const isReady = payload.ui_status === "ready" || payload.status === "ready";
-    if (isReady && isSocketConnected()) {
+    if (payload.provider_degraded) {
+      setBuzzStatus("[degraded]", "service-status-orange");
+    } else if (isReady && isSocketConnected()) {
       setBuzzStatus("[ready]", "service-status-green");
     } else {
       setBuzzStatus("[starting]", "service-status-orange");
@@ -171,7 +175,7 @@ function createBuzzSocketStatusMonitor() {
     callbackRefs = [
       socket.onOpen(() => {
         stopOfflineProbe();
-        showReachableStatus({ ui_status: "ready", status: "ready" });
+        runProbe(true);
         setBuzzConsole("connected to the server!", "service-status-green");
       }),
       socket.onClose(() => {

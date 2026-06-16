@@ -70,7 +70,7 @@ and machine-facing POST endpoints. The adoption boundary is the operator UI.
   - prove that a `pyview` live view can run inside the existing `buzz-dav`
     service alongside the current FastAPI routes
   - document the mounting pattern and request lifecycle in
-    `docs/architecture.md`
+    `docs/architecture/system.md`
 - **Cache page migration**:
   - replace the current Jinja/inline-JS cache page with a `pyview` live view
   - move add-magnet, file-selection, delete-confirmation, and subtitle-fetch

@@ -8,7 +8,7 @@ from buzz.core.media import (
     parse_movie,
     parse_show,
 )
-from buzz.core.utils import format_bytes
+from buzz.core.utils import format_bytes, magnet_display_name
 
 
 class FormatBytesTests(unittest.TestCase):
@@ -76,6 +76,15 @@ class ParseShowTests(unittest.TestCase):
         self.assertEqual(result["season"], 3)
         self.assertEqual(result["episode"], 12)
 
+    def test_standard_pattern_with_year(self):
+        result = parse_show("Adventure Time (2008) - S00E01 - Pilot.mkv")
+        if result is None:
+            self.fail("Expected show parse result")
+        self.assertEqual(result["series"], "Adventure Time")
+        self.assertEqual(result["year"], 2008)
+        self.assertEqual(result["season"], 0)
+        self.assertEqual(result["episode"], 1)
+
     def test_alternate_pattern(self):
         result = parse_show("Show.Name.2x05.1080p.mkv")
         if result is None:
@@ -117,6 +126,34 @@ class MarkupDetectionTests(unittest.TestCase):
     def test_media_bytes_not_markup(self):
         self.assertFalse(looks_like_markup(b"\x00\x00\x00\x00"))
         self.assertFalse(looks_like_markup(b"some plain text"))
+
+
+class MagnetDisplayNameTests(unittest.TestCase):
+    def test_full_magnet_returns_dn(self):
+        magnet = "magnet:?xt=urn:btih:abc123&dn=The.Movie.2024.1080p&tr=udp://tracker"
+        self.assertEqual(magnet_display_name(magnet), "The.Movie.2024.1080p")
+
+    def test_url_encoded_dn_decoded(self):
+        magnet = "magnet:?xt=urn:btih:abc123&dn=Some%20Show%20S01"
+        self.assertEqual(magnet_display_name(magnet), "Some Show S01")
+
+    def test_plus_encoded_spaces_decoded(self):
+        magnet = "magnet:?xt=urn:btih:abc123&dn=Some+Show+S01"
+        self.assertEqual(magnet_display_name(magnet), "Some Show S01")
+
+    def test_hash_only_magnet_returns_empty(self):
+        magnet = "magnet:?xt=urn:btih:a7b063a88ef3f87704f071f24a615062b97ff60a"
+        self.assertEqual(magnet_display_name(magnet), "")
+
+    def test_empty_string_returns_empty(self):
+        self.assertEqual(magnet_display_name(""), "")
+
+    def test_non_magnet_returns_empty(self):
+        self.assertEqual(magnet_display_name("https://example.com"), "")
+
+    def test_slashes_sanitized(self):
+        magnet = "magnet:?xt=urn:btih:abc123&dn=Some/Path/Name"
+        self.assertEqual(magnet_display_name(magnet), "Some Path Name")
 
 
 if __name__ == "__main__":

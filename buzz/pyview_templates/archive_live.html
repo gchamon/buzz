@@ -26,16 +26,22 @@
       {% for item in meta_items %}
       <div class="meta-item">
         <b class="meta-item-label">[{{ item.label }}]</b>
-        <span>{{ item.value }}</span>
+        {% if item.cycle_values_json %}
+        <span class="{{ item.css_class }}" phx-hook="BuzzMetaCycle" data-values="{{ item.cycle_values_json }}" data-classes="{{ item.cycle_classes_json }}">{{ item.value }}</span>
+        {% else %}
+        <span class="{{ item.css_class }}">{{ item.value }}</span>
+        {% endif %}
       </div>
       {% endfor %}
       <div class="meta-item meta-status-item">
         <b id="status-ready-label" class="{{ status_class }}" title="{{ status_label }}" aria-label="{{ status_label }}">{{ status_label }}</b>
       </div>
     </div>
-    <div class="meta-row meta-console">
+    <div class="meta-row meta-console" phx-hook="BuzzOverflowMarquee">
       <b class="meta-item-label">console:</b>
-      <span id="meta-console-msg" class="{{ console_class }}">{{ console_msg }}</span>
+      <span class="marquee-clip always-animate" data-marquee-clip phx-click="clear_console" onclick="buzzCopyToClipboard(document.getElementById('meta-console-msg').title, ''); setBuzzConsole('', '');" style="cursor: pointer;">
+        <span id="meta-console-msg" class="{{ console_class }} marquee-label" data-marquee-label title="{{ console_msg }}">{{ console_msg }}</span>
+      </span>
     </div>
   </div>
 
@@ -45,7 +51,7 @@
 
   <!-- page-body -->
   <div class="table-container" id="archive-table-container" phx-hook="BuzzOverflowMarquee">
-    <table id="trash-table">
+    <table id="archive-table">
       <thead>
         <tr>
           <th
@@ -68,6 +74,7 @@
             phx-value-col="3"
             {% if sort_col == 3 %}class="sort-{{ sort_dir }}"{% endif %}
           >Date Removed</th>
+          <th>Available On</th>
           <th>Act</th>
         </tr>
       </thead>
@@ -76,14 +83,35 @@
         {% for torrent in archive_items %}
         <tr>
           <td class="name trunc-cell" data-value="{{ torrent.name }}">
-            <span class="marquee-clip" data-marquee-clip>
-              <span class="marquee-label" data-marquee-label title="{{ torrent.name }}">{{ torrent.name }}</span>
-            </span>
+            <div class="archive-name-cell">
+              {% if torrent.magnet %}
+              <button
+                type="button"
+                class="archive-magnet-copy-btn"
+                data-copy-text="{{ torrent.magnet }}"
+                onclick="event.stopPropagation(); buzzCopyToClipboard(this.dataset.copyText, 'magnet copied to clipboard!')"
+                title="Copy magnet link"
+                aria-label="Copy magnet link for {{ torrent.name }}"
+              >
+                <i class="fa-solid fa-magnet" aria-hidden="true"></i>
+              </button>
+              {% endif %}
+              <span class="marquee-clip" data-marquee-clip>
+                <span class="marquee-label" data-marquee-label title="{{ torrent.name }}">{{ torrent.name }}</span>
+              </span>
+            </div>
           </td>
           <td data-value="{{ torrent.bytes }}">{{ torrent.size }}</td>
           <td>{{ torrent.file_count }}</td>
           <td class="comment timestamp" data-value="{{ torrent.deleted_at }}">
-            {{ torrent.deleted_at }}
+            {% if not torrent.provider_tags %}{{ torrent.deleted_at }}{% endif %}
+          </td>
+          <td>
+            {% if torrent.provider_tags %}
+            {% for tag in torrent.provider_tags %}<span class="{{ tag.css_class }}">{{ tag.label }}</span>{% if not loop.last %} {% endif %}{% endfor %}
+            {% else %}
+            <span class="label-grey">archive</span>
+            {% endif %}
           </td>
           <td>
             <div class="delete-container">
@@ -113,8 +141,7 @@
                   phx-click="delete"
                   phx-value-hash="{{ torrent.hash }}"
                   phx-disable-with="..."
-                  title="{% if not token_configured %}Delete permanently: requires a valid Real-Debrid token{% else %}Confirm Permanent Delete{% endif %}"
-                  {% if not token_configured %}disabled{% endif %}
+                  title="{% if torrent.provider_tags %}Confirm Delete from Providers{% else %}Confirm Permanent Delete{% endif %}"
                 >[Y]</button>
                 <button
                   class="opt opt-n"
@@ -122,11 +149,11 @@
                   phx-value-hash="{{ torrent.hash }}"
                   phx-disable-with="..."
                   title="Cancel"
-                  {% if not token_configured %}disabled{% endif %}
                 >[N]</button>
               </div>
               {% else %}
               <div class="archive-opts" style="display:flex">
+                {% if not torrent.provider_tags %}
                 <button
                   class="opt btn-r"
                   phx-click="prompt_restore"
@@ -135,13 +162,23 @@
                   title="{% if not token_configured %}Restore to cache: requires a valid Real-Debrid token{% else %}Restore to Cache{% endif %}"
                   {% if not token_configured %}disabled{% endif %}
                 >[R]</button>
+                {% endif %}
+                {% if torrent.transfer_show %}
+                <button
+                  class="opt {% if torrent.transfer_label == 'C' %}btn-c{% else %}btn-m{% endif %}{% if torrent.transfer_disabled %} transfer-disabled{% endif %}"
+                  phx-click="transfer_provider"
+                  phx-value-hash="{{ torrent.hash }}"
+                  phx-disable-with="..."
+                  title="{{ torrent.transfer_title }}"
+                  {% if torrent.transfer_disabled %}disabled{% endif %}
+                >[{{ torrent.transfer_label }}]</button>
+                {% endif %}
                 <button
                   class="opt btn-x"
                   phx-click="prompt_delete"
                   phx-value-hash="{{ torrent.hash }}"
                   phx-disable-with="..."
-                  title="{% if not token_configured %}Delete permanently: requires a valid Real-Debrid token{% else %}Delete Permanently{% endif %}"
-                  {% if not token_configured %}disabled{% endif %}
+                  title="{% if torrent.provider_tags %}Delete from providers permanently{% else %}Delete Permanently{% endif %}"
                 >[D]</button>
               </div>
               {% endif %}
@@ -151,7 +188,7 @@
         {% endfor %}
         {% else %}
         <tr>
-          <td colspan="5" class="empty">Archive is empty.</td>
+          <td colspan="6" class="empty">Archive is empty.</td>
         </tr>
         {% endif %}
       </tbody>

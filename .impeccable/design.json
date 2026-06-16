@@ -113,7 +113,13 @@
     "componentMeta": {
       "navigation": {
         "character": "Prompt-style top navigation with compact links, inline counts, route color states, and mobile icon-only collapse.",
-        "states": ["inactive", "hover", "active", "warning", "error"]
+        "states": [
+          "inactive",
+          "hover",
+          "active",
+          "warning",
+          "error"
+        ]
       },
       "tables": {
         "character": "Dense operational tables with sticky uppercase headers, compact row height, hover selection, and mobile column pruning.",
@@ -124,6 +130,29 @@
       },
       "logs": {
         "character": "Terminal pane with timestamp, source, level, message, and quiet copy controls."
+      },
+      "pageLayout": {
+        "patternSyntax": {
+          "description": "Meta-HTML notation for describing page layout as a line of positioned elements.",
+          "symbols": {
+            "[e]": "A line-level component or element e. Square brackets denote a rendered UI block occupying horizontal space in the layout flow.",
+            "<e>": "An HTML-like structural or spacing primitive. Angle brackets denote layout mechanics rather than visible components.",
+            "x(k=v)": "Metadata annotation on element x. Parentheses attach key=value properties describing behaviour, structure, or appearance of x.",
+            "|": "Horizontal separator between sub-elements within the same line-level block. Left side aligns left, right side aligns right.",
+            ":": "Introduces the contents or children of a named element. 'console: message | actionbar' means the console block contains a message area and an actionbar.",
+            "<gap>": "Mandatory vertical gap between two elements. Equivalent to a double newline (blank line) of visual breathing room.",
+            "<gap(optional)>": "Same as <gap> but may be omitted depending on the page. The optional() annotation applies the metadata syntax to the gap primitive.",
+            "$": "End-of-line, analogous to $ in regex end-of-line. Indicates the last element occupying the line's horizontal space.",
+            "$_": "Bottom-of-screen anchor, analogous to $ in regex end-of-line. Indicates the last element expands or is pinned to fill remaining vertical space to the viewport bottom."
+          }
+        },
+        "pattern": "[title: views(sep=diamond)]<gap>[meta-bar]$[console: message | actionbar]<gap(optional)>[UI]$_",
+        "consoleRow": "class=meta-row meta-console. Contains: b.meta-item-label('console:'), span.marquee-clip.always-animate > span.marquee-label (flex:1, fills left), optional secondary btn-sm buttons (right-aligned via justify-content:space-between).",
+        "pageSpecificActions": {
+          "cache": "RESYNC LIB",
+          "logs": "RESYNC LIB",
+          "threads": "SCAN RD, MIGRATE RD>TB, MIGRATE TB>RD (conditional on provider config)"
+        }
       }
     },
     "rules": {

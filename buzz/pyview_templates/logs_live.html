@@ -27,9 +27,9 @@
       <div class="meta-item">
         <b class="meta-item-label">[{{ item.label }}]</b>
         {% if item.cycle_values_json %}
-        <span phx-hook="BuzzMetaCycle" data-values="{{ item.cycle_values_json }}">{{ item.value }}</span>
+        <span class="{{ item.css_class }}" phx-hook="BuzzMetaCycle" data-values="{{ item.cycle_values_json }}" data-classes="{{ item.cycle_classes_json }}">{{ item.value }}</span>
         {% else %}
-        <span>{{ item.value }}</span>
+        <span class="{{ item.css_class }}">{{ item.value }}</span>
         {% endif %}
       </div>
       {% endfor %}
@@ -37,9 +37,11 @@
         <b id="status-ready-label" class="{{ status_class }}" title="{{ status_label }}" aria-label="{{ status_label }}">{{ status_label }}</b>
       </div>
     </div>
-    <div class="meta-row meta-console">
+    <div class="meta-row meta-console" phx-hook="BuzzOverflowMarquee">
       <b class="meta-item-label">console:</b>
-      <span id="meta-console-msg" class="{{ console_class }}">{{ console_msg }}</span>
+      <span class="marquee-clip always-animate" data-marquee-clip phx-click="clear_console" onclick="buzzCopyToClipboard(document.getElementById('meta-console-msg').title, ''); setBuzzConsole('', '');" style="cursor: pointer;">
+        <span id="meta-console-msg" class="{{ console_class }} marquee-label" data-marquee-label title="{{ console_msg }}">{{ console_msg }}</span>
+      </span>
       <button class="secondary btn-sm" phx-click="resync" {% if not token_configured %}disabled{% endif %} title="{% if not token_configured %}Resync library: requires a valid Real-Debrid token{% else %}Resync library{% endif %}">RESYNC LIB</button>
     </div>
   </div>
@@ -72,7 +74,11 @@
           <span class="log-source">{{ log.source }}</span>
           <span class="log-ts">{{ log.timestamp }}</span>
           <span class="log-level {{ log.level_class }}">{{ log.level_label }}</span>
+          {% if log.link_to_task_id %}
+          <span class="log-message">{{ log.message_prefix }}<a phx-click="navigate" phx-value-to="/threads?task_id={{ log.link_to_task_id }}" class="log-task-link">{{ log.task_link_text }}</a>{{ log.message_suffix }}{% if log.task_status %} <span class="log-task-status {{ log.task_status_class }}">[{{ log.task_status }}]</span>{% endif %}</span>
+          {% else %}
           <span class="log-message">{{ log.message }}</span>
+          {% endif %}
         </div>
         <button
           type="button"

@@ -5,9 +5,11 @@ directories, applying metadata overrides, detecting changes, and
 triggering downstream media server scans.
 """
 
+import json
 import math
 import os
 import random
+import re
 import shutil
 import tempfile
 import threading
@@ -15,8 +17,6 @@ import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from pathlib import Path
-
-import yaml
 
 from ..models import CuratorConfig
 from . import db
@@ -56,17 +56,44 @@ class ScanProbeError(RuntimeError):
     """Raised when media files cannot be read before a server scan."""
 
 
-def load_overrides(path: Path) -> dict:
-    """Load YAML override rules for movies and shows."""
-    if not path.exists():
-        return {"movies": {}, "shows": {}}
-    raw = path.read_text(encoding="utf-8").strip()
-    if not raw:
-        return {"movies": {}, "shows": {}}
-    overrides = yaml.safe_load(raw) or {}
-    overrides.setdefault("movies", {})
-    overrides.setdefault("shows", {})
-    return overrides
+
+
+def _db_override_source_paths(
+    conn,
+) -> dict:
+    """Load DB Curator title overrides in source-path override format."""
+    title_overrides = db.load_curator_title_overrides(conn)
+    if not title_overrides:
+        return {"movies": {}, "shows": {}, "anime": {}}
+
+    entries = db.load_library_entry_files(conn)
+    by_source = {"movies": {}, "shows": {}, "anime": {}}
+    for thash, override in title_overrides.items():
+        entry = entries.get(thash)
+        if entry is None:
+            continue
+        torrent_name = entry[0]
+        kind = override.get("kind")
+        if kind == "movie":
+            category = "movies"
+        elif kind == "show":
+            category = "shows"
+        elif kind == "anime":
+            category = "anime"
+        else:
+            continue
+        source = f"{category}/{torrent_name}"
+        by_source[category][source] = {
+            key: value
+            for key, value in override.items()
+            if key != "kind"
+        }
+    return by_source
+
+
+def load_effective_overrides(conn) -> dict:
+    """Load identity overrides from the DB cache."""
+    return _db_override_source_paths(conn)
 
 
 def iter_files(root: Path) -> Iterator[Path]:
@@ -83,7 +110,21 @@ def source_relpath(source_root: Path, path: Path) -> str:
     return path.relative_to(source_root).as_posix()
 
 
+def entry_source_key(all_source_root: Path, path: Path) -> str:
+    """Return the entry-level override key ``{category}/{torrent_name}``.
+
+    Title overrides are scoped per entry (top-level folder), so a file's
+    override is looked up by its category plus torrent root rather than its
+    full source path.
+    """
+    parts = path.relative_to(all_source_root).parts
+    return "/".join(parts[:2])
+
+
 type CompanionIndex = dict[Path, tuple[Path, ...]]
+
+HASH_RE = re.compile(r"^[a-fA-F0-9]{32,64}$")
+PROVIDER_ID_PRIORITY = ("imdbid", "tmdbid", "tvdbid", "anidbid")
 
 
 def build_companion_index(files: list[Path]) -> CompanionIndex:
@@ -140,33 +181,48 @@ def apply_movie_override(entry: dict, override: dict) -> None:
         entry["year"] = int(override["year"])
     if override.get("id"):
         entry["id"] = sanitize_path_component(override["id"])
+    if override.get("provider_ids"):
+        entry["provider_ids"] = override["provider_ids"]
 
 
 def apply_show_override(entry: dict, override: dict) -> None:
     """Apply override fields to a show entry in place."""
     if override.get("series"):
         entry["series"] = sanitize_path_component(override["series"])
-    if override.get("season") is not None:
-        entry["season"] = int(override["season"])
-    if override.get("episode") is not None:
-        entry["episode"] = int(override["episode"])
+    if override.get("year") is not None:
+        entry["year"] = int(override["year"])
     if override.get("id"):
         entry["id"] = sanitize_path_component(override["id"])
+    if override.get("provider_ids"):
+        entry["provider_ids"] = override["provider_ids"]
+
+
+def _provider_id_suffix(entry: dict) -> str:
+    provider_ids = entry.get("provider_ids")
+    if not isinstance(provider_ids, dict):
+        return sanitize_path_component(str(entry.get("id") or ""))
+    for provider in PROVIDER_ID_PRIORITY:
+        value = str(provider_ids.get(provider) or "").strip()
+        if value:
+            return sanitize_path_component(f"{provider}-{value}")
+    return ""
 
 
 def movie_folder_name(entry: dict) -> str:
     """Return the canonical folder name for a movie entry."""
     folder = f"{entry['title']} ({entry['year']})"
-    if entry.get("id"):
-        folder = f"{folder} [{entry['id']}]"
+    if suffix := _provider_id_suffix(entry):
+        folder = f"{folder} [{suffix}]"
     return sanitize_path_component(folder)
 
 
 def show_series_name(entry: dict) -> str:
     """Return the canonical series name for a show entry."""
     series = entry["series"]
-    if entry.get("id"):
-        series = f"{series} [{entry['id']}]"
+    if entry.get("year"):
+        series = f"{series} ({int(entry['year'])})"
+    if suffix := _provider_id_suffix(entry):
+        series = f"{series} [{suffix}]"
     return sanitize_path_component(series)
 
 
@@ -257,6 +313,92 @@ def load_previous_mapping(conn) -> list[dict]:
     return db.load_curator_mapping(conn)
 
 
+def is_hash_name(value: str) -> bool:
+    """Return True when *value* looks like a torrent info hash."""
+    return bool(HASH_RE.fullmatch(value.strip()))
+
+
+def _clean_metadata_name(value: object) -> str:
+    name = str(value or "").strip()
+    if not name or is_hash_name(name):
+        return ""
+    return sanitize_path_component(name)
+
+
+def _series_hint_from_name(name: str) -> str:
+    """Return a best-effort show series name from provider metadata."""
+    parsed = parse_show(Path(name).stem)
+    if parsed is not None:
+        return show_series_name(parsed)
+    stem = Path(name).stem
+    year = None
+    year_matches = list(re.finditer(r"\b(19|20)\d{2}\b", stem))
+    if year_matches:
+        year_match = year_matches[-1]
+        year = int(year_match.group(0))
+        stem = stem[: year_match.start()]
+    stem = re.sub(r"[\(\[\s-]+$", "", stem)
+    stem = re.sub(r"\bseason\s+\d{1,2}\s*-\s*\d{1,2}\b.*$", " ", stem, flags=re.I)
+    stem = re.sub(r"\bs\d{1,2}\s*-\s*s\d{1,2}\b.*$", " ", stem, flags=re.I)
+    stem = re.sub(r"\[[^\]]+\]", " ", stem)
+    stem = re.sub(r"\([^)]*\)", " ", stem)
+    stem = re.sub(
+        r"\b(complete|specials?|extras?|season)\b",
+        " ",
+        stem,
+        flags=re.I,
+    )
+    stem = re.sub(r"\b(s\d{1,2}|series)\b.*$", " ", stem, flags=re.I)
+    stem = re.sub(r"[._-]+", " ", stem)
+    stem = re.sub(r"\s+", " ", stem).strip()
+    if not stem:
+        return ""
+    series = sanitize_path_component(stem)
+    if year is not None:
+        series = f"{series} ({year})"
+    return series
+
+
+def _split_series_hint(series_hint: str) -> tuple[str, int | None]:
+    match = re.search(r"\s+\((19|20)\d{2}\)$", series_hint)
+    if match is None:
+        return series_hint, None
+    return series_hint[: match.start()].strip(), int(match.group(0).strip(" ()"))
+
+
+def load_torrent_name_hints(conn) -> dict[str, str]:
+    """Load local torrent hash/name hints from buzz SQLite metadata."""
+    hints: dict[str, str] = {}
+    rows = conn.execute(
+        "SELECT hash, name FROM library_entries WHERE name IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        thash = str(row["hash"] or "").strip().lower()
+        name = _clean_metadata_name(row["name"])
+        if thash and name:
+            hints[thash] = name
+
+    rows = conn.execute(
+        "SELECT hash, info_json FROM provider_links"
+    ).fetchall()
+    for row in rows:
+        thash = str(row["hash"] or "").strip().lower()
+        if not thash or thash in hints:
+            continue
+        try:
+            info = json.loads(row["info_json"] or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(info, dict):
+            continue
+        name = _clean_metadata_name(
+            info.get("original_filename") or info.get("filename")
+        )
+        if name:
+            hints[thash] = name
+    return hints
+
+
 def mapping_index(entries: list[dict]) -> dict[str, dict]:
     """Build a lookup dict mapping target paths to entries."""
     return {
@@ -293,9 +435,25 @@ def mapping_diff(previous: list[dict], current: list[dict]) -> dict:
 
 
 def log_mapping_event(diff: dict, report: dict, mapping_entries: int) -> None:
-    """Record a Curator mapping diff event."""
+    """Record a Curator mapping diff event.
+
+    The message summarizes the library size and what changed since the previous
+    build so it is meaningful on its own in the startup log, e.g.
+    ``Curator mapping updated: 1447 entries (+3 -0 ~1)`` or, when nothing moved,
+    ``Curator mapping unchanged: 1447 entries``.
+    """
+    added = len(diff["added"])
+    removed = len(diff["removed"])
+    changed = len(diff["changed"])
+    if added or removed or changed:
+        message = (
+            f"Curator mapping updated: {mapping_entries} entries "
+            f"(+{added} -{removed} ~{changed})"
+        )
+    else:
+        message = f"Curator mapping unchanged: {mapping_entries} entries"
     record_event(
-        "Curator mapping updated",
+        message,
         event="curator_mapping_diff",
         mapping_entries=mapping_entries,
         movies=report["movies"],
@@ -315,27 +473,45 @@ def scan_probe_sample_size(pool_size: int, ratio_percent: int, min_files: int) -
     return min(pool_size, max(max(0, min_files), ratio_size))
 
 
-def _changed_root_matches(source: str, changed_roots: list[str]) -> bool:
+def _changed_root_matches(path: str, changed_roots: list[str]) -> bool:
     return any(
-        source == root or source.startswith(f"{root}/")
+        path == root or path.startswith(f"{root}/")
         for root in changed_roots
     )
 
 
 def _scan_probe_pool(mapping: list[dict], changed_roots: list[str] | None) -> list[str]:
     roots = [root.strip("/") for root in changed_roots or [] if root.strip("/")]
-    sources = [
-        source
-        for entry in mapping
-        if isinstance((source := entry.get("source")), str)
-    ]
+    sources = []
+    matched_sources = []
+    for entry in mapping:
+        source = entry.get("source")
+        if not isinstance(source, str):
+            continue
+        sources.append(source)
+        if not roots:
+            continue
+        target = entry.get("target")
+        candidates = [source]
+        if isinstance(target, str):
+            candidates.append(target)
+        if any(_changed_root_matches(path, roots) for path in candidates):
+            matched_sources.append(source)
     if not roots:
         return sorted(dict.fromkeys(sources))
-    return sorted(
-        dict.fromkeys(
-            source for source in sources if _changed_root_matches(source, roots)
+    if matched_sources:
+        return sorted(dict.fromkeys(matched_sources))
+    if sources:
+        record_event(
+            "scan probe changed roots matched no mapped files; "
+            "probing full mapped library",
+            level="warning",
+            event="jellyfin_scan_probe_full_pool_fallback",
+            changed_roots=roots,
+            mapping_entries=len(mapping),
+            source_pool_size=len(set(sources)),
         )
-    )
+    return sorted(dict.fromkeys(sources))
 
 
 def _read_probe_file(path: Path, read_bytes: int) -> None:
@@ -425,7 +601,6 @@ def validate_scan_probe(
 
 def build_library(config: CuratorConfig) -> dict:
     """Build the curated library from source directories."""
-    overrides = load_overrides(config.overrides_path)
     movies_source = config.source_root / "movies"
     shows_source = config.source_root / "shows"
     anime_source = config.source_root / "anime"
@@ -439,68 +614,73 @@ def build_library(config: CuratorConfig) -> dict:
     config.target_root.mkdir(parents=True, exist_ok=True)
 
     conn = db.connect(config.state_dir / "buzz.sqlite")
-    db.apply_migrations(conn)
-    previous_mapping = load_previous_mapping(conn)
-    mapping = []
-    report = {
-        "skipped_movies": [],
-        "skipped_shows": [],
-        "anime_files": 0,
-        "movies": 0,
-        "show_files": 0,
-    }
-
-    tmp_root: Path | None = None
     try:
-        if config.subtitles.enabled:
-            db.migrate_subtitle_sidecars(conn, config.subtitle_root)
+        db.apply_migrations(conn)
+        overrides = load_effective_overrides(conn)
+        previous_mapping = load_previous_mapping(conn)
+        torrent_name_hints = load_torrent_name_hints(conn)
+        mapping = []
+        report = {
+            "skipped_movies": [],
+            "skipped_shows": [],
+            "anime_files": 0,
+            "movies": 0,
+            "show_files": 0,
+        }
 
-        tmp_root = Path(
-            tempfile.mkdtemp(prefix=".curator-tmp-", dir=config.target_root)
-        )
-        build_movies(
-            movies_source,
-            tmp_root / "movies",
-            overrides.get("movies", {}),
-            mapping,
-            report,
-            config.source_root,
-        )
-        build_shows(
-            shows_source,
-            tmp_root / "shows",
-            overrides.get("shows", {}),
-            mapping,
-            report,
-            config.source_root,
-        )
-        build_anime(
-            anime_source,
-            tmp_root / "animes",
-            mapping,
-            report,
-            config.source_root,
-        )
+        tmp_root: Path | None = None
+        try:
+            if config.subtitles.enabled:
+                db.migrate_subtitle_sidecars(conn, config.subtitle_root)
 
-        if config.subtitles.enabled:
-            apply_subtitle_overlay(tmp_root, config.subtitle_root)
+            tmp_root = Path(
+                tempfile.mkdtemp(prefix=".curator-tmp-", dir=config.target_root)
+            )
+            build_movies(
+                movies_source,
+                tmp_root / "movies",
+                overrides.get("movies", {}),
+                mapping,
+                report,
+                config.source_root,
+            )
+            build_shows(
+                shows_source,
+                tmp_root / "shows",
+                overrides.get("shows", {}),
+                mapping,
+                report,
+                config.source_root,
+                torrent_name_hints,
+            )
+            build_anime(
+                anime_source,
+                tmp_root / "animes",
+                overrides.get("anime", {}),
+                mapping,
+                report,
+                config.source_root,
+            )
 
-        replace_root(tmp_root, config.target_root)
-    except Exception:
-        if tmp_root is not None and tmp_root.exists():
-            shutil.rmtree(tmp_root, ignore_errors=True)
+            if config.subtitles.enabled:
+                apply_subtitle_overlay(tmp_root, config.subtitle_root, mapping)
+
+            replace_root(tmp_root, config.target_root)
+        except Exception:
+            if tmp_root is not None and tmp_root.exists():
+                shutil.rmtree(tmp_root, ignore_errors=True)
+            raise
+
+        report["mapping_entries"] = len(mapping)
+        db.replace_curator_mapping(conn, mapping)
+        db.save_curator_report(conn, report)
+
+        log_mapping_event(
+            mapping_diff(previous_mapping, mapping), report, len(mapping)
+        )
+        return report
+    finally:
         conn.close()
-        raise
-
-    report["mapping_entries"] = len(mapping)
-    db.replace_curator_mapping(conn, mapping)
-    db.save_curator_report(conn, report)
-    conn.close()
-
-    log_mapping_event(
-        mapping_diff(previous_mapping, mapping), report, len(mapping)
-    )
-    return report
 
 
 def _process_movie_file(
@@ -519,14 +699,14 @@ def _process_movie_file(
     folder = source_rel.parts[0] if len(source_rel.parts) > 1 else ""
 
     parsed = parse_movie(path.stem, folder=folder)
-    override = overrides.get(rel_path, {})
+    override = overrides.get(entry_source_key(all_source_root, path), {})
     if parsed is None and not override:
         report["skipped_movies"].append(
             {"source": rel_path, "reason": "unable to parse movie title/year"}
         )
         return False
-    if parsed is None:
-        parsed = {"title": "", "year": 0}
+
+    parsed = parsed or {"title": "", "year": 0}
     apply_movie_override(parsed, override)
     if not parsed.get("title") or not parsed.get("year"):
         report["skipped_movies"].append(
@@ -592,23 +772,29 @@ def _plan_show_group(
     all_source_root: Path,
     overrides: dict,
     global_targets: set[str],
+    series_hint: str = "",
 ) -> tuple[list[dict], list[dict]]:
     planned = []
     group_errors = []
-    group_series = None
+    group_series = series_hint or None
+    hint_series, hint_year = _split_series_hint(series_hint)
     used_targets: set[str] = set()
     for path in sorted(files):
         rel_path = source_relpath(all_source_root, path)
         parsed = parse_show(path.stem)
-        override = overrides.get(rel_path, {})
+        override = overrides.get(entry_source_key(all_source_root, path), {})
         if parsed is None and not override:
             group_errors.append(
                 {"source": rel_path, "reason": "unable to parse show season/episode"}
             )
             continue
-        if parsed is None:
-            parsed = {"series": "", "season": 0, "episode": 0}
+
+        parsed = parsed or {"series": "", "season": 0, "episode": 0}
         apply_show_override(parsed, override)
+        if series_hint and not override.get("series"):
+            parsed["series"] = hint_series
+            if hint_year is not None:
+                parsed["year"] = hint_year
         if (
             not parsed.get("series")
             or parsed.get("season") is None
@@ -622,9 +808,8 @@ def _plan_show_group(
             )
             continue
         series_name = show_series_name(parsed)
-        if group_series is None:
-            group_series = series_name
-        elif group_series != series_name:
+        group_series = group_series or series_name
+        if group_series != series_name:
             group_errors.append(
                 {
                     "source": rel_path,
@@ -692,6 +877,27 @@ def _apply_show_planned(
             ensure_symlink(companion, companion_target)
 
 
+def _series_hint_for_group(
+    group_name: str, torrent_name_hints: dict[str, str]
+) -> str:
+    """Return a provider-backed series hint for hash-named show roots."""
+    if not is_hash_name(group_name):
+        return ""
+    hint = torrent_name_hints.get(group_name.lower(), "")
+    if not hint:
+        return ""
+    series = _series_hint_from_name(hint)
+    if series:
+        record_event(
+            "resolved hash-named show root from local metadata: "
+            f"{group_name} -> {series}",
+            event="curator_hash_show_root_resolved",
+            hash=group_name.lower(),
+            series=series,
+        )
+    return series
+
+
 def build_shows(
     source_root: Path,
     target_root: Path,
@@ -699,8 +905,10 @@ def build_shows(
     mapping: list[dict],
     report: dict,
     all_source_root: Path,
+    torrent_name_hints: dict[str, str] | None = None,
 ) -> None:
     """Symlink show files into canonical series/season structures."""
+    torrent_name_hints = torrent_name_hints or {}
     target_root.mkdir(parents=True, exist_ok=True)
     if not source_root.exists():
         return
@@ -719,11 +927,13 @@ def build_shows(
         planned, group_errors = _plan_show_group(
             files, source_root, target_root, all_source_root,
             overrides, global_targets,
+            _series_hint_for_group(group_name, torrent_name_hints),
         )
         if group_errors:
             report["skipped_shows"].append(
                 {"group": group_name, "errors": group_errors}
             )
+        if not planned:
             continue
         _apply_show_planned(
             planned,
@@ -735,20 +945,46 @@ def build_shows(
         )
 
 
+def _anime_folder_override(override: dict) -> str:
+    """Return the overridden top-level anime folder name, or '' if none.
+
+    Anime identity overrides are series-shaped, so reuse the show series-name
+    builder (``Series (year) [provider-id]``) to name the entry's top-level
+    folder while keeping the rest of the relative path intact.
+    """
+    if not override or not override.get("series"):
+        return ""
+    entry: dict = {}
+    apply_show_override(entry, override)
+    if not entry.get("series"):
+        return ""
+    return show_series_name(entry)
+
+
 def build_anime(
     source_root: Path,
     target_root: Path,
+    overrides: dict,
     mapping: list[dict],
     report: dict,
     all_source_root: Path,
 ) -> None:
-    """Symlink anime files while preserving their relative paths."""
+    """Symlink anime files, preserving relative paths.
+
+    The entry's top-level folder is renamed when a Curator identity override is
+    present for it; the remaining path structure is preserved verbatim.
+    """
     target_root.mkdir(parents=True, exist_ok=True)
     if not source_root.exists():
         return
     for path in iter_files(source_root):
         rel_path = source_relpath(all_source_root, path)
-        target_file = target_root / path.relative_to(source_root)
+        target_rel = path.relative_to(source_root)
+        override = overrides.get(entry_source_key(all_source_root, path), {})
+        folder_name = _anime_folder_override(override)
+        if folder_name and len(target_rel.parts) > 1:
+            target_rel = Path(folder_name, *target_rel.parts[1:])
+        target_file = target_root / target_rel
         ensure_symlink(path, target_file)
         mapping.append(
             {
@@ -842,7 +1078,7 @@ def rebuild_and_trigger(
     try:
         validate_scan_probe(config, mapping, changed_roots)
     except ScanProbeError as exc:
-        msg = f"jellyfin scan skipped: Real-Debrid probe failed: {exc}"
+        msg = f"jellyfin scan skipped: media probe failed: {exc}"
         record_event(msg, level="error", event="jellyfin_scan_probe_failed")
         report["jellyfin_scan_triggered"] = False
         report["jellyfin_scan_status"] = "skipped_probe_failed"
@@ -916,5 +1152,9 @@ class Curator:
         changed_roots: list[str] | None = None,
     ) -> dict:
         """Rebuild the library and trigger Jellyfin scan."""
-        with self.lock:
+        if not self.lock.acquire(blocking=False):
+            raise RebuildError("aborted: rebuild already in progress", {})
+        try:
             return rebuild_and_trigger(self.config, changed_roots)
+        finally:
+            self.lock.release()
