@@ -65,8 +65,8 @@ zero violations as a hard baseline.
   - Add docstrings to all public functions and validator methods.
 
 - **Bug fix** (`buzz/core/state.py`):
-  - Rename stale `_add_to_trashcan` call to `_add_to_archive` (missed during
-    the trashcan → archive rename in a prior commit).
+  - Rename the stale archive helper call missed during the archive naming
+    cleanup.
 
 - **SIM fixes**:
   - `is_probably_media_content_type` in `media.py`: return the set membership

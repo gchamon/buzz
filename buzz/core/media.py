@@ -16,19 +16,13 @@ from .utils import canonical_spaces, pretty_title, sanitize_path_component
 
 def is_video_file(path: str | PurePath) -> bool:
     """Return True if the path has a known video extension."""
-    if isinstance(path, str):
-        suffix = PurePosixPath(path).suffix.lower()
-    else:
-        suffix = path.suffix.lower()
+    suffix = PurePosixPath(path).suffix.lower() if isinstance(path, str) else path.suffix.lower()
     return suffix in VIDEO_EXTENSIONS
 
 
 def is_sidecar_file(path: str | PurePath) -> bool:
     """Return True if the path has a known sidecar extension."""
-    if isinstance(path, str):
-        suffix = PurePosixPath(path).suffix.lower()
-    else:
-        suffix = path.suffix.lower()
+    suffix = PurePosixPath(path).suffix.lower() if isinstance(path, str) else path.suffix.lower()
     return suffix in SIDECAR_EXTENSIONS
 
 
@@ -122,13 +116,23 @@ def parse_show(stem: str) -> dict[str, Any] | None:
         if not match:
             continue
         series = cleaned[: match.start()]
+        year = None
+        year_match = list(YEAR_RE.finditer(series))
+        if year_match:
+            match_year = year_match[-1]
+            year = int(match_year.group(1))
+            series = series[: match_year.start()]
+        series = re.sub(r"[\(\[\s-]+$", "", series)
         series = NOISE_RE.sub("", series)
         series = sanitize_path_component(pretty_title(series))
         if not series:
             return None
-        return {
+        result = {
             "series": series,
             "season": int(match.group("season")),
             "episode": int(match.group("episode")),
         }
+        if year is not None:
+            result["year"] = year
+        return result
     return None

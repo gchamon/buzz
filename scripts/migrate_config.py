@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
@@ -21,7 +20,8 @@ DEFAULT_HOOK = "sh /app/scripts/media_update.sh"
 
 
 def parse_zurg_config(raw: str) -> dict:
-    config: dict[str, object] = {
+    """Parse a legacy Zurg YAML-like config file into a dict."""
+    config: dict[str, Any] = {
         "directories": {
             "anime": {"filters": []},
             "shows": {"filters": []},
@@ -50,49 +50,9 @@ def parse_zurg_config(raw: str) -> dict:
                 continue
 
         if top_section == "directories":
-            if indent == 2 and stripped.endswith(":"):
-                candidate = stripped[:-1]
-                if candidate in {"anime", "shows", "movies"}:
-                    directory_name = candidate
-                    in_filters = False
-                    current_filter = None
-                    continue
-
-            if directory_name in {"anime", "shows", "movies"}:
-                if indent == 4 and stripped == "filters:":
-                    in_filters = True
-                    current_filter = None
-                    continue
-                if indent <= 2:
-                    directory_name = None
-                    in_filters = False
-                    current_filter = None
-                elif in_filters and indent == 6 and stripped.startswith("- "):
-                    current_filter = {}
-                    directories = _as_dict(config["directories"])
-                    directory_config = _as_dict(directories.get(directory_name, {}))
-                    filters = cast(list[dict[str, str]], directory_config["filters"])
-                    filters.append(current_filter)
-                    remainder = stripped[2:].strip()
-                    if remainder and ":" in remainder:
-                        key, value = remainder.split(":", 1)
-                        current_filter[key.strip()] = value.strip()
-                    continue
-                elif (
-                    in_filters
-                    and indent >= 8
-                    and current_filter is not None
-                    and ":" in stripped
-                ):
-                    key, value = stripped.split(":", 1)
-                    current_filter[key.strip()] = value.strip()
-                    continue
-                elif indent == 4 and ":" in stripped:
-                    key, value = stripped.split(":", 1)
-                    directories = _as_dict(config["directories"])
-                    directory_config = _as_dict(directories.get(directory_name, {}))
-                    directory_config[key.strip()] = value.strip()
-                    continue
+            directory_name, in_filters, current_filter = _parse_zurg_directory_line(
+                config, line, stripped, indent, directory_name, in_filters, current_filter
+            )
 
         if indent == 0 and ":" in stripped:
             key, value = stripped.split(":", 1)
@@ -101,12 +61,78 @@ def parse_zurg_config(raw: str) -> dict:
     return config
 
 
+def _parse_zurg_directory_line(
+    config: dict[str, Any],
+    line: str,
+    stripped: str,
+    indent: int,
+    directory_name: str | None,
+    in_filters: bool,
+    current_filter: dict[str, str] | None,
+) -> tuple[str | None, bool, dict[str, str] | None]:
+    """Parse a single line within the 'directories' section of a Zurg config."""
+    if indent == 2 and stripped.endswith(":"):
+        candidate = stripped[:-1]
+        if candidate in {"anime", "shows", "movies"}:
+            return candidate, False, None
+
+    if directory_name in {"anime", "shows", "movies"}:
+        if indent == 4 and stripped == "filters:":
+            return directory_name, True, None
+        if indent <= 2:
+            return None, False, None
+
+        if in_filters:
+            return (
+                directory_name,
+                True,
+                _parse_zurg_filter_line(config, stripped, indent, directory_name, current_filter),
+            )
+
+        if indent == 4 and ":" in stripped:
+            key, value = stripped.split(":", 1)
+            directories = _as_dict(config["directories"])
+            directory_config = _as_dict(directories.get(directory_name, {}))
+            directory_config[key.strip()] = value.strip()
+
+    return directory_name, in_filters, current_filter
+
+
+def _parse_zurg_filter_line(
+    config: dict[str, Any],
+    stripped: str,
+    indent: int,
+    directory_name: str,
+    current_filter: dict[str, str] | None,
+) -> dict[str, str] | None:
+    """Parse a single line within a 'filters' block of a Zurg directory."""
+    if indent == 6 and stripped.startswith("- "):
+        new_filter: dict[str, str] = {}
+        directories = _as_dict(config["directories"])
+        directory_config = _as_dict(directories.get(directory_name, {}))
+        filters = cast(list[dict[str, str]], directory_config["filters"])
+        filters.append(new_filter)
+        remainder = stripped[2:].strip()
+        if remainder and ":" in remainder:
+            key, value = remainder.split(":", 1)
+            new_filter[key.strip()] = value.strip()
+        return new_filter
+
+    if indent >= 8 and current_filter is not None and ":" in stripped:
+        key, value = stripped.split(":", 1)
+        current_filter[key.strip()] = value.strip()
+        return current_filter
+
+    return current_filter
+
+
 def _as_dict(value: object) -> dict[str, Any]:
     """Return *value* as a dict when possible, otherwise an empty dict."""
     return cast(dict[str, Any], value) if isinstance(value, dict) else {}
 
 
 def zurg_to_buzz(zurg: dict[str, Any]) -> dict[str, Any]:
+    """Convert a Zurg configuration dict to a Buzz configuration dict."""
     directories = _as_dict(zurg.get("directories", {}))
     anime = _as_dict(directories.get("anime", {}))
     anime_filters = anime.get("filters", [])
@@ -150,11 +176,13 @@ def zurg_to_buzz(zurg: dict[str, Any]) -> dict[str, Any]:
 
 
 def parse_buzz_config(raw: str) -> dict[str, Any]:
+    """Parse a Buzz YAML config file into a dict."""
     loaded = yaml.safe_load(raw)
     return _as_dict(loaded)
 
 
 def buzz_to_zurg(buzz: dict[str, Any]) -> str:
+    """Convert a Buzz configuration dict to a Zurg YAML string."""
     provider = _as_dict(buzz.get("provider", {}))
     server = _as_dict(buzz.get("server", {}))
     hooks = _as_dict(buzz.get("hooks", {}))
@@ -225,6 +253,7 @@ def buzz_to_zurg(buzz: dict[str, Any]) -> str:
 
 
 def convert(source_format: str, target_format: str, raw: str) -> str:
+    """Convert between Zurg and Buzz configuration formats."""
     if source_format == "zurg" and target_format == "buzz":
         return yaml.safe_dump(zurg_to_buzz(parse_zurg_config(raw)), sort_keys=False)
     if source_format == "buzz" and target_format == "zurg":
@@ -233,6 +262,7 @@ def convert(source_format: str, target_format: str, raw: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the config migration CLI."""
     parser = argparse.ArgumentParser(
         description="Convert config files between Zurg and Buzz."
     )

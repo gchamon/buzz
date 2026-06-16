@@ -13,7 +13,7 @@ sense for greenfield seedlings but do not earn their complexity here:
 
 - `docs/work-items/genesis.md`, whose purpose is to ignite problem-domain
   exploration for a new project. Buzz's problem domain is already expressed
-  in code, `README.md`, and `docs/architecture.md`; there is no domain to
+  in code, `README.md`, and `docs/architecture/system.md`; there is no domain to
   explore from scratch.
 - `docs/epics/` and the epic-number naming convention, which assume a
   planning surface with enough work items to justify grouping. Buzz currently

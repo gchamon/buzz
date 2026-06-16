@@ -28,7 +28,7 @@ format:
 
 ## Scope
 
-This directory carries methodology decisions only; product-scope architecture lives in `docs/architecture.md`. Reference ADR 0002 of Orisun as the lineage for that boundary.
+This directory carries methodology decisions only; product-scope architecture lives in `docs/architecture/system.md`. Reference ADR 0002 of Orisun as the lineage for that boundary.
 
 ## Reference
 

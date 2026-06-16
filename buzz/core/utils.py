@@ -7,6 +7,7 @@ import time
 from datetime import UTC, datetime
 from email.utils import formatdate
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 from xml.sax.saxutils import escape
 
 
@@ -61,6 +62,8 @@ def stable_json(value: Any) -> str:
 
 def normalize_posix_path(value: str) -> str:
     """Collapse slashes and dots in a POSIX-style path."""
+    if not value:
+        return ""
     cleaned = value.strip()
     if not cleaned or cleaned == "/":
         return ""
@@ -103,6 +106,22 @@ def sanitize_path_component(value: str) -> str:
     """Remove path separators and clean whitespace."""
     value = value.replace("/", " ").replace("\\", " ")
     return canonical_spaces(value)
+
+
+def magnet_display_name(magnet: str) -> str:
+    """Extract the display name (dn=) from a magnet URI, or return ''."""
+    if not magnet:
+        return ""
+    magnet = magnet.strip()
+    if not magnet.startswith("magnet:"):
+        return ""
+    try:
+        qs = parse_qs(urlsplit(magnet).query)
+        dn_values = qs.get("dn") or []
+        dn = str(dn_values[0]).strip() if dn_values else ""
+    except Exception:
+        return ""
+    return sanitize_path_component(dn)
 
 
 def pretty_title(raw: str) -> str:

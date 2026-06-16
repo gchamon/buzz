@@ -7,6 +7,8 @@ from buzz.core import db
 from buzz.core.state import canonical_snapshot
 from buzz.core.utils import stable_json
 
+EXPECTED_SCHEMA_VERSION = 10
+
 
 class DatabaseTests(unittest.TestCase):
     def test_schema_migration_applies_and_is_idempotent(self):
@@ -19,7 +21,35 @@ class DatabaseTests(unittest.TestCase):
             ).fetchone()["version"]
         finally:
             conn.close()
-        self.assertEqual(version, 3)
+        self.assertEqual(version, EXPECTED_SCHEMA_VERSION)
+
+    def test_curator_title_override_accepts_anime_kind(self):
+        conn = db.connect(":memory:")
+        try:
+            db.apply_migrations(conn)
+            db.save_curator_title_override(
+                conn,
+                "anime123",
+                {
+                    "kind": "anime",
+                    "series": "Real Anime",
+                    "year": 2023,
+                    "provider_ids": {"anidbid": "9876"},
+                },
+            )
+            self.assertEqual(
+                db.load_curator_title_overrides(conn),
+                {
+                    "anime123": {
+                        "kind": "anime",
+                        "series": "Real Anime",
+                        "year": 2023,
+                        "provider_ids": {"anidbid": "9876"},
+                    }
+                },
+            )
+        finally:
+            conn.close()
 
     def test_legacy_json_import_renames_files_to_migrated(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -61,7 +91,7 @@ class DatabaseTests(unittest.TestCase):
                 json.dumps({"movies": 1}),
                 encoding="utf-8",
             )
-            (state_dir / "trashcan.json").write_text(
+            (state_dir / "archive.json").write_text(
                 json.dumps(
                     {
                         "hash-1": {
@@ -114,7 +144,7 @@ class DatabaseTests(unittest.TestCase):
             )
             for filename in (
                 "torrent_cache.migrated",
-                "trashcan.migrated",
+                "archive.migrated",
                 "library_snapshot.migrated",
                 "mapping.migrated",
                 "report.migrated",
@@ -191,6 +221,22 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertIsNone(torrent_row["magnet"])
         self.assertIsNone(archive_row["magnet"])
+
+    def test_provider_library_backfill_from_legacy_tables(self):
+        conn = db.connect(":memory:")
+        try:
+            db.apply_migrations(conn)
+            entries = conn.execute(
+                "SELECT hash, name, magnet FROM library_entries"
+            ).fetchall()
+            links = conn.execute(
+                "SELECT provider, provider_torrent_id FROM provider_links"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        self.assertEqual(entries, [])
+        self.assertEqual(links, [])
 
     def test_subtitle_metadata_upsert_roundtrip(self):
         conn = db.connect(":memory:")

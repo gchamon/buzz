@@ -70,12 +70,22 @@ class EventRegistryTests(unittest.TestCase):
 
     def test_non_warning_events_keep_separate_entries(self):
         registry = EventRegistry(maxlen=10)
-        registry.record("boom", level="error")
-        registry.record("boom", level="error")
+        registry.record("boom")
+        registry.record("boom")
 
         events = registry.get_recent()
         self.assertEqual(len(events), 2)
         self.assertEqual([event["count"] for event in events], [1, 1])
+
+    def test_consecutive_identical_errors_are_counted(self):
+        registry = EventRegistry(maxlen=10)
+
+        registry.record("boom", level="error", source="dav")
+        registry.record("boom", level="error", source="dav")
+
+        events = registry.get_recent()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["count"], 2)
 
     def test_formatted_logs_append_warning_count(self):
         class FakeApp:
@@ -100,6 +110,26 @@ class EventRegistryTests(unittest.TestCase):
             "[WARNING] background sync failed: eof (3)",
             formatted[0]["copy_text"],
         )
+
+    def test_formatted_logs_split_task_id_link_text(self):
+        class FakeApp:
+            def get_logs(self, limit: int = 100):
+                return [
+                    {
+                        "timestamp": "2026-04-30T10:40:09Z",
+                        "level": "info",
+                        "message": "restore queued: task-1",
+                        "source": "dav",
+                        "link_to_task_id": "task-1",
+                    }
+                ]
+
+        formatted = DavApp.formatted_logs(cast(Any, FakeApp()), limit=100)
+
+        self.assertEqual(formatted[0]["message_prefix"], "restore queued: ")
+        self.assertEqual(formatted[0]["task_link_text"], "task-1")
+        self.assertEqual(formatted[0]["message_suffix"], "")
+        self.assertIn("restore queued: task-1", formatted[0]["copy_text"])
 
     def test_formatted_logs_use_process_timezone(self):
         class FakeApp:

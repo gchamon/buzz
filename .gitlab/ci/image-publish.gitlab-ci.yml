@@ -2,6 +2,7 @@ include:
   - component: gitlab.com/gabriel.chamon/ci-components/docker-build@v1
     inputs:
       job_name: build_buzz_docker_image
+      tracked_major_tag: $BUZZ_VERSION
       image_name: buzz
       image_path: .
       dockerfile_name: buzz/Dockerfile

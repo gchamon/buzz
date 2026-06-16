@@ -3,16 +3,28 @@
 import os
 from copy import deepcopy
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 from .core.constants import DEFAULT_ANIME_PATTERN
 
-DEFAULT_DAV_CONFIG_PATH = os.environ.get("BUZZ_CONFIG", "/app/buzz.yml")
+type TaskStatus = Literal[
+    "pending",
+    "queued",
+    "running",
+    "cancelling",
+    "cancelled",
+    "complete",
+    "failed",
+    "aborted",
+]
+
+DEFAULT_DAV_CONFIG_PATH = os.environ.get("BUZZ_CONFIG", "buzz.yml" if os.path.exists("buzz.yml") else "/app/buzz.yml")
 DEFAULT_DIST_CONFIG_NAME = "buzz.dist.yml"
-DEFAULT_STATE_DIR = "/app/data"
-DEFAULT_APP_VERSION = "buzz/0.1"
+DEFAULT_STATE_DIR = "data" if os.path.isdir("data") else "/app/data"
+DEFAULT_APP_VERSION = "buzz/v2"
 DEFAULT_TLS_CERT_PATH = "data/tls/buzz.crt"
 DEFAULT_TLS_KEY_PATH = "data/tls/buzz.key"
 FIELD_ANIME_PATTERNS = "directories.anime.patterns"
@@ -24,6 +36,11 @@ RESTART_REQUIRED_FIELDS = (
     "tls.key_path",
 )
 UI_MANAGED_CONFIG_FIELDS = (
+    "provider.priority",
+    "provider.real_debrid.enabled",
+    "provider.real_debrid.token",
+    "provider.torbox.enabled",
+    "provider.torbox.token",
     "provider.poll_interval_secs",
     "ui.poll_interval_secs",
     "server.bind",
@@ -212,6 +229,8 @@ def filter_paths(source: dict, paths: tuple[str, ...]) -> dict:
 
 _SECRET_PATHS = [
     ("provider", "token"),
+    ("provider", "real_debrid", "token"),
+    ("provider", "torbox", "token"),
     ("media_server", "jellyfin", "api_key"),
     ("media_server", "plex", "token"),
     ("subtitles", "opensubtitles", "api_key"),
@@ -279,6 +298,10 @@ def _strip_secrets(d: dict) -> dict:
 _OVERRIDE_SCHEMA = {
     "provider": {
         "token": True,
+        "active": True,
+        "priority": True,
+        "real_debrid": {"enabled": True, "token": True},
+        "torbox": {"enabled": True, "token": True},
         "connection_concurrency": True,
         "poll_interval_secs": True,
     },
@@ -392,6 +415,11 @@ def load_base_and_overrides(
     default_dist = _load_default_dist_config(path)
     with open(path, encoding="utf-8") as handle:
         file_base = yaml.safe_load(handle) or {}
+
+    # If the user's config has content but lacks a version, it's implicitly v1.
+    if file_base and "version" not in file_base:
+        file_base["version"] = 1
+
     base = deep_merge(default_dist, file_base)
 
     state_dir = str(file_base.get("state_dir", base.get("state_dir", DEFAULT_STATE_DIR)))
@@ -414,8 +442,19 @@ def load_base_and_overrides(
 def to_nested_dict(config: DavConfig) -> dict:
     """Serialize a DavConfig to the nested dict structure used in buzz.yml."""
     return {
+        "version": config.version,
         "provider": {
-            "token": config.token,
+            **({"token": config.token} if config.version == 1 else {}),
+            "active": config.provider_priority[0] if config.provider_priority else "real_debrid",
+            "priority": list(config.provider_priority),
+            "real_debrid": {
+                "enabled": config.real_debrid_enabled,
+                "token": config.real_debrid_token,
+            },
+            "torbox": {
+                "enabled": config.torbox_enabled,
+                "token": config.torbox_token,
+            },
             "connection_concurrency": config.connection_concurrency,
             "poll_interval_secs": config.provider_poll_interval_secs,
         },
@@ -461,9 +500,7 @@ def to_nested_dict(config: DavConfig) -> dict:
             "library_map": dict(config.library_map),
             "scan_probe": {
                 "enabled": config.scan_probe.enabled,
-                "sample_ratio_percent": (
-                    config.scan_probe.sample_ratio_percent
-                ),
+                "sample_ratio_percent": config.scan_probe.sample_ratio_percent,
                 "min_files": config.scan_probe.min_files,
                 "max_attempts": config.scan_probe.max_attempts,
                 "read_bytes": config.scan_probe.read_bytes,
@@ -574,7 +611,7 @@ class ScanProbeConfig(BaseModel):
     concurrency: int = 4
 
     @classmethod
-    def from_raw(cls, raw: object) -> "ScanProbeConfig":
+    def from_raw(cls, raw: object) -> ScanProbeConfig:
         """Build scan probe config from a nested YAML value."""
         if not isinstance(raw, dict):
             return cls()
@@ -594,9 +631,16 @@ class ScanProbeConfig(BaseModel):
 
 
 class DavConfig(BaseModel):
-    """Configuration for the WebDAV / Real-Debrid front-end."""
+    """Configuration for the WebDAV / provider front-end."""
 
+    version: int = 1
     token: str = ""
+    provider_active: str = "real_debrid"
+    provider_priority: tuple[str, ...] = ("real_debrid", "torbox")
+    real_debrid_enabled: bool = True
+    real_debrid_token: str = ""
+    torbox_enabled: bool = True
+    torbox_token: str = ""
     provider_poll_interval_secs: int = 10
     bind: str = "0.0.0.0"
     port: int = 9999
@@ -627,11 +671,15 @@ class DavConfig(BaseModel):
     library_map: dict[str, str] = Field(default_factory=dict)
     scan_probe: ScanProbeConfig = Field(default_factory=ScanProbeConfig)
     subtitles: SubtitleConfig = Field(default_factory=SubtitleConfig)
-    subtitle_root: str = "/mnt/buzz/subs"
+    subtitle_root: str = Field(
+        default_factory=lambda: os.path.join(
+            os.environ.get("BUZZ_MOUNT_ROOT", "/mnt/buzz"), "subs"
+        )
+    )
     tls: TlsConfig = Field(default_factory=TlsConfig)
 
     _overrides_path: Path = PrivateAttr(
-        default=Path("/app/data/buzz.overrides.yml")
+        default=Path(DEFAULT_STATE_DIR) / "buzz.overrides.yml"
     )
     _config_path: str = PrivateAttr(default=DEFAULT_DAV_CONFIG_PATH)
     _default_raw: dict = PrivateAttr(default_factory=dict)
@@ -642,6 +690,7 @@ class DavConfig(BaseModel):
 
     @classmethod
     def _from_merged_dict(cls, raw: dict) -> DavConfig:
+        version = int(raw.get("version", 1))
         provider = raw.get("provider", {})
         server = raw.get("server", {})
         hooks = raw.get("hooks", {})
@@ -653,10 +702,55 @@ class DavConfig(BaseModel):
         media_server_raw = raw.get("media_server", {})
         tls_raw = raw.get("tls", {})
 
-        token = provider.get("token", "").strip()
+        if version == 1:
+            # buzz.dist.yml brings in v2 fields during load_base_and_overrides merge.
+            # We ignore them in v1 schema and enforce real_debrid via provider.token.
+            real_debrid_enabled = True
+            real_debrid_token = str(provider.get("token", "")).strip()
+            torbox_enabled = False
+            torbox_token = ""
+            priority = ("real_debrid",)
+        else:
+            if "token" in provider:
+                # In v2, if token is present, we only allow it if it's the ONLY thing or if nested tokens are missing
+                # But to be strict as requested:
+                raise ValueError(
+                    "config version is 2 but 'provider.token' found. "
+                    "In v2, tokens must be nested under 'provider.real_debrid.token' or 'provider.torbox.token'."
+                )
+            real_debrid = provider.get("real_debrid") or {}
+            torbox = provider.get("torbox") or {}
+            real_debrid_enabled = bool(real_debrid.get("enabled", True))
+            real_debrid_token = str(real_debrid.get("token", "")).strip()
+            torbox_enabled = bool(torbox.get("enabled", True))
+            torbox_token = str(torbox.get("token", "")).strip()
+
+            raw_priority = provider.get("priority")
+            priority_items = (
+                raw_priority
+                if isinstance(raw_priority, list)
+                else [provider.get("active", "real_debrid")]
+            )
+            priority = tuple(
+                item
+                for item in (
+                    str(value).strip().lower()
+                    for value in priority_items
+                )
+                if item in {"real_debrid", "torbox"}
+            )
+            if not priority:
+                priority = ("real_debrid", "torbox")
 
         return cls(
-            token=token,
+            version=version,
+            token=real_debrid_token,
+            provider_active=priority[0],
+            provider_priority=priority,
+            real_debrid_enabled=real_debrid_enabled,
+            real_debrid_token=real_debrid_token,
+            torbox_enabled=torbox_enabled,
+            torbox_token=torbox_token,
             provider_poll_interval_secs=int(provider.get("poll_interval_secs", 10)),
             bind=str(server.get("bind", "0.0.0.0")),
             port=int(server.get("port", 9999)),
@@ -674,7 +768,9 @@ class DavConfig(BaseModel):
             vfs_wait_timeout_secs=int(
                 hooks.get("vfs_wait_timeout_secs", 300)
             ),
-            library_mount="/mnt/buzz/raw",
+            library_mount=os.path.join(
+                os.environ.get("BUZZ_MOUNT_ROOT", "/mnt/buzz"), "raw"
+            ),
             anime_patterns=tuple(anime.get("patterns", [DEFAULT_ANIME_PATTERN])),
             enable_all_dir=bool(compat.get("enable_all_dir", True)),
             enable_unplayable_dir=bool(
@@ -723,7 +819,10 @@ class DavConfig(BaseModel):
             ),
             subtitles=SubtitleConfig.from_raw(raw.get("subtitles")),
             subtitle_root=str(
-                (raw.get("subtitles") or {}).get("root", "/mnt/buzz/subs")
+                (raw.get("subtitles") or {}).get(
+                    "root",
+                    os.path.join(os.environ.get("BUZZ_MOUNT_ROOT", "/mnt/buzz"), "subs"),
+                )
             ),
             tls=TlsConfig(
                 cert_path=str(
@@ -771,7 +870,10 @@ class CuratorConfig(BaseModel):
         default_factory=lambda: Path(
             os.environ.get(
                 "CURATOR_SOURCE_ROOT",
-                os.environ.get("PRESENTATION_SOURCE_ROOT", "/mnt/buzz/raw"),
+                os.environ.get(
+                    "PRESENTATION_SOURCE_ROOT",
+                    os.path.join(os.environ.get("BUZZ_MOUNT_ROOT", "/mnt/buzz"), "raw"),
+                ),
             )
         )
     )
@@ -779,7 +881,10 @@ class CuratorConfig(BaseModel):
         default_factory=lambda: Path(
             os.environ.get(
                 "CURATOR_TARGET_ROOT",
-                os.environ.get("PRESENTATION_TARGET_ROOT", "/mnt/buzz/curated"),
+                os.environ.get(
+                    "PRESENTATION_TARGET_ROOT",
+                    os.path.join(os.environ.get("BUZZ_MOUNT_ROOT", "/mnt/buzz"), "curated"),
+                ),
             )
         )
     )
@@ -794,14 +899,6 @@ class CuratorConfig(BaseModel):
             )
         )
     )
-    overrides_path: Path = Field(
-        default_factory=lambda: Path(
-            os.environ.get(
-                "CURATOR_OVERRIDES",
-                os.environ.get("PRESENTATION_OVERRIDES", "/config/overrides.yml"),
-            )
-        )
-    )
     jellyfin_url: str = "http://jellyfin:8096"
     jellyfin_api_key: str = ""
     jellyfin_scan_task_id: str = ""
@@ -811,12 +908,28 @@ class CuratorConfig(BaseModel):
     scan_probe: ScanProbeConfig = Field(default_factory=ScanProbeConfig)
     plex_url: str = ""
     plex_token: str = ""
+    dav_url: str = Field(
+        default_factory=lambda: os.environ.get(
+            "DAV_URL", "https://buzz-dav:9443"
+        )
+    )
+    dav_tls_cert: str = Field(
+        default_factory=lambda: os.environ.get(
+            "DAV_TLS_CERT", DEFAULT_TLS_CERT_PATH
+        )
+    )
     build_on_start: bool = Field(
         default_factory=lambda: (
             os.environ.get(
                 "CURATOR_BUILD_ON_START",
                 os.environ.get("PRESENTATION_BUILD_ON_START", "true"),
             ).lower()
+            in {"1", "true", "yes"}
+        )
+    )
+    watch_source_root: bool = Field(
+        default_factory=lambda: (
+            os.environ.get("CURATOR_WATCH_SOURCE_ROOT", "true").lower()
             in {"1", "true", "yes"}
         )
     )
@@ -839,12 +952,19 @@ class CuratorConfig(BaseModel):
         )
     )
     subtitles: SubtitleConfig = Field(default_factory=SubtitleConfig)
-    subtitle_root: Path = Field(default_factory=lambda: Path("/mnt/buzz/subs"))
+    subtitle_root: Path = Field(
+        default_factory=lambda: Path(
+            os.environ.get(
+                "CURATOR_SUBTITLE_ROOT",
+                os.path.join(os.environ.get("BUZZ_MOUNT_ROOT", "/mnt/buzz"), "subs"),
+            )
+        )
+    )
     _base_raw: dict = PrivateAttr(default_factory=dict)
     _raw_overrides: dict = PrivateAttr(default_factory=dict)
     _raw_merged: dict = PrivateAttr(default_factory=dict)
     _overrides_path: Path = PrivateAttr(
-        default=Path("/app/data/buzz.overrides.yml")
+        default=Path(DEFAULT_STATE_DIR) / "buzz.overrides.yml"
     )
     _config_path: str = PrivateAttr(default=DEFAULT_DAV_CONFIG_PATH)
     _default_raw: dict = PrivateAttr(default_factory=dict)
@@ -853,49 +973,25 @@ class CuratorConfig(BaseModel):
     def load(cls, path: str | None = None) -> CuratorConfig:
         """Load from env defaults and optional buzz.yml subtitle config."""
         data: dict = {}
-        config_path = path or os.environ.get("BUZZ_CONFIG", "/app/buzz.yml")
+        config_path = path or DEFAULT_DAV_CONFIG_PATH
 
         if config_path and os.path.exists(config_path):
             try:
-                default_raw, _file_raw, base, overrides, merged, overrides_path = load_base_and_overrides(
-                    config_path
-                )
+                (
+                    default_raw,
+                    _file_raw,
+                    base,
+                    overrides,
+                    merged,
+                    overrides_path,
+                ) = load_base_and_overrides(config_path)
+
                 if "state_dir" in merged:
                     data["state_dir"] = Path(str(merged["state_dir"]))
-                subtitles_raw = merged.get("subtitles")
-                if subtitles_raw is not None:
-                    data["subtitles"] = SubtitleConfig.from_raw(subtitles_raw)
-                    if isinstance(subtitles_raw, dict) and "root" in subtitles_raw:
-                        data["subtitle_root"] = Path(str(subtitles_raw["root"]))
-                media_server = merged.get("media_server") or {}
-                if "kind" in media_server:
-                    data["media_server_kind"] = str(
-                        media_server["kind"]
-                    ).strip().lower() or "jellyfin"
-                if "trigger_lib_scan" in media_server:
-                    data["trigger_lib_scan"] = bool(
-                        media_server["trigger_lib_scan"]
-                    )
-                data["scan_probe"] = ScanProbeConfig.from_raw(
-                    media_server.get("scan_probe")
-                )
-                jellyfin = media_server.get("jellyfin") or {}
-                if "url" in jellyfin:
-                    data["jellyfin_url"] = str(jellyfin["url"]).rstrip("/")
-                if "api_key" in jellyfin:
-                    data["jellyfin_api_key"] = str(jellyfin["api_key"])
-                if "scan_task_id" in jellyfin:
-                    data["jellyfin_scan_task_id"] = str(jellyfin["scan_task_id"])
-                plex = media_server.get("plex") or {}
-                if "url" in plex:
-                    data["plex_url"] = str(plex["url"]).rstrip("/")
-                if "token" in plex:
-                    data["plex_token"] = str(plex["token"])
-                library_map = media_server.get("library_map") or {}
-                if library_map:
-                    data["jellyfin_library_map"] = {
-                        str(k): str(v) for k, v in library_map.items()
-                    }
+
+                cls._load_subtitle_config(data, merged)
+                cls._load_media_server_config(data, merged)
+
                 config = cls(**data)
                 config._config_path = config_path
                 config._default_raw = default_raw
@@ -913,6 +1009,49 @@ class CuratorConfig(BaseModel):
         config = cls(**data)
         config._config_path = config_path
         return config
+
+    @staticmethod
+    def _load_subtitle_config(data: dict, merged: dict) -> None:
+        """Extract subtitle-related settings from the merged config dict."""
+        subtitles_raw = merged.get("subtitles")
+        if subtitles_raw is not None:
+            data["subtitles"] = SubtitleConfig.from_raw(subtitles_raw)
+            if isinstance(subtitles_raw, dict) and "root" in subtitles_raw:
+                data["subtitle_root"] = Path(str(subtitles_raw["root"]))
+
+    @staticmethod
+    def _load_media_server_config(data: dict, merged: dict) -> None:
+        """Extract media server-related settings from the merged config dict."""
+        media_server = merged.get("media_server") or {}
+        if "kind" in media_server:
+            data["media_server_kind"] = (
+                str(media_server["kind"]).strip().lower() or "jellyfin"
+            )
+        if "trigger_lib_scan" in media_server:
+            data["trigger_lib_scan"] = bool(media_server["trigger_lib_scan"])
+        data["scan_probe"] = ScanProbeConfig.from_raw(
+            media_server.get("scan_probe")
+        )
+
+        jellyfin = media_server.get("jellyfin") or {}
+        if "url" in jellyfin:
+            data["jellyfin_url"] = str(jellyfin["url"]).rstrip("/")
+        if "api_key" in jellyfin:
+            data["jellyfin_api_key"] = str(jellyfin["api_key"])
+        if "scan_task_id" in jellyfin:
+            data["jellyfin_scan_task_id"] = str(jellyfin["scan_task_id"])
+
+        plex = media_server.get("plex") or {}
+        if "url" in plex:
+            data["plex_url"] = str(plex["url"]).rstrip("/")
+        if "token" in plex:
+            data["plex_token"] = str(plex["token"])
+
+        library_map = media_server.get("library_map") or {}
+        if library_map:
+            data["jellyfin_library_map"] = {
+                str(k): str(v) for k, v in library_map.items()
+            }
 
 
 PresentationConfig = CuratorConfig
@@ -944,6 +1083,7 @@ class AddTorrentRequest(BaseModel):
     """Request body for adding a torrent by magnet link."""
 
     magnet: str
+    provider: str | None = None
 
     @field_validator("magnet")
     @classmethod
@@ -986,8 +1126,8 @@ class DeleteTorrentRequest(BaseModel):
         return value
 
 
-class RestoreTrashRequest(BaseModel):
-    """Request body for restoring a deleted torrent from trash."""
+class RestoreArchiveRequest(BaseModel):
+    """Request body for restoring an archived torrent."""
 
     hash: str
 
@@ -1001,8 +1141,8 @@ class RestoreTrashRequest(BaseModel):
         return value
 
 
-class DeleteTrashRequest(BaseModel):
-    """Request body for permanently deleting a trashed torrent."""
+class DeleteArchiveRequest(BaseModel):
+    """Request body for permanently deleting an archived torrent."""
 
     hash: str
 

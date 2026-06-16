@@ -1,19 +1,16 @@
 """FastAPI application for the WebDAV / Real-Debrid front-end."""
 
 import asyncio
-import json
 import logging
 import os
 import threading
-from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
-from urllib import error
 from typing import Any, Protocol, cast
+from urllib import error
 
 from fastapi import FastAPI, Request, Response
-from starlette.types import ASGIApp
-from starlette.middleware.gzip import GZipMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (
     HTMLResponse,
@@ -25,6 +22,10 @@ from fastapi.staticfiles import StaticFiles
 from pyview.live_socket import pub_sub_hub
 from pyview.pyview import liveview_container
 from rdapi import RD
+from starlette.middleware.gzip import GZipMiddleware
+from starlette.types import ASGIApp
+
+from buzz.providers import RealDebridProviderClient, TorBoxProviderClient
 
 from .core import db
 from .core.events import record_event
@@ -33,12 +34,12 @@ from .core.state import (
     HosterUnavailableError,
     InitialSync,
     Poller,
+    ProviderStreamResolutionError,
     dav_rel_path,
     read_range_header,
 )
-from .core.tls import ensure_tls_certificate
+from .core.tls import ensure_tls_certificate, httpx_verify
 from .core.utils import (
-    format_bytes,
     http_date,
 )
 from .dav_protocol import (
@@ -47,21 +48,21 @@ from .dav_protocol import (
     propfind_body,
 )
 from .models import (
-    AddTorrentRequest,
-    DavConfig,
     DEFAULT_DAV_CONFIG_PATH,
-    DeleteTorrentRequest,
-    DeleteTrashRequest,
     FIELD_ANIME_PATTERNS,
     HOT_RELOADABLE_FIELDS,
     RESTART_REQUIRED_FIELDS,
+    AddTorrentRequest,
+    DavConfig,
+    DeleteArchiveRequest,
+    DeleteTorrentRequest,
     ErrorResponse,
-    RestoreTrashRequest,
+    RestoreArchiveRequest,
     SelectFilesRequest,
     UiNotifyRequest,
     _strip_secrets,
-    diff_fields,
     deep_merge,
+    diff_fields,
     filter_paths,
     get_nested_value,
     mask_secrets,
@@ -90,6 +91,7 @@ UI_REDIRECT_EXACT_PATHS = frozenset({
     "/cache",
     "/archive",
     "/logs",
+    "/threads",
     "/config",
 })
 UI_REDIRECT_PREFIXES = ("/static/", "/pyview/")
@@ -112,13 +114,16 @@ class DavOwner(Protocol):
     """Minimal protocol the TLS HTTP companion needs from a DAV owner."""
 
     @property
-    def app(self) -> ASGIApp: ...
+    def app(self) -> ASGIApp:
+        """The ASGI application instance."""
+        ...
 
 
 class UvicornReadyzAccessFilter(logging.Filter):
     """Suppress repetitive uvicorn access logs for readiness probes."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Filter out /readyz and /healthz access logs."""
         if not isinstance(record.args, tuple) or len(record.args) < 3:
             return True
 
@@ -296,6 +301,7 @@ class DavApp:
         registry.default_source = "dav"
         registry.reconfigure(config.log_max_entries)
         registry.verbose = config.verbose
+        registry.stdout_enabled = False
 
         self.config = config
         self.saved_config = config
@@ -304,12 +310,19 @@ class DavApp:
             "_config_path",
             os.environ.get("BUZZ_CONFIG", DEFAULT_DAV_CONFIG_PATH),
         )
-        for key in unknown_config_keys(config._file_raw, to_nested_dict(config)):
+        schema = to_nested_dict(config)
+        if config.version == 1:
+            # v1 schema allows token at provider level
+            schema["provider"]["token"] = ""
+            for k in ["real_debrid", "torbox", "active", "priority"]:
+                schema["provider"].pop(k, None)
+
+        for key in unknown_config_keys(config._file_raw, schema):
             record_event(f"unknown config key: {key}", level="warning")
-        os.environ["RD_APITOKEN"] = config.token
-        self.client = RD() if config.token else None
+        self.clients = self._build_provider_clients(config)
+        self.client = next(iter(self.clients.values()), None)
         self.ui_loop: asyncio.AbstractEventLoop | None = None
-        self.state = BuzzState(config, self.client, on_ui_change=self._notify_ui_change)
+        self.state = BuzzState(config, self.clients, on_ui_change=self._notify_ui_change)
         self.curator_ready = not bool(config.curator_url)
         self.opensubtitles_languages: list[tuple[str, str]] = []
         self.languages_refreshing = False
@@ -317,18 +330,20 @@ class DavApp:
         self._language_refresh_running = False
         self.ui = build_ui(self)
         self._curator_log_level: str = "info"
+        self._nav_log_level_override: str = ""
         registry.add_listener(self._handle_recorded_event)
 
-        if config.token:
+        if self.client is not None:
             initial_sync = InitialSync(self.state)
             self._poller: Poller | None = Poller(self.state)
+            self.state.attach_poller(self._poller)
             initial_sync.start()
             self._poller.start()
         else:
             self._poller = None
-            self.state.last_error = "Real-Debrid token is not configured."
+            self.state.last_error = "provider token is not configured."
             self.state.mark_startup_sync_complete()
-            record_event("real-Debrid token is not configured", level="error")
+            record_event("provider token is not configured", level="error")
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
@@ -365,6 +380,44 @@ class DavApp:
         )
         self.app.router.routes.append(websocket_route)
 
+    def _build_provider_clients(self, config: DavConfig) -> dict[str, Any]:
+        """Build configured provider clients ordered by provider priority."""
+        clients: dict[str, Any] = {}
+        for provider in config.provider_priority:
+            if provider == "real_debrid" and (
+                not config.real_debrid_enabled
+                or not (config.real_debrid_token or config.token)
+            ):
+                continue
+            if provider == "torbox" and (
+                not config.torbox_enabled or not config.torbox_token
+            ):
+                continue
+            client = self._build_provider_client(config, provider)
+            if client is not None:
+                clients[provider] = client
+                record_event(f"provider backend initialized: {provider}", level="info")
+        return clients
+
+    def _build_provider_client(
+        self, config: DavConfig, provider: str = "real_debrid"
+    ) -> Any | None:
+        """Build one provider client."""
+        if provider == "real_debrid":
+            if not config.real_debrid_enabled:
+                return None
+            token = config.real_debrid_token or config.token
+            if not token:
+                return None
+            os.environ["RD_APITOKEN"] = token
+            return RealDebridProviderClient(token, raw_client=RD())
+        if provider == "torbox" and config.torbox_enabled and config.torbox_token:
+            return TorBoxProviderClient(
+                config.torbox_token,
+                timeout_secs=config.request_timeout_secs,
+            )
+        return None
+
     def _load_opensubtitles_languages(self) -> None:
         """Populate the cache from SQLite; refresh in the background if stale."""
         cached, fetched_at = db.load_opensubtitles_languages(self.state.conn)
@@ -377,11 +430,11 @@ class DavApp:
             return True
         try:
             stamp = datetime.strptime(fetched_at, "%Y-%m-%dT%H:%M:%SZ").replace(
-                tzinfo=timezone.utc
+                tzinfo=UTC
             )
         except ValueError:
             return True
-        return datetime.now(timezone.utc) - stamp > timedelta(days=30)
+        return datetime.now(UTC) - stamp > timedelta(days=30)
 
     def _subtitles_credentials_ready(self) -> bool:
         subs = self.saved_config.subtitles
@@ -432,9 +485,11 @@ class DavApp:
             self._notify_ui_change("config", {"languages_refresh_complete": True})
 
     def is_ready(self) -> bool:
+        """Return True if both the state and curator are ready."""
         return self.state.is_ready() and self.curator_ready
 
     def is_service_ready(self) -> bool:
+        """Return True if the main DAV state is ready."""
         return self.state.is_ready()
 
     async def _ui_document(self, request: Request) -> Response:
@@ -446,7 +501,7 @@ class DavApp:
         response.headers.update(UI_DOCUMENT_CACHE_HEADERS)
         return response
 
-    def _setup_routes(self):
+    def _setup_routes(self):  # noqa: C901
         @self.app.get("/", response_class=HTMLResponse)
         @self.app.get("/cache", response_class=HTMLResponse)
         async def cache_page(request: Request):
@@ -458,6 +513,10 @@ class DavApp:
 
         @self.app.get("/logs", response_class=HTMLResponse)
         async def logs_page(request: Request):
+            return await self._ui_document(request)
+
+        @self.app.get("/threads", response_class=HTMLResponse)
+        async def threads_page(request: Request):
             return await self._ui_document(request)
 
         @self.app.get("/config", response_class=HTMLResponse)
@@ -472,7 +531,10 @@ class DavApp:
         def post_config(payload: dict[str, Any]):
             try:
                 overrides = payload.get("overrides", {})
+                provider_secret_updates = self._provider_secret_updates(overrides)
                 overrides = _strip_secrets(overrides)
+                for field, value in provider_secret_updates.items():
+                    set_nested_value(overrides, field, value)
                 return self.persist_overrides(overrides)
             except Exception as exc:
                 return JSONResponse(status_code=400, content={"error": str(exc)})
@@ -486,7 +548,10 @@ class DavApp:
 
         @self.app.post("/api/ui/notify")
         def ui_notify(payload: UiNotifyRequest):
-            msg = str(payload.message.get("message", ""))
+            # Curator logs are persisted, printed, and pushed to the UI by the
+            # /api/logs/ingest path (record_raw + _handle_recorded_event). This
+            # endpoint only updates dav-side flags so it must NOT re-record the
+            # event, otherwise every curator line is logged twice.
             level = str(payload.message.get("level", "info")).lower()
             source = str(payload.message.get("source", "dav"))
             event_name = str(payload.message.get("event", ""))
@@ -495,17 +560,6 @@ class DavApp:
             priority = {"error": 3, "warning": 2, "info": 1, "debug": 0}
             if priority.get(level, 0) > priority.get(self._curator_log_level, 0):
                 self._curator_log_level = level
-            record_event(
-                msg,
-                level=level,
-                source=source,
-                event=event_name or None,
-            )
-            for topic in payload.topics:
-                self._notify_ui_topic(
-                    f"buzz:{topic}",
-                    dict(payload.message),
-                )
             return {"status": "ok"}
 
         @self.app.get("/healthz")
@@ -534,7 +588,7 @@ class DavApp:
         )
         def add_torrent(payload: AddTorrentRequest):
             try:
-                result = self.state.add_magnet(payload.magnet)
+                result = self.state.add_magnet(payload.magnet, payload.provider)
                 return result
             except Exception as exc:
                 return JSONResponse(status_code=500, content={"error": str(exc)})
@@ -562,8 +616,8 @@ class DavApp:
         )
         def delete_torrent(payload: DeleteTorrentRequest):
             try:
-                result = self.state.delete_torrent(payload.torrent_id)
-                return result
+                task_id = self.state.delete_torrent(payload.torrent_id)
+                return {"status": "queued", "task_id": task_id}
             except Exception as exc:
                 return JSONResponse(status_code=500, content={"error": str(exc)})
 
@@ -574,10 +628,10 @@ class DavApp:
                 500: {"model": ErrorResponse},
             },
         )
-        def restore_trash(payload: RestoreTrashRequest):
+        def restore_archive(payload: RestoreArchiveRequest):
             try:
-                result = self.state.restore_trash(payload.hash)
-                return result
+                task_id = self.state.submit_archive_restore(payload.hash)
+                return {"status": "queued", "task_id": task_id}
             except Exception as exc:
                 return JSONResponse(status_code=500, content={"error": str(exc)})
 
@@ -588,9 +642,9 @@ class DavApp:
                 500: {"model": ErrorResponse},
             },
         )
-        def delete_trash_permanently(payload: DeleteTrashRequest):
+        def delete_archive_permanently(payload: DeleteArchiveRequest):
             try:
-                result = self.state.delete_trash_permanently(payload.hash)
+                result = self.state.delete_archive_permanently(payload.hash)
                 return result
             except Exception as exc:
                 return JSONResponse(status_code=500, content={"error": str(exc)})
@@ -644,6 +698,23 @@ class DavApp:
         @self.app.get("/api/logs")
         def get_logs(limit: int = 100):
             return self.get_logs(limit)
+
+        @self.app.post("/api/logs/ingest")
+        def ingest_log(event: dict[str, Any]):
+            from .core.events import registry
+            registry.record_raw(event)
+            return {"status": "ok"}
+
+        @self.app.post("/api/tasks/{task_id}/complete")
+        def complete_task(task_id: str, payload: dict[str, Any] | None = None):
+            error = (payload or {}).get("error")
+            status = (payload or {}).get("status")
+            try:
+                return self.state.complete_background_task(
+                    task_id, error=error, status=status
+                )
+            except ValueError as exc:
+                return JSONResponse(status_code=404, content={"error": str(exc)})
 
         @self.app.options("/dav/{path:path}")
         def options_dav(path: str):
@@ -791,11 +862,32 @@ class DavApp:
                     ),
                 },
             )
+        except ProviderStreamResolutionError as exc:
+            if not exc.cached:
+                record_event(
+                    f"{exc.provider} stream resolution unavailable: {exc.code}",
+                    event="provider_stream_unavailable",
+                    path=rel,
+                    provider=exc.provider,
+                    level="warning",
+                )
+            return Response(
+                status_code=503,
+                content=str(exc),
+                headers={
+                    "Retry-After": str(
+                        self.config.rd_hoster_failure_cache_secs
+                    ),
+                },
+            )
         except ValueError as exc:
+            source_url = str(node.get("source_url") or node.get("url") or "")
+            provider = self.state.resolved_url_provider(source_url)
             record_event(
-                f"Real-Debrid stream failed: {exc}",
-                event="rd_stream_failed",
+                f"upstream stream failed: {exc}",
+                event="provider_stream_failed",
                 path=rel,
+                provider=provider,
                 level="debug" if is_transient_stream_error(exc) else "warning",
             )
             return Response(status_code=502, content=str(exc))
@@ -824,16 +916,40 @@ class DavApp:
         if not self.config.curator_url:
             return {"error": MSG_NO_CURATOR}
 
+        def run_fetch(task_id: str, cancel_event: threading.Event) -> None:
+            # Proxied task, just wait for signal
+            pass
+
+        task_id = self.state.background_tasks.submit(
+            kind="subtitles",
+            label=f"fetch_subtitles: {torrent_name}",
+            work=run_fetch,
+            auto_complete=False,
+        )
+        record_event(
+            f"subtitle fetch triggered for: {torrent_name}",
+            link_to_task_id=task_id,
+        )
+
         subs_url = self.config.curator_url.replace(
             PATH_REBUILD, "/api/subtitles/fetch"
         )
         try:
-            with httpx.Client(timeout=self.config.request_timeout_secs) as client:
+            with httpx.Client(
+                timeout=self.config.request_timeout_secs,
+                verify=httpx_verify(self.config.tls.cert_path),
+            ) as client:
                 resp = client.post(
-                    subs_url, json={"torrent_name": torrent_name}
+                    subs_url,
+                    json={"torrent_name": torrent_name, "task_id": task_id},
                 )
                 return {"status_code": resp.status_code, "data": resp.json()}
         except Exception as exc:
+            self.state.complete_background_task(task_id, error=str(exc))
+            record_event(
+                f"subtitle fetch failed for {torrent_name}: {exc}",
+                level="error",
+            )
             return {"error": f"Curator unreachable: {exc}"}
 
     def config_payload(self) -> dict:
@@ -845,6 +961,21 @@ class DavApp:
             "restart_required_fields": self.restart_required_fields(),
             "hot_reloaded_fields": [],
         }
+
+    def _provider_secret_updates(self, overrides: dict) -> dict[str, str]:
+        """Return unmasked provider secret updates from an override payload."""
+        updates: dict[str, str] = {}
+        for field in (
+            "provider.real_debrid.token",
+            "provider.torbox.token",
+        ):
+            value = get_nested_value(overrides, field)
+            if not isinstance(value, str):
+                continue
+            stripped = value.strip()
+            if stripped and stripped != "***":
+                updates[field] = stripped
+        return updates
 
     @property
     def restart_required(self) -> bool:
@@ -881,6 +1012,25 @@ class DavApp:
                 event="curator_config_reload_failed",
             )
 
+    def _reconcile_provider_poller(self) -> None:
+        """Start or stop provider polling after a hot client rebuild."""
+        if self.client is None:
+            if self._poller is not None:
+                self._poller.stop()
+                self._poller = None
+                self.state.attach_poller(None)
+            self.state.last_error = "provider token is not configured."
+            self.state.mark_startup_sync_complete()
+            record_event("provider token is not configured", level="error")
+            return
+
+        if self._poller is None:
+            initial_sync = InitialSync(self.state)
+            self._poller = Poller(self.state)
+            self.state.attach_poller(self._poller)
+            initial_sync.start()
+            self._poller.start()
+
     def _apply_runtime_config(
         self,
         new_config: DavConfig,
@@ -908,7 +1058,12 @@ class DavApp:
         self.config = runtime_config
         registry.reconfigure(runtime_config.log_max_entries)
         registry.verbose = runtime_config.verbose
+        self.clients = self._build_provider_clients(runtime_config)
+        self.client = next(iter(self.clients.values()), None)
+        self.state.clients = self.clients
+        self.state.client = self.client
         self.state.apply_config(runtime_config)
+        self._reconcile_provider_poller()
         if snapshot_changed:
             self.state.sync(trigger_hook=False)
         self._notify_ui_change("config")
@@ -916,6 +1071,9 @@ class DavApp:
 
     def persist_overrides(self, overrides: dict) -> dict:
         """Save overrides, hot-apply live-safe fields, and report status."""
+        v2_prefixes = ("provider.real_debrid", "provider.torbox", "provider.active", "provider.priority")
+        if any(any(k.startswith(p) for p in v2_prefixes) for k in overrides):
+            overrides["version"] = 2
         save_overrides(overrides, self.config._overrides_path)
         previous_effective = to_nested_dict(self.config)
         hot_override_subset = filter_paths(overrides, HOT_RELOADABLE_FIELDS)
@@ -938,17 +1096,19 @@ class DavApp:
     def _handle_validation_error(
         self, request: Request, exc: Exception
     ) -> JSONResponse:
-        first_error = {"msg": MSG_INVALID_REQUEST}
         if isinstance(exc, RequestValidationError):
             validation_error = cast(RequestValidationError, exc)
             errors = validation_error.errors()
             first_error = errors[0] if errors else {"msg": MSG_INVALID_REQUEST}
+        else:
+            first_error = {"msg": MSG_INVALID_REQUEST}
         return JSONResponse(
             status_code=400,
             content={"error": str(first_error.get("msg", MSG_INVALID_REQUEST))},
         )
 
     def get_logs(self, limit: int = 100) -> list[dict]:
+        """Retrieve recent log events from the registry."""
         from .core.events import registry
 
         logs = registry.get_recent(limit)
@@ -979,8 +1139,22 @@ class DavApp:
         return parsed.astimezone().strftime("%H:%M:%S")
 
     def formatted_logs(self, limit: int = 100) -> list[dict[str, str]]:
+        """Retrieve and format recent log events for the UI."""
         formatted = []
-        for log in reversed(self.get_logs(limit)):
+        task_info = {}
+        if hasattr(self, "state") and self.state:
+            tasks = self.state.background_tasks.snapshot()
+            task_info = {t["id"]: t for t in tasks}
+
+        # Increase the window we look at to account for filtered task logs
+        for log in reversed(self.get_logs(limit * 5)):
+            task_id = log.get("task_id")
+            if task_id is not None and str(task_id).strip():
+                continue
+
+            if len(formatted) >= limit:
+                break
+
             display_timestamp = DavApp._display_log_timestamp(
                 str(log.get("timestamp", ""))
             )
@@ -989,9 +1163,23 @@ class DavApp:
             source = "buzz-curator" if log.get("source") == "curator" else "buzz-dav"
             message = str(log.get("message", ""))
             count = int(log.get("count", 1))
-            if count > 1:
-                message = f"{message} ({count})"
+            message = f"{message} ({count})" if count > 1 else message
             copy_text = f"{source} {display_timestamp} {level_label} {message}"
+
+            link_to_task_id = str(log.get("link_to_task_id") or "")
+            message_prefix, task_link_text, message_suffix = (
+                DavApp._split_task_link_message(message, link_to_task_id)
+            )
+            task_status = ""
+            task_status_class = ""
+            if link_to_task_id:
+                task = task_info.get(link_to_task_id)
+                if task:
+                    task_status = task["status"]
+                    from .console import Level
+                    task_status_class = Level.task_status_class(task_status)
+                    copy_text = f"{source} {display_timestamp} {level_label} {message} [{task_status}]"
+
             formatted.append(
                 {
                     "copy_text": copy_text,
@@ -999,30 +1187,55 @@ class DavApp:
                     "level_class": f"log-level-{level}",
                     "level_label": level_label,
                     "message": message,
+                    "message_prefix": message_prefix,
+                    "message_suffix": message_suffix,
                     "source": source,
                     "timestamp": display_timestamp,
+                    "link_to_task_id": link_to_task_id,
+                    "task_link_text": task_link_text,
+                    "task_status": task_status,
+                    "task_status_class": task_status_class,
                 }
             )
         return formatted
 
+    @staticmethod
+    def _split_task_link_message(
+        message: str,
+        task_id: str,
+    ) -> tuple[str, str, str]:
+        if not task_id:
+            return message, "", ""
+        index = message.find(task_id)
+        if index < 0:
+            return f"{message} ", task_id, ""
+        return (
+            message[:index],
+            message[index:index + len(task_id)],
+            message[index + len(task_id):],
+        )
+
     def log_count(self) -> int:
+        """Return the total number of logs currently in the registry."""
         from .core.events import registry
 
-        return len(registry.events)
+        with registry.lock:
+            return sum(
+                1 for event in registry.events
+                if not (event.get("task_id") and str(event.get("task_id")).strip())
+            )
 
     def healthz_payload(self) -> dict:
         """Return the health payload used by both HTTP and HTTPS ports."""
         return {
             "status": "ok",
             "log_count": self.log_count(),
-            "archive_count": len(self.state.trashcan),
+            "archive_count": len(self.state.archive),
             **self.state.status(),
         }
 
     def readyz_response(self) -> JSONResponse:
         """Return the readiness response used by both HTTP and HTTPS ports."""
-        from .core.events import registry
-
         is_ready = self.is_service_ready()
         status_code = HTTPStatus.OK if is_ready else HTTPStatus.SERVICE_UNAVAILABLE
         payload_status = "ready" if is_ready else "starting"
@@ -1030,7 +1243,7 @@ class DavApp:
             status_code=status_code,
             content={
                 "status": payload_status,
-                "log_count": len(registry.events),
+                "log_count": self.log_count(),
                 "curator_ready": self.curator_ready,
                 "ui_status": "ready" if self.is_ready() else "starting",
                 **self.state.status(),
@@ -1059,13 +1272,11 @@ class DavApp:
     def _notify_ui_topic(self, topic: str, message: dict) -> None:
         if self.ui_loop is None:
             return
-        try:
+        with suppress(Exception):
             asyncio.run_coroutine_threadsafe(
                 pub_sub_hub.send_all_on_topic_async(topic, message),
                 self.ui_loop,
             )
-        except Exception:
-            pass
 
 
 def run_dav_server(config: DavConfig) -> None:

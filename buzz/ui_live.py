@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import re
+from collections.abc import Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict, TypeVar, cast
-from urllib.parse import ParseResult
+from urllib.parse import ParseResult, parse_qs, urlparse
 
 import yaml
 from markupsafe import Markup
@@ -21,22 +25,13 @@ from pyview.template import LiveRender, RenderedContent, template_file
 from pyview.vendor import ibis
 from pyview.vendor.ibis.loaders import FileReloader
 
+from . import console, events
 from .core.utils import format_bytes
-
-CSS_STATUS_GREEN = "service-status-green"
-CSS_STATUS_RED = "service-status-red"
-CSS_STATUS_YELLOW = "service-status-yellow"
-TOPIC_STATUS = "buzz:status"
-TOPIC_ARCHIVE = "buzz:archive"
-TOPIC_LOGS = "buzz:logs"
-TOPIC_CONFIG = "buzz:config"
-EVENT_NAVIGATE = "navigate"
 from .models import (
     FIELD_ANIME_PATTERNS,
     FIELD_SUBTITLES_LANGUAGES,
-    HOT_RELOADABLE_FIELDS,
     RESTART_REQUIRED_FIELDS,
-    UI_MANAGED_CONFIG_FIELDS,
+    TaskStatus,
     deep_merge,
     diff_fields,
     effective_override_field_paths,
@@ -46,12 +41,37 @@ from .models import (
     to_nested_dict,
 )
 
+_TASK_STATUSES: set[TaskStatus] = {
+    "pending",
+    "queued",
+    "running",
+    "cancelling",
+    "cancelled",
+    "complete",
+    "failed",
+    "aborted",
+}
+_LOG_LEVEL_SEVERITY = {
+    "debug": 0,
+    "info": 1,
+    "warning": 2,
+    "error": 3,
+}
+
+TOPIC_STATUS = "buzz:status"
+TOPIC_ARCHIVE = "buzz:archive"
+TOPIC_LOGS = "buzz:logs"
+TOPIC_CONFIG = "buzz:config"
+EVENT_NAVIGATE = "navigate"
+
 _TEMPLATE_DIR = Path(__file__).with_name("pyview_templates")
 ibis.loader = FileReloader(str(_TEMPLATE_DIR))
-PAGE_NAMES = ("cache", "archive", "logs", "config")
-PageName = Literal["cache", "archive", "logs", "config"]
+PAGE_NAMES = ("cache", "archive", "logs", "threads", "config")
+PageName = Literal["cache", "archive", "logs", "threads", "config"]
 
 _CONFIG_BOOL_FIELDS = (
+    "provider.real_debrid.enabled",
+    "provider.torbox.enabled",
     "compat.enable_all_dir",
     "compat.enable_unplayable_dir",
     "logging.verbose",
@@ -85,6 +105,11 @@ _LIBRARY_MAP_FIELDS = tuple(
 )
 
 _CONFIG_TRACKED_FIELDS = (
+    "provider.priority",
+    "provider.real_debrid.enabled",
+    "provider.real_debrid.token",
+    "provider.torbox.enabled",
+    "provider.torbox.token",
     "provider.poll_interval_secs",
     "ui.poll_interval_secs",
     "provider.connection_concurrency",
@@ -127,22 +152,31 @@ _CONFIG_TRACKED_FIELDS = (
 
 
 class PageItem(TypedDict):
+    """A single item in a navigation list."""
     label: str
     value: str
+    css_class: NotRequired[str]
+    cycle_classes_json: NotRequired[str]
     cycle_values_json: NotRequired[str]
 
 
 class PageNav(TypedDict):
+    """Navigation state for the main shell."""
     archive_count: int
     cache_active: bool
     archive_active: bool
     logs_active: bool
+    threads_active: bool
     config_active: bool
     log_count: int
     log_level: str
+    thread_count: int
 
 
 class PageContext(TypedDict):
+    """Shared context for all Buzz operator pages."""
+    active_provider: str
+    active_provider_label: str
     console_class: str
     console_msg: str
     has_error: bool
@@ -156,57 +190,116 @@ class PageContext(TypedDict):
 
 
 class CacheFileItem(TypedDict):
+    """A file within a torrent being analyzed for cache."""
     id: str
     path: str
     bytes: int
     size: str
     is_video: bool
     selected: bool
+    subtitle_query: str
+    subtitle_default_query: str
+
+
+class CacheFolderItem(TypedDict):
+    """A selectable folder prefix in an expanded torrent."""
+    path: str
+    selected: bool
+    selected_files: int
+    total_files: int
 
 
 class CacheAnalysisResult(TypedDict):
+    """The result of a cache analysis for a specific torrent."""
     torrent_id: str
     filename: str
     files: list[CacheFileItem]
+    provider: str
+    provider_label: str
 
 
 class CacheTorrentItem(TypedDict):
+    """A torrent entry in the cache view."""
     id: str
+    provider_torrent_id: str
     name: str
+    category: str
+    category_override: str
     status: str
     progress: int
     bytes: int
     size: str
     selected_files: int
+    file_selection_pending: bool
     links: int
     ended: str
     short_id: str
+    has_override: bool
+
+
+class ArchiveProviderTag(TypedDict):
+    """A UI tag representing a provider in the archive."""
+    label: str
+    css_class: str
 
 
 class ArchiveItem(TypedDict):
+    """An archived torrent entry."""
     bytes: int
     deleted_at: str
     file_count: int
     hash: str
+    magnet: str | None
     name: str
     size: str
+    provider_tags: list[ArchiveProviderTag]
+    transfer_disabled: bool
+    transfer_label: str
+    transfer_show: bool
+    transfer_target_provider: str
+    transfer_title: str
+
+
+class ArchiveTransferAction(TypedDict):
+    """Provider transfer action rendered for an archive row."""
+    disabled: bool
+    label: str
+    show: bool
+    target_provider: str
+    title: str
 
 
 class CacheContext(PageContext):
+    """Context for the cache operator page."""
     analysis_error: str
     analysis_results: list[CacheAnalysisResult]
     analyzing: bool
     caching: bool
     confirm_delete_id: str | None
+    expanded_category: str
+    expanded_category_override: str
+    expanded_id: str | None
+    expanded_files: list[CacheFileItem]
+    expanded_folders: list[CacheFolderItem]
+    title_override: dict[str, Any]
+    title_override_kind: str
+    title_override_active: bool
+    title_override_provider_id: str
+    title_override_fields: dict[str, Any]
+    title_override_defaults: dict[str, Any]
     has_torrents: bool
     show_overlay: bool
     sort_col: int
     sort_dir: str
     subtitle_enabled: bool
     torrents: list[CacheTorrentItem]
+    enabled_providers: list[tuple[str, str]]
+    add_provider: str
+    single_provider: bool
 
 
 class ArchiveContext(PageContext):
+    """Context for the archive operator page."""
     archive_items: list[ArchiveItem]
     confirm_delete_hash: str | None
     confirm_restore_hash: str | None
@@ -216,27 +309,73 @@ class ArchiveContext(PageContext):
 
 
 class LogItem(TypedDict):
+    """A single log entry for the UI."""
     copy_text: str
     level: str
     level_class: str
     level_label: str
     message: str
+    message_prefix: str
+    message_suffix: str
     source: str
     timestamp: str
+    link_to_task_id: str
+    task_link_text: str
+    task_status: TaskStatus | str
+    task_status_class: str
 
 
 class LogsContext(PageContext):
+    """Context for the logs operator page."""
     log_items: list[LogItem]
     logs_loaded: bool
 
 
+
+class ThreadItem(TypedDict):
+    """A background thread entry."""
+    id: str
+    short_id: str
+    kind: str
+    kind_class: str
+    label: str
+    detail: str
+    status: TaskStatus
+    status_class: str
+    row_class: str
+    started_at: str
+    finished_at: str
+    error: str
+    cancellable: bool
+    startable: bool
+    expanded: bool
+    logs: list[LogItem]
+    log_order_label: str
+    log_severity_class: str
+    log_severity_title: str
+    show_log_severity: bool
+    status_group_title: str
+
+
+class ThreadsContext(PageContext):
+    """Context for the threads operator page."""
+    has_threads: bool
+    selected_thread_id: str
+    logs_newest_first: bool
+    thread_items: list[ThreadItem]
+    real_debrid_enabled: bool
+    torbox_enabled: bool
+
+
 class ConfigLanguage(TypedDict):
+    """A language selection for subtitles."""
     checked: bool
     code: str
     name: str
 
 
 class ConfigValues(TypedDict):
+    """Raw configuration values for the UI."""
     anime_patterns: str
     bind: str
     connection_concurrency: int
@@ -253,6 +392,9 @@ class ConfigValues(TypedDict):
     jellyfin_url: str
     library_map: dict[str, str]
     media_server_kind: str
+    provider_priority: str
+    real_debrid_enabled: bool
+    real_debrid_token: str
     scan_probe_concurrency: int
     scan_probe_enabled: bool
     scan_probe_max_attempts: int
@@ -272,6 +414,8 @@ class ConfigValues(TypedDict):
     selected_languages: list[str]
     strategy: str
     subtitles_enabled: bool
+    torbox_enabled: bool
+    torbox_token: str
     trigger_lib_scan: bool
     verbose: bool
     version_label: str
@@ -285,6 +429,35 @@ class ConfigFieldState(TypedDict):
     baseline_value: str
 
 
+# Config edit-form sections, in their natural (source) order. The key is the
+# section's legend text and stable favorite identifier; the slug (key with
+# non-alphanumerics replaced by "_") is how the template addresses per-section
+# state, since ibis treats dots as nested access.
+_CONFIG_SECTIONS: tuple[str, ...] = (
+    "provider",
+    "server",
+    "hooks",
+    "compat",
+    "directories.anime",
+    "request",
+    "ui",
+    "logging",
+    "media_server",
+    "subtitles",
+)
+
+
+def _section_slug(section: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", section.lower())
+
+
+class ConfigSectionState(TypedDict):
+    favorite: str
+    order: int
+    star_class: str
+    star_icon: str
+
+
 class ConfigContext(PageContext):
     draft_payload: dict[str, Any]
     effective_yaml: str
@@ -296,6 +469,8 @@ class ConfigContext(PageContext):
     languages_refreshing: bool
     restart_required: bool
     restart_required_fields: list[str]
+    section_states: dict[str, ConfigSectionState]
+    focus_section: str
     subtitles_credentials_ready: bool
     values: ConfigValues
 
@@ -306,7 +481,46 @@ class ShellContext(PageContext):
     cache: CacheContext
     config: ConfigContext
     logs: LogsContext
+    threads: ThreadsContext
     page_content: Markup
+    real_debrid_enabled: bool
+    torbox_enabled: bool
+
+
+_PROVIDER_SHORT_LABELS: dict[str, str] = {
+    "real_debrid": "rd",
+    "torbox": "tb",
+}
+
+_PROVIDER_CSS_CLASSES: dict[str, str] = {
+    "real_debrid": "label-blue",
+    "torbox": "label-green",
+}
+
+
+def _first_value(value: Any) -> str:
+    """Extract a single string from a form payload value (may be a list)."""
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    return str(value or "").strip()
+
+
+def _dom_safe_id(value: str) -> str:
+    """Return a string safe for use in HTML id attributes."""
+    return re.sub(r"[^A-Za-z0-9_-]", "-", value)
+
+
+def _torrent_short_id(torrent: dict[str, Any]) -> str:
+    """Return a display-friendly short ID for a torrent cache entry."""
+    cache_id: str = torrent.get("id", "")
+    provider_torrent_id: str = torrent.get("provider_torrent_id", "")
+    # For RD the cache key is the bare RD ID (long hex); take first 8 chars.
+    # For other providers the cache key is "provider:id"; use a short label instead.
+    if ":" not in cache_id:
+        return cache_id[:8]
+    provider = cache_id.split(":", 1)[0]
+    label = _PROVIDER_SHORT_LABELS.get(provider, provider[:2])
+    return f"{label}:{provider_torrent_id}" if provider_torrent_id else cache_id[:8]
 
 
 def _load_template(name: str) -> Any:
@@ -372,6 +586,7 @@ def build_ui(owner: Any) -> PyView:
     app.add_live_view("/cache", lambda: BuzzLiveView(owner))  # pyright: ignore[reportArgumentType]
     app.add_live_view("/archive", lambda: BuzzLiveView(owner))  # pyright: ignore[reportArgumentType]
     app.add_live_view("/logs", lambda: BuzzLiveView(owner))  # pyright: ignore[reportArgumentType]
+    app.add_live_view("/threads", lambda: BuzzLiveView(owner))  # pyright: ignore[reportArgumentType]
     app.add_live_view("/config", lambda: BuzzLiveView(owner))  # pyright: ignore[reportArgumentType]
     return app
 
@@ -408,20 +623,26 @@ class _BaseBuzzLiveView(LiveView[_TContext]):
 
     def _nav(self) -> PageNav:
         return {
-            "archive_count": len(self.owner.state.trashcan),
+            "archive_count": len(self.owner.state.archive),
             "cache_active": self.page_name == "cache",
             "archive_active": self.page_name == "archive",
             "logs_active": self.page_name == "logs",
+            "threads_active": self.page_name == "threads",
             "config_active": self.page_name == "config",
             "log_count": self.owner.log_count(),
             "log_level": self._highest_log_level(),
+            "thread_count": len(self.owner.state.background_tasks.snapshot()),
         }
 
     def _highest_log_level(self) -> str:
         from .core.events import registry
 
-        logs = registry.get_recent(limit=50)
         priority = {"error": 3, "warning": 2, "info": 1, "debug": 0}
+        override = str(getattr(self.owner, "_nav_log_level_override", "") or "").lower()
+        if override in priority:
+            return override
+
+        logs = registry.get_recent(limit=50)
         highest = priority.get(self.owner._curator_log_level, 0)
         for log in logs:
             level = str(log.get("level", "info")).lower()
@@ -446,6 +667,8 @@ class _BaseBuzzLiveView(LiveView[_TContext]):
         values = []
         if status.get("sync_in_progress"):
             values.append("syncing")
+        if status.get("file_selection_pending"):
+            values.append("file_selection_pending")
         hook_label = self._hook_status_label(status)
         if hook_label != "idle":
             values.append(hook_label)
@@ -453,6 +676,12 @@ class _BaseBuzzLiveView(LiveView[_TContext]):
             values.append("idle")
 
         item: PageItem = {"label": "state", "value": values[0]}
+        if values == ["file_selection_pending"]:
+            item["css_class"] = console.Level.ERROR
+        elif "file_selection_pending" in values:
+            item["cycle_classes_json"] = json.dumps({
+                "file_selection_pending": console.Level.ERROR
+            })
         if len(values) > 1:
             item["cycle_values_json"] = json.dumps(values)
         return item
@@ -471,21 +700,30 @@ class _BaseBuzzLiveView(LiveView[_TContext]):
     ) -> PageContext:
         status = self.owner.state.status()
         restart_required = bool(getattr(self.owner, "restart_required", False))
-        status_label = "[ready]"
-        status_class = CSS_STATUS_GREEN
+
         if restart_required:
             status_label = "[restart required]"
-            status_class = CSS_STATUS_YELLOW
+            status_class = console.Level.RESTART
+        elif status.get("provider_degraded"):
+            status_label = "[degraded]"
+            status_class = console.Level.WARNING
         elif not self.owner.is_ready():
             status_label = "[starting]"
-            status_class = "service-status-orange"
+            status_class = console.Level.PENDING
+        else:
+            status_label = "[ready]"
+            status_class = console.Level.SUCCESS
+
+        provider = self.owner.config.provider_active
         context: PageContext = {
+            "active_provider": provider,
+            "active_provider_label": provider.replace("_", " ").upper(),
             "console_class": console_class,
             "console_msg": console_msg,
             "has_error": bool(status.get("last_error")),
             "is_ready": self.owner.is_ready(),
             "last_error": status.get("last_error") or "",
-            "token_configured": bool(self.owner.config.token),
+            "token_configured": bool(self.owner.client),
             "meta_items": self._meta_items(),
             "nav": self._nav(),
             "status_class": status_class,
@@ -497,8 +735,8 @@ class _BaseBuzzLiveView(LiveView[_TContext]):
         try:
             self.owner.state.manual_rebuild()
         except Exception as exc:
-            return f"resync failed: {exc}", CSS_STATUS_RED
-        return "library resynced!", CSS_STATUS_GREEN
+            return f"resync failed: {exc}", console.Level.ERROR
+        return "library resynced!", console.Level.SUCCESS
 
     async def mount(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
@@ -532,7 +770,7 @@ class CacheLiveView(_BaseBuzzLiveView):
             await socket.subscribe(TOPIC_STATUS)
             await socket.subscribe(TOPIC_ARCHIVE)
 
-    async def handle_event(
+    async def handle_event(  # noqa: C901
         self,
         event: str,
         socket: ConnectedLiveViewSocket[CacheContext],
@@ -545,6 +783,7 @@ class CacheLiveView(_BaseBuzzLiveView):
         file_id: str = "",
         mode: str = "",
         col: str = "",
+        id: str = "",
     ) -> None:
         if event == EVENT_NAVIGATE:
             await socket.push_navigate(to)
@@ -590,34 +829,184 @@ class CacheLiveView(_BaseBuzzLiveView):
             return
         if event == "cancel_cache":
             for result in socket.context["analysis_results"]:
-                try:
+                with contextlib.suppress(Exception):
                     self.owner.state.delete_torrent(result["torrent_id"])
-                except Exception:
-                    pass
             socket.context = self._context(
                 console_msg=socket.context["console_msg"],
                 console_class=socket.context["console_class"],
                 confirm_delete_id=socket.context["confirm_delete_id"],
                 sort_col=socket.context["sort_col"],
                 sort_dir=socket.context["sort_dir"],
+                add_provider=socket.context["add_provider"],
             )
+            return
+        if event == "toggle_expand":
+            current = socket.context["expanded_id"]
+            socket.context = self._context(
+                console_msg=socket.context["console_msg"],
+                console_class=socket.context["console_class"],
+                confirm_delete_id=socket.context["confirm_delete_id"],
+                sort_col=socket.context["sort_col"],
+                sort_dir=socket.context["sort_dir"],
+                expanded_id=None if current == id else id,
+                add_provider=socket.context["add_provider"],
+            )
+            return
+        if event == "toggle_selected_file":
+            for file in socket.context["expanded_files"]:
+                if file["id"] == file_id:
+                    file["selected"] = not file["selected"]
+                    break
+            self._refresh_expanded_folders(socket)
+            return
+        if event == "select_expanded":
+            for file in socket.context["expanded_files"]:
+                if mode == "all":
+                    file["selected"] = True
+                elif mode == "none":
+                    file["selected"] = False
+                elif mode == "video":
+                    file["selected"] = file["is_video"]
+            self._refresh_expanded_folders(socket)
+            return
+        if event == "toggle_folder_selection":
+            self._toggle_folder_selection(socket, id)
+            self._refresh_expanded_folders(socket)
+            return
+        if event == "apply_selection":
+            self._handle_apply_selection(socket, id)
+            return
+        if event == "set_category":
+            self._handle_set_category(socket, id, mode)
+            return
+        if event == "set_subtitle_query":
+            self._handle_set_subtitle_query(socket, payload)
+            return
+        if event == "set_curator_title":
+            self._handle_set_curator_title(socket, payload)
             return
         if event == "sort":
             self._handle_sort(socket, col)
+
+    def _handle_apply_selection(
+        self, socket: ConnectedLiveViewSocket[CacheContext], cache_id: str
+    ) -> None:
+        selected_ids = [
+            file["id"]
+            for file in socket.context["expanded_files"]
+            if file["selected"]
+        ]
+        try:
+            self.owner.state.select_files(cache_id, selected_ids)
+            console_msg = "file selection updated"
+            console_class = console.Level.SUCCESS
+        except Exception as exc:  # noqa: BLE001
+            console_msg = f"file selection failed: {exc}"
+            console_class = console.Level.ERROR
+        socket.context = self._context(
+            console_msg=console_msg,
+            console_class=console_class,
+            confirm_delete_id=socket.context["confirm_delete_id"],
+            sort_col=socket.context["sort_col"],
+            sort_dir=socket.context["sort_dir"],
+            expanded_id=cache_id,
+            add_provider=socket.context["add_provider"],
+        )
+
+    def _handle_set_category(
+        self,
+        socket: ConnectedLiveViewSocket[CacheContext],
+        cache_id: str,
+        category: str,
+    ) -> None:
+        try:
+            self.owner.state.set_torrent_category(cache_id, category)
+            console_msg = "category updated"
+            console_class = console.Level.SUCCESS
+        except Exception as exc:  # noqa: BLE001
+            console_msg = f"category update failed: {exc}"
+            console_class = console.Level.ERROR
+        socket.context = self._context(
+            console_msg=console_msg,
+            console_class=console_class,
+            confirm_delete_id=socket.context["confirm_delete_id"],
+            sort_col=socket.context["sort_col"],
+            sort_dir=socket.context["sort_dir"],
+            expanded_id=cache_id,
+            add_provider=socket.context["add_provider"],
+        )
+
+    def _handle_set_subtitle_query(
+        self,
+        socket: ConnectedLiveViewSocket[CacheContext],
+        payload: dict[str, Any] | None,
+    ) -> None:
+        data = payload or {}
+        cache_id = _first_value(data.get("id"))
+        path = _first_value(data.get("path"))
+        query = _first_value(data.get("query"))
+        try:
+            self.owner.state.set_subtitle_query_override(cache_id, path, query)
+            console_msg = "subtitle query updated"
+            console_class = console.Level.SUCCESS
+        except Exception as exc:  # noqa: BLE001
+            console_msg = f"subtitle query update failed: {exc}"
+            console_class = console.Level.ERROR
+        socket.context = self._context(
+            console_msg=console_msg,
+            console_class=console_class,
+            confirm_delete_id=socket.context["confirm_delete_id"],
+            sort_col=socket.context["sort_col"],
+            sort_dir=socket.context["sort_dir"],
+            expanded_id=cache_id or socket.context["expanded_id"],
+            add_provider=socket.context["add_provider"],
+        )
+
+    def _handle_set_curator_title(
+        self,
+        socket: ConnectedLiveViewSocket[CacheContext],
+        payload: dict[str, Any] | None,
+    ) -> None:
+        data = payload or {}
+        cache_id = _first_value(data.get("cache_id")) or _first_value(
+            data.get("id")
+        )
+        override = {
+            "kind": _first_value(data.get("kind")),
+            "title": _first_value(data.get("title")),
+            "series": _first_value(data.get("series")),
+            "year": _first_value(data.get("year")),
+            "id": _first_value(data.get("external_id")),
+            "imdbid": _first_value(data.get("imdbid")),
+            "tmdbid": _first_value(data.get("tmdbid")),
+            "tvdbid": _first_value(data.get("tvdbid")),
+            "anidbid": _first_value(data.get("anidbid")),
+        }
+        try:
+            self.owner.state.set_curator_title_override(cache_id, override)
+            console_msg = "curator title override updated"
+            console_class = console.Level.SUCCESS
+        except Exception as exc:  # noqa: BLE001
+            console_msg = f"curator title override failed: {exc}"
+            console_class = console.Level.ERROR
+        socket.context = self._context(
+            console_msg=console_msg,
+            console_class=console_class,
+            confirm_delete_id=socket.context["confirm_delete_id"],
+            sort_col=socket.context["sort_col"],
+            sort_dir=socket.context["sort_dir"],
+            expanded_id=cache_id or socket.context["expanded_id"],
+            add_provider=socket.context["add_provider"],
+        )
 
     def _handle_delete(
         self, socket: ConnectedLiveViewSocket[CacheContext], hash: str
     ) -> None:
         try:
-            result = self.owner.state.delete_torrent(hash)
-            warning = (
-                result.get("warning") if isinstance(result, dict) else None
-            )
+            self.owner.state.delete_torrent(hash)
             socket.context = self._context(
-                console_msg=str(warning or "item moved to archive"),
-                console_class=CSS_STATUS_YELLOW
-                if warning
-                else CSS_STATUS_GREEN,
+                console_msg="removing from cache...",
+                console_class=console.Level.PENDING,
                 confirm_delete_id=None,
                 analysis_results=socket.context["analysis_results"],
                 analysis_error=socket.context["analysis_error"],
@@ -625,36 +1014,40 @@ class CacheLiveView(_BaseBuzzLiveView):
                 caching=socket.context["caching"],
                 sort_col=socket.context["sort_col"],
                 sort_dir=socket.context["sort_dir"],
+                add_provider=socket.context["add_provider"],
             )
         except Exception as exc:
-            socket.context["console_msg"] = f"delete failed: {exc}"
-            socket.context["console_class"] = CSS_STATUS_RED
+            socket.context = self._context(
+                console_msg=f"delete failed: {exc}",
+                console_class=console.Level.ERROR,
+                confirm_delete_id=None,
+                analysis_results=socket.context["analysis_results"],
+                analysis_error=socket.context["analysis_error"],
+                analyzing=socket.context["analyzing"],
+                caching=socket.context["caching"],
+                sort_col=socket.context["sort_col"],
+                sort_dir=socket.context["sort_dir"],
+                add_provider=socket.context["add_provider"],
+            )
 
     def _handle_fetch_subs(
         self, socket: ConnectedLiveViewSocket[CacheContext], torrent_name: str
     ) -> None:
         result = self.owner.fetch_subtitles(torrent_name)
         if result.get("error"):
-            socket.context["console_msg"] = (
-                f"subs fetch failed: {result['error']}"
-            )
-            socket.context["console_class"] = CSS_STATUS_RED
+            console.log(socket.context, f"subs fetch failed: {result['error']}", console.Level.ERROR)
         else:
-            socket.context["console_msg"] = (
-                f"subs fetch triggered for: {torrent_name}"
-            )
-            socket.context["console_class"] = CSS_STATUS_GREEN
+            console.log(socket.context, f"subs fetch triggered for: {torrent_name}", console.Level.SUCCESS)
 
     def _handle_resync(
         self, socket: ConnectedLiveViewSocket[CacheContext]
     ) -> None:
-        socket.context["console_msg"] = "resyncing library..."
-        socket.context["console_class"] = "service-status-orange"
+        console.log(socket.context, "resyncing library...", console.Level.PENDING)
         msg, css_class = self._resync_library()
         socket.context["console_msg"] = msg
         socket.context["console_class"] = css_class
 
-    def _handle_analyze(
+    def _handle_analyze(  # noqa: C901
         self,
         socket: ConnectedLiveViewSocket[CacheContext],
         payload: dict[str, Any] | None,
@@ -668,6 +1061,13 @@ class CacheLiveView(_BaseBuzzLiveView):
         magnets = [m.strip() for m in lines if m.strip()]
         if not magnets:
             return
+        chosen_provider = (payload or {}).get("provider", "auto")
+        if isinstance(chosen_provider, list):
+            chosen_provider = chosen_provider[0] if chosen_provider else "auto"
+        chosen_provider = str(chosen_provider).strip() or "auto"
+        if chosen_provider == "auto":
+            chosen_provider = "auto"
+        socket.context["add_provider"] = chosen_provider
         socket.context["analyzing"] = True
         socket.context["analysis_error"] = ""
         results: list[CacheAnalysisResult] = []
@@ -676,7 +1076,10 @@ class CacheLiveView(_BaseBuzzLiveView):
 
         for magnet in magnets:
             try:
-                info = self.owner.state.add_magnet(magnet)
+                info = self.owner.state.add_magnet(
+                    magnet,
+                    None if chosen_provider == "auto" else chosen_provider,
+                )
                 files: list[CacheFileItem] = []
                 for f in info.get("files", []):
                     path = str(f.get("path", ""))
@@ -692,58 +1095,100 @@ class CacheLiveView(_BaseBuzzLiveView):
                             "size": format_bytes(b),
                             "is_video": is_video,
                             "selected": is_video,
+                            "subtitle_query": "",
+                            "subtitle_default_query": Path(path).stem,
                         }
                     )
+                p = str(info.get("provider", "unknown"))
+                torrent_id = str(info.get("cache_key") or info["id"])
                 results.append(
                     {
-                        "torrent_id": str(info["id"]),
+                        "torrent_id": torrent_id,
                         "filename": str(
                             info.get("filename") or "Torrent Files"
                         ),
                         "files": files,
+                        "provider": p,
+                        "provider_label": p.replace("_", " ").upper(),
                     }
                 )
             except Exception as exc:
+                import traceback
+                events.log(
+                    f"magnet analyze traceback: {traceback.format_exc()}",
+                    level=events.Level.ERROR,
+                )
                 errors.append(str(exc))
         socket.context["analyzing"] = False
         socket.context["analysis_results"] = results
+        n_ok = len(results)
+        n_err = len(errors)
+        is_single = len(magnets) == 1
         if errors:
-            socket.context["analysis_error"] = f"Failed: {', '.join(errors)}"
-            socket.context["console_msg"] = (
-                f"Resolved {len(results)} magnets, {len(errors)} failed."
-            )
-            socket.context["console_class"] = "service-status-orange"
+            for err_msg in errors:
+                events.log(
+                    f"magnet add failed: {err_msg}",
+                    level=events.Level.ERROR,
+                    event=events.Event.MAGNET_ADD_FAILED,
+                )
+            for res in results:
+                events.log(
+                    f"magnet resolved: {res['filename']} via {res['provider']}",
+                    level=events.Level.INFO,
+                    event=events.Event.MAGNET_ADD_OK,
+                )
+            if is_single:
+                socket.context["analysis_error"] = f"Failed: {errors[0]}"
+                console.log(
+                    socket.context,
+                    f"failed to resolve magnet: {errors[0]}",
+                    console.Level.ERROR,
+                )
+            else:
+                socket.context["analysis_error"] = f"Failed: {'; '.join(errors)}"
+                console.log(
+                    socket.context,
+                    f"Resolved {n_ok} magnets, {n_err} failed. See logs for detail.",
+                    console.Level.ERROR if n_ok == 0 else console.Level.WARNING,
+                )
         else:
-            socket.context["console_msg"] = (
-                f"Resolved {len(results)} magnet(s)."
-                if len(results) != 1
-                else "Ready to cache."
+            if len(magnets) > 1:
+                for res in results:
+                    events.log(
+                        (
+                            "magnet resolved: "
+                            f"{res['filename']} via {res['provider']}"
+                        ),
+                        level=events.Level.INFO,
+                        event=events.Event.MAGNET_ADD_OK,
+                    )
+            console.log(
+                socket.context,
+                f"Resolved {n_ok} magnet{'s' if n_ok != 1 else ''}.",
+                console.Level.SUCCESS,
             )
-            socket.context["console_class"] = "service-status-green"
 
     def _handle_confirm_cache(
         self, socket: ConnectedLiveViewSocket[CacheContext]
     ) -> None:
-        socket.context["caching"] = True
         try:
+            selections: dict[str, list[str]] = {}
             for result in socket.context["analysis_results"]:
                 selected = [f["id"] for f in result["files"] if f["selected"]]
                 if selected:
-                    self.owner.state.select_files(
-                        result["torrent_id"], selected
-                    )
-            self.owner.state.sync()
+                    selections[result["torrent_id"]] = selected
+            task_id = self.owner.state.submit_cache_selection(selections)
             socket.context = self._context(
-                console_msg="Items added and synced.",
-                console_class=CSS_STATUS_GREEN,
+                console_msg=f"cache job queued: {task_id}",
+                console_class=console.Level.SUCCESS,
                 confirm_delete_id=socket.context["confirm_delete_id"],
                 sort_col=socket.context["sort_col"],
                 sort_dir=socket.context["sort_dir"],
+                add_provider=socket.context["add_provider"],
             )
         except Exception as exc:
             socket.context["caching"] = False
-            socket.context["console_msg"] = f"Error: {exc}"
-            socket.context["console_class"] = CSS_STATUS_RED
+            console.log(socket.context, f"Error: {exc}", console.Level.ERROR)
 
     def _handle_sort(
         self, socket: ConnectedLiveViewSocket[CacheContext], col: str
@@ -768,6 +1213,7 @@ class CacheLiveView(_BaseBuzzLiveView):
             caching=socket.context["caching"],
             sort_col=sort_col,
             sort_dir=sort_dir,
+            add_provider=socket.context["add_provider"],
         )
 
     async def handle_info(
@@ -787,6 +1233,7 @@ class CacheLiveView(_BaseBuzzLiveView):
             caching=socket.context["caching"],
             sort_col=socket.context["sort_col"],
             sort_dir=socket.context["sort_dir"],
+            add_provider=socket.context["add_provider"],
         )
 
     async def render(
@@ -807,26 +1254,46 @@ class CacheLiveView(_BaseBuzzLiveView):
         caching: bool = False,
         sort_col: int = 0,
         sort_dir: str = "asc",
+        expanded_id: str | None = None,
+        add_provider: str = "auto",
     ) -> CacheContext:
         torrents = []
         for torrent in self.owner.state.torrents():
+            category_override = torrent["category_override"] or ""
+            title_override = self.owner.state.curator_title_override(
+                torrent["id"]
+            )
             torrents.append(
                 {
                     "id": torrent["id"],
                     "name": torrent["name"],
+                    "category": torrent["category"],
+                    "category_override": category_override,
                     "status": torrent["status"],
                     "progress": torrent["progress"],
                     "bytes": torrent["bytes"],
                     "size": format_bytes(torrent["bytes"]),
                     "selected_files": torrent["selected_files"],
+                    "file_selection_pending": torrent["file_selection_pending"],
                     "links": torrent["links"],
                     "ended": torrent["ended"] or "-",
-                    "short_id": torrent["id"][:8],
+                    "short_id": _torrent_short_id(torrent),
+                    # Any entry-level override (category or Curator identity)
+                    # marks the row so the collapsed name can glow.
+                    "has_override": bool(category_override)
+                    or bool(title_override),
                 }
             )
         torrents = self._sort_torrents(torrents, sort_col, sort_dir)
         base = self._base_context(console_msg, console_class)
         analysis_results = analysis_results or []
+        expanded_files = self._expanded_files(expanded_id)
+        expanded_category = self.owner.state.torrent_category(expanded_id)
+        expanded_folders = self._expanded_folders(expanded_files)
+        enabled_providers = [
+            (name, name.replace("_", " ").upper())
+            for name, _ in self.owner.state._ordered_clients()
+        ]
         return cast(
             CacheContext,
             {
@@ -836,13 +1303,220 @@ class CacheLiveView(_BaseBuzzLiveView):
                 "analyzing": analyzing,
                 "caching": caching,
                 "confirm_delete_id": confirm_delete_id,
+                "expanded_category": expanded_category["effective"],
+                "expanded_category_override": expanded_category["override"],
+                "expanded_id": expanded_id,
+                "expanded_files": expanded_files,
+                "expanded_folders": expanded_folders,
+                **self._title_override_context(expanded_id),
                 "has_torrents": bool(torrents),
                 "show_overlay": analyzing or caching,
                 "sort_col": sort_col,
                 "sort_dir": sort_dir,
                 "subtitle_enabled": self.owner.config.subtitles.enabled,
                 "torrents": torrents,
+                "enabled_providers": enabled_providers,
+                "add_provider": add_provider,
+                "single_provider": len(enabled_providers) == 1,
             },
+        )
+
+    def _expanded_files(
+        self, expanded_id: str | None
+    ) -> list[CacheFileItem]:
+        if not expanded_id:
+            return []
+        files: list[CacheFileItem] = []
+        kind = self._title_override_kind(expanded_id)
+        defaults = self._title_override_defaults(expanded_id, kind)
+        for file_item in self.owner.state.torrent_files(expanded_id):
+            files.append(
+                {
+                    "id": file_item["id"],
+                    "path": file_item["path"],
+                    "bytes": file_item["bytes"],
+                    "size": format_bytes(file_item["bytes"]),
+                    "is_video": file_item["is_video"],
+                    "selected": file_item["selected"],
+                    "subtitle_query": self.owner.state.subtitle_query_override(
+                        expanded_id, file_item["path"]
+                    ),
+                    "subtitle_default_query": self._subtitle_default_query(
+                        file_item["path"], kind, defaults
+                    ),
+                }
+            )
+        return files
+
+    @staticmethod
+    def _subtitle_default_query(
+        path: str, kind: str, defaults: dict[str, Any]
+    ) -> str:
+        """Return the visible default subtitle search query for a file."""
+        if kind in {"show", "anime"}:
+            query = defaults.get("series")
+        elif kind == "movie":
+            query = defaults.get("title")
+        else:
+            query = ""
+        return str(query or Path(path).stem)
+
+    def _title_override_context(
+        self, expanded_id: str | None
+    ) -> dict[str, Any]:
+        """Build entry-level Curator title override fields for the context."""
+        kind = self._title_override_kind(expanded_id)
+        saved = self.owner.state.curator_title_override(expanded_id)
+        active = bool(saved)
+        saved.setdefault("provider_ids", {})
+        defaults = self._title_override_defaults(expanded_id, kind)
+        # Effective form values: saved override when present, else the
+        # locally derived default. ``fields`` feeds the input ``value`` and
+        # ``defaults`` feeds ``data-default`` for the client-side Revert.
+        fields = self._merge_title_override_fields(defaults, saved)
+        return {
+            "title_override": saved,
+            "title_override_kind": kind,
+            "title_override_active": active,
+            "title_override_provider_id": (
+                self._title_override_provider_id(saved)
+            ),
+            "title_override_fields": fields,
+            "title_override_defaults": defaults,
+            # Provider-prefixed cache ids contain ':' (e.g. "torbox:38618447"),
+            # which is not a valid CSS identifier and breaks LiveView morphdom's
+            # id matching (it appends duplicate forms on each re-render). Use a
+            # sanitized slug for DOM ids; keep phx-value-id as the real id.
+            "expanded_dom_id": _dom_safe_id(expanded_id or ""),
+        }
+
+    def _title_override_defaults(
+        self, expanded_id: str | None, kind: str
+    ) -> dict[str, Any]:
+        """Locally derived identity defaults used to prefill the form.
+
+        Uses the local (no-network) suggestion only: this runs on every render
+        while an entry is expanded, so it must never make a remote Jellyfin
+        lookup (which would flood Jellyfin's RemoteSearch endpoint).
+        """
+        if not expanded_id or kind not in {"movie", "show", "anime"}:
+            return self._title_override_field_dict({})
+        try:
+            suggestion = self.owner.state.local_curator_title_suggestion(
+                expanded_id, kind
+            )
+        except Exception:  # noqa: BLE001 - suggestion is best-effort
+            suggestion = {}
+        return self._title_override_field_dict(suggestion)
+
+    @staticmethod
+    def _title_override_field_dict(override: dict[str, Any]) -> dict[str, Any]:
+        """Normalize an override dict to flat string form fields."""
+        provider_ids = override.get("provider_ids")
+        if not isinstance(provider_ids, dict):
+            provider_ids = {}
+        return {
+            "title": str(override.get("title") or ""),
+            "series": str(override.get("series") or ""),
+            "year": str(override.get("year") or ""),
+            "provider_ids": {
+                provider: str(provider_ids.get(provider) or "")
+                for provider in ("imdbid", "tmdbid", "tvdbid", "anidbid")
+            },
+        }
+
+    @staticmethod
+    def _merge_title_override_fields(
+        defaults: dict[str, Any], saved: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Prefer a saved override value, else fall back to the default."""
+        saved_provider_ids = saved.get("provider_ids")
+        if not isinstance(saved_provider_ids, dict):
+            saved_provider_ids = {}
+        default_provider_ids = defaults["provider_ids"]
+        return {
+            "title": str(saved.get("title") or "") or defaults["title"],
+            "series": str(saved.get("series") or "") or defaults["series"],
+            "year": str(saved.get("year") or "") or defaults["year"],
+            "provider_ids": {
+                provider: (
+                    str(saved_provider_ids.get(provider) or "")
+                    or default_provider_ids[provider]
+                )
+                for provider in ("imdbid", "tmdbid", "tvdbid", "anidbid")
+            },
+        }
+
+    @staticmethod
+    def _title_override_provider_id(title_override: dict[str, Any]) -> str:
+        provider_ids = title_override.get("provider_ids")
+        if not isinstance(provider_ids, dict):
+            return str(title_override.get("id") or "")
+        for provider in ("imdbid", "tmdbid", "tvdbid", "anidbid"):
+            value = str(provider_ids.get(provider) or "").strip()
+            if value:
+                return f"{provider}-{value}"
+        return ""
+
+    def _title_override_kind(self, expanded_id: str | None) -> str:
+        category = self.owner.state.torrent_category(expanded_id)["effective"]
+        if category == "movies":
+            return "movie"
+        if category == "shows":
+            return "show"
+        if category == "anime":
+            return "anime"
+        return ""
+
+    @staticmethod
+    def _expanded_folders(
+        files: Sequence[Mapping[str, Any]],
+    ) -> list[CacheFolderItem]:
+        folders: dict[str, dict[str, int]] = {}
+        for file_item in files:
+            path = str(file_item["path"]).strip("/")
+            parts = [part for part in path.split("/") if part]
+            for index in range(1, len(parts)):
+                folder_path = "/".join(parts[:index])
+                counts = folders.setdefault(
+                    folder_path, {"selected_files": 0, "total_files": 0}
+                )
+                counts["total_files"] += 1
+                if file_item["selected"]:
+                    counts["selected_files"] += 1
+        return [
+            {
+                "path": path,
+                "selected": counts["selected_files"] == counts["total_files"],
+                "selected_files": counts["selected_files"],
+                "total_files": counts["total_files"],
+            }
+            for path, counts in sorted(folders.items())
+        ]
+
+    @staticmethod
+    def _toggle_folder_selection(
+        socket: ConnectedLiveViewSocket[CacheContext],
+        folder_path: str,
+    ) -> None:
+        prefix = folder_path.rstrip("/") + "/"
+        matching_files = [
+            file
+            for file in socket.context["expanded_files"]
+            if str(file["path"]).lstrip("/").startswith(prefix)
+        ]
+        selected = not (
+            matching_files and all(file["selected"] for file in matching_files)
+        )
+        for file in matching_files:
+            file["selected"] = selected
+
+    @staticmethod
+    def _refresh_expanded_folders(
+        socket: ConnectedLiveViewSocket[CacheContext],
+    ) -> None:
+        socket.context["expanded_folders"] = CacheLiveView._expanded_folders(
+            socket.context["expanded_files"]
         )
 
 
@@ -861,7 +1535,7 @@ class ArchiveLiveView(_BaseBuzzLiveView):
             await socket.subscribe(TOPIC_ARCHIVE)
             await socket.subscribe(TOPIC_STATUS)
 
-    async def handle_event(
+    async def handle_event(  # noqa: C901
         self,
         event: str,
         socket: ConnectedLiveViewSocket[ArchiveContext],
@@ -887,20 +1561,44 @@ class ArchiveLiveView(_BaseBuzzLiveView):
             socket.context["confirm_delete_hash"] = None
             return
         if event == "restore":
-            self.owner.state.restore_trash(hash)
-            self.owner.state.sync()
+            task_id = self.owner.state.submit_archive_restore(hash)
             socket.context = self._context(
-                console_msg="item restored to cache",
-                console_class="service-status-green",
+                console_msg=f"restore queued: {task_id}",
+                console_class=console.Level.RESTART,
                 sort_col=socket.context["sort_col"],
                 sort_dir=socket.context["sort_dir"],
             )
             return
+        if event == "transfer_provider":
+            try:
+                item = next(
+                    item
+                    for item in socket.context["archive_items"]
+                    if item["hash"] == hash
+                )
+                task_id = self.owner.state.submit_archive_provider_transfer(
+                    hash,
+                    item["transfer_target_provider"],
+                )
+                socket.context = self._context(
+                    console_msg=f"provider transfer pending: {task_id}",
+                    console_class=console.Level.RESTART,
+                    sort_col=socket.context["sort_col"],
+                    sort_dir=socket.context["sort_dir"],
+                )
+            except Exception as exc:
+                socket.context = self._context(
+                    console_msg=f"provider transfer failed: {exc}",
+                    console_class=console.Level.ERROR,
+                    sort_col=socket.context["sort_col"],
+                    sort_dir=socket.context["sort_dir"],
+                )
+            return
         if event == "delete":
-            self.owner.state.delete_trash_permanently(hash)
+            self.owner.state.delete_archive_permanently(hash)
             socket.context = self._context(
                 console_msg="archive item deleted",
-                console_class="service-status-green",
+                console_class=console.Level.SUCCESS,
                 sort_col=socket.context["sort_col"],
                 sort_dir=socket.context["sort_dir"],
             )
@@ -975,16 +1673,37 @@ class ArchiveLiveView(_BaseBuzzLiveView):
         sort_col: int = 0,
         sort_dir: str = "asc",
     ) -> ArchiveContext:
+        from .core import db as buzz_db
         items: list[ArchiveItem] = []
         for torrent in self.owner.state.archive_torrents():
+            thash = torrent["hash"]
+            links = buzz_db.load_provider_links_by_hash(
+                self.owner.state.conn, thash
+            )
+            unique_providers = sorted({prov for prov, _ in links})
+            transfer = self._archive_transfer_action(unique_providers)
+            provider_tags: list[ArchiveProviderTag] = [
+                {
+                    "label": _PROVIDER_SHORT_LABELS.get(p, p),
+                    "css_class": _PROVIDER_CSS_CLASSES.get(p, "label-grey"),
+                }
+                for p in unique_providers
+            ]
             items.append(
                 {
                     "bytes": torrent["bytes"],
                     "deleted_at": torrent["deleted_at"] or "-",
                     "file_count": torrent["file_count"],
-                    "hash": torrent["hash"],
+                    "hash": thash,
+                    "magnet": torrent["magnet"],
                     "name": torrent["name"],
                     "size": format_bytes(torrent["bytes"]),
+                    "provider_tags": provider_tags,
+                    "transfer_disabled": transfer["disabled"],
+                    "transfer_label": transfer["label"],
+                    "transfer_show": transfer["show"],
+                    "transfer_target_provider": transfer["target_provider"],
+                    "transfer_title": transfer["title"],
                 }
             )
         items = self._sort_items(items, sort_col, sort_dir)
@@ -1003,6 +1722,61 @@ class ArchiveLiveView(_BaseBuzzLiveView):
             },
         )
 
+    def _archive_transfer_action(
+        self,
+        unique_providers: list[str],
+    ) -> ArchiveTransferAction:
+        enabled = [name for name, _client in self.owner.state._ordered_clients()]
+        primary = enabled[0] if enabled else ""
+        present = set(unique_providers)
+        missing = [provider for provider in enabled if provider not in present]
+
+        # No enabled providers or nothing to transfer to/from: omit button.
+        if not enabled or (not present and not missing):
+            return {"disabled": True, "label": "C", "show": False, "target_provider": "", "title": ""}
+
+        # Already in all enabled providers: show grayed [C].
+        if len(present) >= 2 or not missing:
+            return {
+                "disabled": True,
+                "label": "C",
+                "show": True,
+                "target_provider": "",
+                "title": "Already in all enabled providers",
+            }
+
+        # Pure archive (no provider) with magnet: omit [M], restore via [R].
+        if not present:
+            return {"disabled": True, "label": "M", "show": False, "target_provider": "", "title": ""}
+
+        # Single provider present, transfer possible (by hash, no magnet needed).
+        source = next(iter(present))
+        if source == primary:
+            target = missing[0]
+            return {
+                "disabled": False,
+                "label": "C",
+                "show": True,
+                "target_provider": target,
+                "title": f"Copy to {self.owner.state._provider_label(target)}",
+            }
+        target = primary
+        if not target or target not in missing:
+            return {
+                "disabled": True,
+                "label": "M",
+                "show": True,
+                "target_provider": "",
+                "title": "Provider move unavailable: primary provider already has this torrent",
+            }
+        return {
+            "disabled": False,
+            "label": "M",
+            "show": True,
+            "target_provider": target,
+            "title": f"Move to {self.owner.state._provider_label(target)}",
+        }
+
 
 class LogsLiveView(_BaseBuzzLiveView):
     page_name = "logs"
@@ -1020,7 +1794,7 @@ class LogsLiveView(_BaseBuzzLiveView):
             await socket.subscribe(TOPIC_STATUS)
             await socket.subscribe(TOPIC_LOGS)
 
-    async def handle_event(
+    async def handle_event(  # noqa: C901
         self,
         event: str,
         socket: ConnectedLiveViewSocket[LogsContext],
@@ -1034,11 +1808,9 @@ class LogsLiveView(_BaseBuzzLiveView):
             socket.context = self._context()
             return
         if event == "resync":
-            socket.context["console_msg"] = "resyncing library..."
-            socket.context["console_class"] = "service-status-orange"
+            console.log(socket.context, "resyncing library...", console.Level.PENDING)
             msg, css_class = self._resync_library()
-            socket.context["console_msg"] = msg
-            socket.context["console_class"] = css_class
+            console.log(socket.context, msg, css_class)
 
     async def handle_info(
         self,
@@ -1068,6 +1840,268 @@ class LogsLiveView(_BaseBuzzLiveView):
         )
 
 
+class ThreadsLiveView(_BaseBuzzLiveView):
+    page_name = "threads"
+    page_title = "buzz: threads"
+
+    async def mount(  # pyright: ignore[reportIncompatibleMethodOverride, reportArgumentType]
+        self,
+        socket: LiveViewSocket[ThreadsContext],
+        session: dict[str, Any],
+    ) -> None:
+        await super().mount(socket, session)  # pyright: ignore[reportArgumentType]
+        socket.context = self._context()
+        if is_connected(socket):
+            await socket.subscribe(TOPIC_STATUS)
+
+    async def handle_event(
+        self,
+        event: str,
+        socket: ConnectedLiveViewSocket[ThreadsContext],
+        to: str = "",
+        task_id: str = "",
+    ) -> None:
+        if event == EVENT_NAVIGATE:
+            await socket.push_navigate(to)
+            return
+        if event == "scan_rd":
+            try:
+                new_task_id = self.owner.state.submit_infringing_scan()
+                socket.context = self._context(
+                    console_msg=f"Real-Debrid scan queued: {new_task_id}",
+                    console_class=console.Level.RESTART,
+                    selected_thread_id=new_task_id,
+                    logs_newest_first=socket.context["logs_newest_first"],
+                )
+            except Exception as exc:
+                socket.context = self._context(
+                    console_msg=f"scan failed: {exc}",
+                    console_class=console.Level.ERROR,
+                    selected_thread_id=socket.context["selected_thread_id"],
+                    logs_newest_first=socket.context["logs_newest_first"],
+                )
+            return
+        if event in {"migrate_rd_tb", "migrate_tb_rd"}:
+            source_provider = (
+                "real_debrid" if event == "migrate_rd_tb" else "torbox"
+            )
+            destination_provider = (
+                "torbox" if event == "migrate_rd_tb" else "real_debrid"
+            )
+            try:
+                new_task_id = self.owner.state.submit_provider_migration_scan(
+                    source_provider,
+                    destination_provider,
+                )
+                socket.context = self._context(
+                    console_msg=f"migration scan queued: {new_task_id}",
+                    console_class=console.Level.RESTART,
+                    selected_thread_id=new_task_id,
+                    logs_newest_first=socket.context["logs_newest_first"],
+                )
+            except Exception as exc:
+                socket.context = self._context(
+                    console_msg=f"migration scan failed: {exc}",
+                    console_class=console.Level.ERROR,
+                    selected_thread_id=socket.context["selected_thread_id"],
+                    logs_newest_first=socket.context["logs_newest_first"],
+                )
+            return
+        if event == "start_thread":
+            try:
+                self.owner.state.start_background_task(task_id)
+                socket.context = self._context(
+                    console_msg=f"starting thread: {task_id}",
+                    console_class=console.Level.RESTART,
+                    selected_thread_id=task_id,
+                    logs_newest_first=socket.context["logs_newest_first"],
+                )
+            except Exception as exc:
+                socket.context = self._context(
+                    console_msg=f"start failed: {exc}",
+                    console_class=console.Level.ERROR,
+                    selected_thread_id=socket.context["selected_thread_id"],
+                    logs_newest_first=socket.context["logs_newest_first"],
+                )
+            return
+        if event == "cancel_thread":
+            try:
+                self.owner.state.cancel_background_task(task_id)
+                socket.context = self._context(
+                    console_msg=f"cancelling thread: {task_id}",
+                    console_class=console.Level.RESTART,
+                    selected_thread_id=socket.context["selected_thread_id"],
+                    logs_newest_first=socket.context["logs_newest_first"],
+                )
+            except Exception as exc:
+                socket.context = self._context(
+                    console_msg=f"cancel failed: {exc}",
+                    console_class=console.Level.ERROR,
+                    selected_thread_id=socket.context["selected_thread_id"],
+                    logs_newest_first=socket.context["logs_newest_first"],
+                )
+            return
+        if event == "invert_thread_log_order":
+            socket.context = self._context(
+                console_msg=socket.context["console_msg"],
+                console_class=socket.context["console_class"],
+                selected_thread_id=socket.context["selected_thread_id"],
+                logs_newest_first=not socket.context["logs_newest_first"],
+            )
+            return
+        if event == "toggle_thread":
+            selected_thread_id = (
+                "" if socket.context["selected_thread_id"] == task_id else task_id
+            )
+            socket.context = self._context(
+                console_msg=socket.context["console_msg"],
+                console_class=socket.context["console_class"],
+                selected_thread_id=selected_thread_id,
+                logs_newest_first=socket.context["logs_newest_first"],
+            )
+            return
+
+    async def handle_info(
+        self,
+        event: InfoEvent,
+        socket: ConnectedLiveViewSocket[ThreadsContext],
+    ) -> None:
+        if event.name != TOPIC_STATUS:
+            return
+        socket.context = self._context(
+            console_msg=socket.context["console_msg"],
+            console_class=socket.context["console_class"],
+            selected_thread_id=socket.context["selected_thread_id"],
+            logs_newest_first=socket.context["logs_newest_first"],
+        )
+
+    async def render(
+        self,
+        assigns: ThreadsContext,
+        meta: Any,
+    ) -> RenderedContent:
+        return LiveRender(_load_template("threads_live.html"), assigns, meta)
+
+    def _context(
+        self,
+        console_msg: str = "",
+        console_class: str = "",
+        selected_thread_id: str = "",
+        logs_newest_first: bool = True,
+    ) -> ThreadsContext:
+        status = self.owner.state.status()
+        tasks = self._sort_tasks(status.get("background_tasks") or [])
+        thread_items = [
+            self._thread_item(
+                task,
+                selected_thread_id=selected_thread_id,
+                logs_newest_first=logs_newest_first,
+            )
+            for task in tasks
+        ]
+        base = self._base_context(console_msg, console_class)
+        config = self.owner.config
+        return cast(
+            ThreadsContext,
+            {
+                **base,
+                "has_threads": bool(thread_items),
+                "selected_thread_id": selected_thread_id,
+                "logs_newest_first": logs_newest_first,
+                "thread_items": thread_items,
+                "real_debrid_enabled": bool(
+                    getattr(config, "real_debrid_enabled", False)
+                    and (getattr(config, "real_debrid_token", "") or getattr(config, "token", ""))
+                ),
+                "torbox_enabled": bool(
+                    getattr(config, "torbox_enabled", False)
+                    and getattr(config, "torbox_token", "")
+                ),
+            },
+        )
+
+    @staticmethod
+    def _sort_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        def key(task: dict[str, Any]) -> tuple[int, int, str]:
+            timestamp = str(
+                task.get("started_at")
+                or task.get("finished_at")
+                or ""
+            )
+            manual_rank = 0 if task.get("status") == "pending" else 1
+            # Tasks without a timestamp sort last; otherwise newest first.
+            return (
+                manual_rank,
+                0 if timestamp else 1,
+                _reverse_sort_text(timestamp),
+            )
+
+        return sorted(tasks, key=key)
+
+    @staticmethod
+    def _thread_item(
+        task: dict[str, Any],
+        *,
+        selected_thread_id: str = "",
+        logs_newest_first: bool = True,
+    ) -> ThreadItem:
+        task_id = str(task.get("id") or "")
+        raw_status = str(task.get("status") or "")
+        status: TaskStatus = (
+            cast(TaskStatus, raw_status)
+            if raw_status in _TASK_STATUSES
+            else "failed"
+        )
+        logs = [
+            _format_log_item(log)
+            for log in task.get("logs") or []
+            if isinstance(log, dict)
+        ]
+        if logs_newest_first:
+            logs.reverse()
+        worst_log_level = _worst_log_level(logs)
+        show_log_severity = bool(status == "complete" and worst_log_level)
+        raw_label = str(task.get("label") or "-")
+        label_parts = raw_label.split(": ", 1)
+        label = label_parts[0]
+        detail = label_parts[1] if len(label_parts) > 1 else ""
+        return {
+            "id": task_id,
+            "short_id": task_id[:8],
+            "kind": str(task.get("kind") or "-"),
+            "kind_class": f"thread-kind-{task.get('kind')}" if task.get("kind") else "comment",
+            "label": label,
+            "detail": detail,
+            "status": status,
+            "status_class": _task_status_class(status),
+            "row_class": "thread-row-pending" if status == "pending" else "",
+            "started_at": str(task.get("started_at") or "-"),
+            "finished_at": str(task.get("finished_at") or "-"),
+            "error": str(task.get("error") or ""),
+            "cancellable": bool(task.get("cancellable")),
+            "startable": bool(task.get("startable")),
+            "expanded": bool(task_id and task_id == selected_thread_id),
+            "logs": logs,
+            "log_order_label": "NEWEST" if logs_newest_first else "OLDEST",
+            "log_severity_class": (
+                f"thread-log-severity-{worst_log_level}"
+                if worst_log_level
+                else ""
+            ),
+            "log_severity_title": (
+                f"worst task log level: {worst_log_level}"
+                if worst_log_level
+                else ""
+            ),
+            "show_log_severity": show_log_severity,
+            "status_group_title": (
+                f"[{status}] · worst log: {worst_log_level}"
+                if show_log_severity
+                else f"[{status}]"
+            ),
+        }
+
+
 class ConfigLiveView(_BaseBuzzLiveView):
     page_name = "config"
     page_title = "buzz: config"
@@ -1083,7 +2117,7 @@ class ConfigLiveView(_BaseBuzzLiveView):
             await socket.subscribe(TOPIC_STATUS)
             await socket.subscribe(TOPIC_CONFIG)
 
-    async def handle_event(
+    async def handle_event(  # noqa: C901
         self,
         event: str,
         socket: ConnectedLiveViewSocket[ConfigContext],
@@ -1106,6 +2140,22 @@ class ConfigLiveView(_BaseBuzzLiveView):
         if event == "cancel":
             socket.context = self._context()
             return
+        if event == "toggle_favorite":
+            section = (payload or {}).get("section", "")
+            focus_section = ""
+            if section:
+                now_favorite = self.owner.state.toggle_config_favorite(section)
+                # Only scroll-follow when a section was favorited (moved up).
+                focus_section = section if now_favorite else ""
+            socket.context = self._context(
+                is_editing=True,
+                draft_payload=socket.context["draft_payload"],
+                language_query=socket.context["language_query"],
+                console_msg=socket.context["console_msg"],
+                console_class=socket.context["console_class"],
+                focus_section=focus_section,
+            )
+            return
         if event in {"filter_languages", "preview"}:
             form_payload = payload or {}
             socket.context = self._context(
@@ -1124,13 +2174,13 @@ class ConfigLiveView(_BaseBuzzLiveView):
                     "cannot refresh languages: set subtitles.opensubtitles"
                     " api_key, username, and password in buzz.yml"
                 )
-                console_class = CSS_STATUS_RED
+                console_class = console.Level.ERROR
             elif not self.owner.trigger_language_refresh(force=True):
                 console_msg = "language refresh already in progress"
-                console_class = CSS_STATUS_YELLOW
+                console_class = console.Level.RESTART
             else:
                 console_msg = "refreshing languages from opensubtitles..."
-                console_class = CSS_STATUS_GREEN
+                console_class = console.Level.SUCCESS
             socket.context = self._context(
                 is_editing=socket.context["is_editing"],
                 draft_payload=socket.context["draft_payload"],
@@ -1144,27 +2194,29 @@ class ConfigLiveView(_BaseBuzzLiveView):
             socket.context = self._context(
                 is_editing=False,
                 console_msg="defaults restored.",
-                console_class="service-status-green",
+                console_class=console.Level.SUCCESS,
             )
             if result["restart_required"]:
-                socket.context["console_msg"] = (
+                console.log(
+                    socket.context,
                     "defaults restored. restart still required for "
-                    + ", ".join(result["restart_required_fields"])
+                    + ", ".join(result["restart_required_fields"]),
+                    console.Level.RESTART,
                 )
-                socket.context["console_class"] = "service-status-yellow"
             return
         if event != "save":
             return
 
         overrides = _config_overrides_from_payload(payload or {})
         result = self.owner.persist_overrides(overrides)
-        console_msg = "saved."
-        console_class = CSS_STATUS_GREEN
         if result["restart_required"]:
             console_msg = "saved. restart required for " + ", ".join(
                 result["restart_required_fields"]
             )
-            console_class = CSS_STATUS_YELLOW
+            console_class = console.Level.RESTART
+        else:
+            console_msg = "saved."
+            console_class = console.Level.SUCCESS
         socket.context = self._context(
             is_editing=False,
             console_msg=console_msg,
@@ -1178,15 +2230,16 @@ class ConfigLiveView(_BaseBuzzLiveView):
     ) -> None:
         if event.name not in {TOPIC_STATUS, TOPIC_CONFIG}:
             return
-        console_msg = socket.context["console_msg"]
-        console_class = socket.context["console_class"]
         if (
             event.name == TOPIC_CONFIG
             and isinstance(event.payload, dict)
             and event.payload.get("languages_refresh_complete")
         ):
             console_msg = "languages updated"
-            console_class = CSS_STATUS_GREEN
+            console_class = console.Level.SUCCESS
+        else:
+            console_msg = socket.context["console_msg"]
+            console_class = socket.context["console_class"]
         socket.context = self._context(
             is_editing=socket.context["is_editing"],
             draft_payload=socket.context["draft_payload"],
@@ -1209,6 +2262,7 @@ class ConfigLiveView(_BaseBuzzLiveView):
         draft_payload: dict[str, Any] | None = None,
         console_msg: str = "",
         console_class: str = "",
+        focus_section: str = "",
     ) -> ConfigContext:
         base = self._base_context(console_msg, console_class)
         effective_config = getattr(
@@ -1269,6 +2323,12 @@ class ConfigLiveView(_BaseBuzzLiveView):
                 "languages_refreshing": self.owner.languages_refreshing,
                 "restart_required": self.owner.restart_required,
                 "restart_required_fields": self.owner.restart_required_fields(),
+                "section_states": _section_states(
+                    self.owner.state.config_favorites
+                ),
+                "focus_section": _section_slug(focus_section)
+                if focus_section
+                else "",
                 "subtitles_credentials_ready": subtitles_credentials_ready,
                 "values": values,
             },
@@ -1276,7 +2336,8 @@ class ConfigLiveView(_BaseBuzzLiveView):
 
 
 def _page_from_path(path: str) -> PageName:
-    page = path.strip("/") or "cache"
+    parsed = urlparse(path)
+    page = parsed.path.strip("/") or "cache"
     if page in PAGE_NAMES:
         return cast(PageName, page)
     return "cache"
@@ -1284,6 +2345,83 @@ def _page_from_path(path: str) -> PageName:
 
 def _page_path(page: PageName) -> str:
     return f"/{page}"
+
+
+def _reverse_sort_text(value: str) -> str:
+    return "".join(chr(255 - ord(char)) for char in value)
+
+
+def _task_status_class(status: str) -> str:
+    return console.Level.task_status_class(status)
+
+
+def _worst_log_level(logs: list[LogItem]) -> str:
+    worst = ""
+    worst_score = -1
+    for log in logs:
+        level = log["level"]
+        score = _LOG_LEVEL_SEVERITY.get(level, -1)
+        if score > worst_score:
+            worst = level
+            worst_score = score
+    return worst
+
+
+def _split_task_link_message(
+    message: str,
+    task_id: str,
+) -> tuple[str, str, str]:
+    if not task_id:
+        return message, "", ""
+    index = message.find(task_id)
+    if index < 0:
+        return f"{message} ", task_id, ""
+    return (
+        message[:index],
+        message[index:index + len(task_id)],
+        message[index + len(task_id):],
+    )
+
+
+def _display_log_timestamp(timestamp: str) -> str:
+    if "T" not in timestamp or len(timestamp) < 19:
+        return timestamp
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return timestamp[11:19]
+    return parsed.astimezone().strftime("%H:%M:%S")
+
+
+def _format_log_item(log: dict[str, Any]) -> LogItem:
+    display_timestamp = _display_log_timestamp(str(log.get("timestamp", "")))
+    level = str(log.get("level", "info")).lower()
+    level_label = f"[{level.upper()}]"
+    source = "buzz-curator" if log.get("source") == "curator" else "buzz-dav"
+    message = str(log.get("message", ""))
+    count = int(log.get("count", 1))
+    message = f"{message} ({count})" if count > 1 else message
+    link_to_task_id = str(log.get("link_to_task_id") or "")
+    message_prefix, task_link_text, message_suffix = _split_task_link_message(
+        message,
+        link_to_task_id,
+    )
+    copy_text = f"{source} {display_timestamp} {level_label} {message}"
+    return {
+        "copy_text": copy_text,
+        "level": level,
+        "level_class": f"log-level-{level}",
+        "level_label": level_label,
+        "message": message,
+        "message_prefix": message_prefix,
+        "message_suffix": message_suffix,
+        "source": source,
+        "timestamp": display_timestamp,
+        "link_to_task_id": link_to_task_id,
+        "task_link_text": task_link_text,
+        "task_status": "",
+        "task_status_class": "",
+    }
 
 
 def _extract_page_body(html: str) -> Markup:
@@ -1305,17 +2443,20 @@ class BuzzLiveView(_BaseBuzzLiveView):
         self.cache_view = CacheLiveView(owner)
         self.archive_view = ArchiveLiveView(owner)
         self.logs_view = LogsLiveView(owner)
+        self.threads_view = ThreadsLiveView(owner)
         self.config_view = ConfigLiveView(owner)
 
     def _nav_for_page(self, page: PageName) -> PageNav:
         return {
-            "archive_count": len(self.owner.state.trashcan),
+            "archive_count": len(self.owner.state.archive),
             "cache_active": page == "cache",
             "archive_active": page == "archive",
             "logs_active": page == "logs",
+            "threads_active": page == "threads",
             "config_active": page == "config",
             "log_count": self.owner.log_count(),
             "log_level": self._highest_log_level(),
+            "thread_count": len(self.owner.state.background_tasks.snapshot()),
         }
 
     def _base_context_for_page(
@@ -1335,6 +2476,8 @@ class BuzzLiveView(_BaseBuzzLiveView):
             return context["archive"]
         if page == "logs":
             return context["logs"]
+        if page == "threads":
+            return context["threads"]
         if page == "config":
             return context["config"]
         return context["cache"]
@@ -1349,6 +2492,8 @@ class BuzzLiveView(_BaseBuzzLiveView):
             context["archive"] = cast(ArchiveContext, page_context)
         elif page == "logs":
             context["logs"] = cast(LogsContext, page_context)
+        elif page == "threads":
+            context["threads"] = cast(ThreadsContext, page_context)
         elif page == "config":
             context["config"] = cast(ConfigContext, page_context)
         else:
@@ -1361,8 +2506,14 @@ class BuzzLiveView(_BaseBuzzLiveView):
         page: PageName | None = None,
         console_msg: str | None = None,
         console_class: str | None = None,
+        task_id: str = "",
     ) -> None:
         active_page = page or context["active_page"]
+        if task_id:
+            context["threads"] = self.threads_view._context(
+                selected_thread_id=task_id,
+                logs_newest_first=context["threads"]["logs_newest_first"],
+            )
         active_context = self._page_context(active_page, context)
         base = self._base_context_for_page(
             active_page,
@@ -1397,6 +2548,10 @@ class BuzzLiveView(_BaseBuzzLiveView):
             rendered = _load_template("logs_live.html").render(
                 context["logs"], None
             )
+        elif page == "threads":
+            rendered = _load_template("threads_live.html").render(
+                context["threads"], None
+            )
         elif page == "config":
             rendered = _load_template("config_live.html").render(
                 context["config"], None
@@ -1407,16 +2562,18 @@ class BuzzLiveView(_BaseBuzzLiveView):
             )
         return _extract_page_body(rendered)
 
-    def _context(self, active_page: PageName = "cache") -> ShellContext:
+    def _context(self, active_page: PageName = "cache", task_id: str = "") -> ShellContext:
         cache = self.cache_view._context()
         archive = self.archive_view._context()
         logs = self.logs_view._context()
+        threads = self.threads_view._context(selected_thread_id=task_id)
         config = self.config_view._context()
         active_context = {
             "archive": archive,
             "cache": cache,
             "config": config,
             "logs": logs,
+            "threads": threads,
         }[active_page]
         base = self._base_context_for_page(
             active_page,
@@ -1432,7 +2589,10 @@ class BuzzLiveView(_BaseBuzzLiveView):
                 "cache": cache,
                 "config": config,
                 "logs": logs,
+                "threads": threads,
                 "page_content": Markup(""),
+                "real_debrid_enabled": threads["real_debrid_enabled"],
+                "torbox_enabled": threads["torbox_enabled"],
             },
         )
         context["page_content"] = self._render_page_body(active_page, context)
@@ -1457,15 +2617,19 @@ class BuzzLiveView(_BaseBuzzLiveView):
         socket: LiveViewSocket[ShellContext],
     ) -> None:
         page = _page_from_path(url.path)
+        query = parse_qs(url.query)
+        task_id = query.get("task_id", [""])[0]
+
         if not getattr(socket, "context", None):
-            socket.context = self._context(page)
+            socket.context = self._context(page, task_id=task_id)
             return
-        self._refresh_shared_context(socket.context, page=page)
+        self._refresh_shared_context(socket.context, page=page, task_id=task_id)
         socket.live_title = {
             "archive": "buzz: archive",
             "cache": "buzz: cache",
             "config": "buzz: config",
             "logs": "buzz: system logs",
+            "threads": "buzz: threads",
         }[page]
 
     async def handle_event(
@@ -1481,12 +2645,26 @@ class BuzzLiveView(_BaseBuzzLiveView):
         file_id: str = "",
         mode: str = "",
         col: str = "",
+        task_id: str = "",
         language_query: str = "",
+        id: str = "",
     ) -> None:
         if event == EVENT_NAVIGATE:
-            page = _page_from_path(to)
+            parsed = urlparse(to)
+            page = _page_from_path(parsed.path)
+            query = parse_qs(parsed.query)
+            query_task_id = query.get("task_id", [""])[0]
+
+            self._refresh_shared_context(socket.context, page=page, task_id=query_task_id)
+            await socket.push_patch(to)
+            return
+
+        if event == "clear_console":
+            page = socket.context["active_page"]
+            page_context = self._page_context(page, socket.context)
+            page_context["console_msg"] = ""
+            page_context["console_class"] = ""
             self._refresh_shared_context(socket.context, page=page)
-            await socket.push_patch(_page_path(page))
             return
 
         page = socket.context["active_page"]
@@ -1507,6 +2685,13 @@ class BuzzLiveView(_BaseBuzzLiveView):
                     event,
                     cast(ConnectedLiveViewSocket[LogsContext], socket),
                     to=to,
+                )
+            elif page == "threads":
+                await self.threads_view.handle_event(
+                    event,
+                    cast(ConnectedLiveViewSocket[ThreadsContext], socket),
+                    to=to,
+                    task_id=task_id,
                 )
             elif page == "config":
                 await self.config_view.handle_event(
@@ -1529,6 +2714,7 @@ class BuzzLiveView(_BaseBuzzLiveView):
                     file_id=file_id,
                     mode=mode,
                     col=col,
+                    id=id,
                 )
             new_page_context = cast(PageContext, socket.context)
         finally:
@@ -1559,6 +2745,7 @@ class BuzzLiveView(_BaseBuzzLiveView):
             caching=context["cache"]["caching"],
             sort_col=context["cache"]["sort_col"],
             sort_dir=context["cache"]["sort_dir"],
+            expanded_id=context["cache"]["expanded_id"],
         )
         context["archive"] = self.archive_view._context(
             console_msg=context["archive"]["console_msg"],
@@ -1569,15 +2756,22 @@ class BuzzLiveView(_BaseBuzzLiveView):
             sort_dir=context["archive"]["sort_dir"],
         )
         context["logs"] = self.logs_view._context()
-        config_console_msg = context["config"]["console_msg"]
-        config_console_class = context["config"]["console_class"]
+        context["threads"] = self.threads_view._context(
+            console_msg=context["threads"]["console_msg"],
+            console_class=context["threads"]["console_class"],
+            selected_thread_id=context["threads"]["selected_thread_id"],
+            logs_newest_first=context["threads"]["logs_newest_first"],
+        )
         if (
             event.name == TOPIC_CONFIG
             and isinstance(event.payload, dict)
             and event.payload.get("languages_refresh_complete")
         ):
             config_console_msg = "languages updated"
-            config_console_class = CSS_STATUS_GREEN
+            config_console_class = console.Level.SUCCESS
+        else:
+            config_console_msg = context["config"]["console_msg"]
+            config_console_class = context["config"]["console_class"]
         context["config"] = self.config_view._context(
             is_editing=context["config"]["is_editing"],
             draft_payload=context["config"]["draft_payload"],
@@ -1660,9 +2854,14 @@ def _config_values(
         },
         "media_server_kind": effective["media_server"]["kind"],
         "on_library_change": effective["hooks"]["on_library_change"],
+        "provider_priority": "\n".join(effective["provider"]["priority"]),
         "provider_poll_interval_secs": effective["provider"][
             "poll_interval_secs"
         ],
+        "real_debrid_enabled": effective["provider"]["real_debrid"][
+            "enabled"
+        ],
+        "real_debrid_token": effective["provider"]["real_debrid"]["token"],
         "ui_poll_interval_secs": effective["ui"]["poll_interval_secs"],
         "port": effective["server"]["port"],
         "plex_token": effective["media_server"]["plex"]["token"],
@@ -1680,6 +2879,8 @@ def _config_values(
         "selected_languages": subtitles["languages"],
         "strategy": subtitles["strategy"],
         "subtitles_enabled": subtitles["enabled"],
+        "torbox_enabled": effective["provider"]["torbox"]["enabled"],
+        "torbox_token": effective["provider"]["torbox"]["token"],
         "trigger_lib_scan": effective["media_server"]["trigger_lib_scan"],
         "verbose": effective["logging"]["verbose"],
         "version_label": effective["version_label"],
@@ -1724,6 +2925,9 @@ def _config_overrides_from_payload(
         _set_nested_value(overrides, field, field in normalized)
 
     text_fields = (
+        "provider.priority",
+        "provider.real_debrid.token",
+        "provider.torbox.token",
         "server.bind",
         "hooks.on_library_change",
         "hooks.curator_url",
@@ -1745,6 +2949,9 @@ def _config_overrides_from_payload(
     _set_nested_value(
         overrides, FIELD_ANIME_PATTERNS, _extract_pattern_lines(patterns)
     )
+    priority = _extract_pattern_lines(normalized.get("provider.priority", [""]))
+    if priority:
+        _set_nested_value(overrides, "provider.priority", priority)
 
     languages = _extract_language_values(
         normalized.get(FIELD_SUBTITLES_LANGUAGES, [])
@@ -1766,6 +2973,31 @@ def _set_nested_value(target: dict[str, Any], path: str, value: Any) -> None:
     for key in keys[:-1]:
         cursor = cast(dict[str, Any], cursor.setdefault(key, {}))
     cursor[keys[-1]] = value
+
+
+def _section_states(
+    favorites: set[str],
+) -> dict[str, ConfigSectionState]:
+    """Per-section favorite state keyed by slug for the edit-form template.
+
+    Favorited sections get order 0 (pinned to the top via CSS flex order);
+    everything else keeps order 1, and flexbox preserves source order within a
+    tie.
+    """
+    states: dict[str, ConfigSectionState] = {}
+    for section in _CONFIG_SECTIONS:
+        is_favorite = section in favorites
+        states[_section_slug(section)] = {
+            "favorite": "true" if is_favorite else "false",
+            "order": 0 if is_favorite else 1,
+            "star_class": "config-fav-star is-favorite"
+            if is_favorite
+            else "config-fav-star",
+            "star_icon": "fa-solid fa-star"
+            if is_favorite
+            else "fa-regular fa-star",
+        }
+    return states
 
 
 def _field_states(

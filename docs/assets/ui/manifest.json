@@ -1,0 +1,61 @@
+{
+  "generated_by": "maint-scripts/render_ui_props.py",
+  "config": "/home/gchamon/Projects/buzz/maint-scripts/props.yml",
+  "viewport": {
+    "width": 1556,
+    "height": 908
+  },
+  "routes": [
+    "cache",
+    "archive",
+    "logs",
+    "threads",
+    "config"
+  ],
+  "background": {
+    "size": [
+      1600,
+      1000
+    ],
+    "palette": [
+      "#210c24",
+      "#1f0d27",
+      "#32c6a4"
+    ],
+    "polar_delta": 45.0,
+    "centers": [
+      {
+        "x": 800,
+        "y": 0,
+        "sigma_x": 1120,
+        "sigma_y": 750,
+        "color": "#210c24"
+      },
+      {
+        "x": 1600,
+        "y": 500,
+        "sigma_x": 1120,
+        "sigma_y": 750,
+        "color": "#1f0d27"
+      },
+      {
+        "x": 400,
+        "y": 1000,
+        "sigma_x": 720,
+        "sigma_y": 380,
+        "color": "#32c6a4"
+      }
+    ]
+  },
+  "hyprland": {
+    "active_border_start": "#ff30c7",
+    "active_border_end": "#00ff99",
+    "inactive_border": "#5959b4",
+    "border_size": 2,
+    "rounding": 5,
+    "shadow": "#1a1a1a",
+    "source": "/home/gchamon/.config/hypr/hyprland.conf",
+    "source_found": true
+  },
+  "background_only": false
+}

@@ -1,0 +1,149 @@
+<!-- htmlhint doctype-first:false -->
+<!-- page-body -->
+<section class="threads-page-container" aria-labelledby="threads-title">
+  <div class="table-container" id="threads-table-container" phx-hook="BuzzOverflowMarquee">
+    <table id="threads-table">
+      <thead>
+        <tr>
+          <th>State</th>
+          <th>Kind</th>
+          <th>Label</th>
+          <th>Detail</th>
+          <th>Started</th>
+          <th>Finished</th>
+          <th>Error</th>
+          <th>ID</th>
+          <th>Act</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if not has_threads %}
+        <tr>
+          <td colspan="8" class="comment">no threads</td>
+        </tr>
+        {% endif %}
+      </tbody>
+        {% if has_threads %}
+        {% for thread in thread_items %}
+      <tbody class="thread-group{% if thread.expanded %} thread-group-expanded{% endif %}">
+        <tr
+          class="{{ thread.row_class }}{% if thread.expanded %} thread-row-expanded{% endif %}"
+          phx-click="toggle_thread"
+          phx-value-task_id="{{ thread.id }}"
+        >
+          <td>
+            <span class="thread-status-group" title="{{ thread.status_group_title }}" aria-label="{{ thread.status_group_title }}">
+              <span class="{{ thread.status_class }}">[{{ thread.status }}]</span>
+              {% if thread.show_log_severity %}
+              <span class="thread-log-severity {{ thread.log_severity_class }}"></span>
+              {% endif %}
+            </span>
+          </td>
+          <td><span class="{{ thread.kind_class }}">{{ thread.kind }}</span></td>
+          <td class="name trunc-cell" data-value="{{ thread.label }}">
+            <span class="marquee-clip" data-marquee-clip>
+              <span class="marquee-label" data-marquee-label title="{{ thread.label }}">{{ thread.label }}</span>
+            </span>
+          </td>
+          <td class="thread-detail trunc-cell" data-value="{{ thread.detail }}">
+            <span class="marquee-clip" data-marquee-clip>
+              <span class="marquee-label" data-marquee-label title="{{ thread.detail }}">{{ thread.detail }}</span>
+            </span>
+          </td>
+          <td class="comment timestamp">{{ thread.started_at }}</td>
+          <td class="comment timestamp">{{ thread.finished_at }}</td>
+          <td class="thread-error trunc-cell" data-value="{{ thread.error }}">
+            <span class="marquee-clip" data-marquee-clip>
+              <span class="marquee-label" data-marquee-label title="{{ thread.error }}">{{ thread.error }}</span>
+            </span>
+          </td>
+          <td class="yellow">
+            <code title="{{ thread.id }}">{{ thread.short_id }}</code>
+          </td>
+          <td>
+            {% if thread.startable %}
+            <button
+              type="button"
+              class="secondary btn-sm"
+              phx-click="start_thread"
+              phx-value-task_id="{{ thread.id }}"
+            >Accept</button>
+            <button
+              type="button"
+              class="secondary btn-sm"
+              phx-click="cancel_thread"
+              phx-value-task_id="{{ thread.id }}"
+            >Cancel</button>
+            {% elif thread.cancellable %}
+            <button
+              type="button"
+              class="secondary btn-sm"
+              phx-click="cancel_thread"
+              phx-value-task_id="{{ thread.id }}"
+            >Cancel</button>
+            {% else %}
+            <span class="comment">-</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% if thread.expanded %}
+        <tr class="thread-log-row">
+          <td colspan="9">
+            <div class="thread-log-container">
+              <div class="thread-log-header">
+                <span class="comment">Task Logs</span>
+                <div class="thread-log-actions">
+                  <button
+                    type="button"
+                    class="secondary btn-sm"
+                    phx-click="noop"
+                    onclick="buzzCopyTaskLogs('{{ thread.id }}')"
+                  >COPY ALL</button>
+                  <button
+                    type="button"
+                    class="secondary btn-sm"
+                    phx-click="invert_thread_log_order"
+                  >{{ thread.log_order_label }}</button>
+                </div>
+              </div>
+              <div class="thread-log-entries">
+              {% if thread.logs %}
+              {% for log in thread.logs %}
+              <div class="log-entry" data-copy-text="{{ log.copy_text }}" onclick="buzzCopyLogLine(this)">
+                <div class="log-content">
+                  <span class="log-source">{{ log.source }}</span>
+                  <span class="log-ts">{{ log.timestamp }}</span>
+                  <span class="log-level {{ log.level_class }}">{{ log.level_label }}</span>
+                  {% if log.link_to_task_id %}
+                  <span class="log-message">{{ log.message_prefix }}<a phx-click="navigate" phx-value-to="/threads?task_id={{ log.link_to_task_id }}" class="log-task-link">{{ log.task_link_text }}</a>{{ log.message_suffix }}</span>
+                  {% else %}
+                  <span class="log-message">{{ log.message }}</span>
+                  {% endif %}
+                </div>
+                <button
+                  type="button"
+                  class="log-copy-btn"
+                  data-copy-text="{{ log.copy_text }}"
+                  title="Copy line"
+                  aria-label="Copy log line"
+                  onclick="buzzCopyLogLine(this)"
+                >
+                  <i class="fa-regular fa-copy"></i>
+                </button>
+              </div>
+              {% endfor %}
+              {% else %}
+              <div class="comment">no thread logs</div>
+              {% endif %}
+              </div>
+            </div>
+          </td>
+        </tr>
+        {% endif %}
+      </tbody>
+        {% endfor %}
+        {% endif %}
+    </table>
+  </div>
+</section>
+<!-- /page-body -->

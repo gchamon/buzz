@@ -20,9 +20,13 @@ async function buzzCopyToClipboard(text, successMsg = "copied to clipboard!") {
     } else {
       fallbackCopy(text);
     }
-    setBuzzConsole(successMsg, "service-status-green");
+    if (successMsg) {
+      setBuzzConsole(successMsg, "service-status-green");
+    }
   } catch (_error) {
-    setBuzzConsole("failed to copy.", "service-status-red");
+    if (successMsg) {
+      setBuzzConsole("failed to copy.", "service-status-red");
+    }
   }
 }
 
@@ -54,6 +58,26 @@ async function buzzCopyLogLine(button) {
   await buzzCopyToClipboard(text);
 }
 
+async function buzzCopyTaskLogs(taskId) {
+  const row = document.querySelector(`tr[phx-value-task_id="${taskId}"]`);
+  if (!row) {
+    return;
+  }
+  const logRow = row.nextElementSibling;
+  if (!logRow || !logRow.classList.contains("thread-log-row")) {
+    return;
+  }
+  const entries = logRow.querySelectorAll(".log-entry[data-copy-text]");
+  const text = Array.from(entries)
+    .map((entry) => entry.getAttribute("data-copy-text") || "")
+    .filter((value) => value !== "")
+    .join("\n");
+
+  if (text) {
+    await buzzCopyToClipboard(text, "task logs copied to clipboard!");
+  }
+}
+
 function buzzHighlightYamlElement(root) {
   if (
     typeof window === "undefined" ||
@@ -74,6 +98,17 @@ function buzzHighlightYamlElement(root) {
 
 if (typeof window !== "undefined") {
   const hooks = window.Hooks || {};
+
+  function buzzDedupeIdentityForms(root = document) {
+    root.querySelectorAll(".identity-section").forEach((section) => {
+      const forms = Array.from(section.querySelectorAll(".curator-title-form"));
+      if (forms.length <= 1) return;
+      const keep = forms.find((form) => form.querySelector(".identity-inputs")) || forms[0];
+      forms.forEach((form) => {
+        if (form !== keep) form.remove();
+      });
+    });
+  }
 
   hooks.BuzzPrismYaml = {
     mounted() {
@@ -161,18 +196,41 @@ if (typeof window !== "undefined") {
         return [];
       }
     },
+    _classes() {
+      try {
+        const classes = JSON.parse(this.el.dataset.classes || "{}");
+        return classes && typeof classes === "object" && !Array.isArray(classes)
+          ? classes
+          : {};
+      } catch (_error) {
+        return {};
+      }
+    },
+    _setValue(value, classes) {
+      Object.values(classes).forEach((className) => {
+        if (typeof className === "string" && className) {
+          this.el.classList.remove(className);
+        }
+      });
+      this.el.textContent = value;
+      const className = classes[value];
+      if (typeof className === "string" && className) {
+        this.el.classList.add(className);
+      }
+    },
     _start() {
       const values = this._values();
+      const classes = this._classes();
       if (values.length <= 1) {
         if (values.length === 1) {
-          this.el.textContent = values[0];
+          this._setValue(values[0], classes);
         }
         return;
       }
-      this.el.textContent = values[0];
+      this._setValue(values[0], classes);
       this._timer = window.setInterval(() => {
         this._index = (this._index + 1) % values.length;
-        this.el.textContent = values[this._index];
+        this._setValue(values[this._index], classes);
       }, 3000);
     },
     _stop() {
@@ -249,6 +307,50 @@ if (typeof window !== "undefined") {
       });
     },
   };
+
+  hooks.BuzzIdentityRevert = {
+    mounted() {
+      this._updateOverriddenInputs = () => {
+        const inputs = this.el.querySelectorAll(".identity-inputs input");
+        inputs.forEach((input) => {
+          input.classList.toggle("input-overridden", input.value !== (input.dataset.default || ""));
+        });
+      };
+      this._bind = () => {
+        this._button?.removeEventListener("click", this._onClick);
+        this._container?.removeEventListener("input", this._updateOverriddenInputs);
+        this._dedupeForms();
+        this._button = this.el.querySelector(".curator-title-form [data-revert]");
+        this._button?.addEventListener("click", this._onClick);
+        this._container = this.el.querySelector(".identity-inputs");
+        this._container?.addEventListener("input", this._updateOverriddenInputs);
+      };
+      this._dedupeForms = () => {
+        buzzDedupeIdentityForms(this.el);
+      };
+      this._onClick = (event) => {
+        event.preventDefault();
+        const form = this.el.querySelector(".curator-title-form");
+        const inputs = form?.querySelectorAll(".identity-inputs input") || [];
+        inputs.forEach((input) => {
+          input.value = input.dataset.default || "";
+        });
+        this._updateOverriddenInputs();
+      };
+      this._bind();
+      this._updateOverriddenInputs();
+    },
+    updated() {
+      this._bind?.();
+      this._updateOverriddenInputs?.();
+    },
+    destroyed() {
+      this._button?.removeEventListener("click", this._onClick);
+      this._container?.removeEventListener("input", this._updateOverriddenInputs);
+    },
+  };
+
+  document.addEventListener("phx:update", () => buzzDedupeIdentityForms());
 
   window.Hooks = hooks;
 }

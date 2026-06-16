@@ -14,6 +14,7 @@ from . import db
 from .events import record_event
 from .media import VIDEO_EXTENSIONS
 from .media_server import trigger_jellyfin_selective_refresh
+from .state import raise_if_cancelled
 
 
 class SubtitleState:
@@ -403,6 +404,24 @@ def _open_state_db(config: CuratorConfig):
     return conn
 
 
+def _load_query_overrides(
+    config: CuratorConfig,
+) -> tuple[dict[tuple[str, str], str], dict[str, str]]:
+    """Load per-file subtitle query overrides and a torrent name->hash map."""
+    conn = _open_state_db(config)
+    try:
+        overrides = db.load_subtitle_query_overrides(conn)
+        if not overrides:
+            return {}, {}
+        name_to_hash = {
+            name: thash
+            for thash, name in db.load_torrent_name_hints(conn).items()
+        }
+        return overrides, name_to_hash
+    finally:
+        conn.close()
+
+
 def _read_subtitle_meta(
     config: CuratorConfig, overlay_path: Path
 ) -> dict | None:
@@ -434,7 +453,7 @@ def _write_subtitle_meta(
 def _prepare_mapping(
     config: CuratorConfig,
     mapping: list[dict] | None,
-    torrent_name: str | None,
+    torrent_names: list[str] | None,
 ) -> list[dict]:
     if mapping is None:
         conn = _open_state_db(config)
@@ -443,28 +462,46 @@ def _prepare_mapping(
         finally:
             conn.close()
     if not mapping:
-        return []
-    if torrent_name:
+        if torrent_names:
+            joined = ", ".join(sorted(set(torrent_names)))
+            message = (
+                f"no library mapping found for torrents: {joined}. "
+                "try RESYNC LIB first."
+            )
+        else:
+            message = (
+                "no video files found in library mapping. "
+                "try RESYNC LIB first."
+            )
+        record_event(message, level="error")
+        raise RuntimeError(message)
+    if torrent_names:
+        names = set(torrent_names)
         mapping = [
             e for e in mapping
-            if _source_matches_torrent(e["source"], torrent_name)
+            if any(
+                _source_matches_torrent(e["source"], name)
+                for name in names
+            )
         ]
-        record_event(f"subtitle fetch triggered for torrent: {torrent_name}")
+        joined = ", ".join(sorted(names))
+        record_event(f"subtitle fetch triggered for torrents: {joined}")
     else:
         record_event("subtitle fetch triggered for full library")
     if not mapping:
-        if torrent_name:
-            record_event(
-                f"no library mapping found for torrent: {torrent_name}. "
-                "try RESYNC LIB first.",
-                level="error",
+        if torrent_names:
+            joined = ", ".join(sorted(set(torrent_names)))
+            message = (
+                f"no library mapping found for torrents: {joined}. "
+                "try RESYNC LIB first."
             )
         else:
-            record_event(
+            message = (
                 "no video files found in library mapping. "
-                "try RESYNC LIB first.",
-                level="error",
+                "try RESYNC LIB first."
             )
+        record_event(message, level="error")
+        raise RuntimeError(message)
     return mapping
 
 
@@ -576,12 +613,45 @@ def _install_subtitle(
     return not is_replacement
 
 
+def _entry_hash_and_path(
+    entry: dict, name_to_hash: dict[str, str]
+) -> tuple[str, str]:
+    """Resolve (torrent hash, in-torrent file path) for a mapping entry.
+
+    The mapping ``source`` is ``{category}/{torrent_name}/{file path}``, the
+    same layout the cache UI uses to store per-file subtitle query overrides.
+    """
+    parts = Path(entry["source"]).parts
+    if len(parts) < 3:
+        return "", ""
+    torrent_name = parts[1]
+    file_path = "/".join(parts[2:])
+    thash = name_to_hash.get(torrent_name, "")
+    return thash, file_path
+
+
+def _query_override_for_entry(
+    entry: dict,
+    name_to_hash: dict[str, str],
+    overrides: dict[tuple[str, str], str],
+) -> str:
+    """Return the subtitle query override for a mapping entry (empty if none)."""
+    if not overrides:
+        return ""
+    thash, file_path = _entry_hash_and_path(entry, name_to_hash)
+    if not thash or not file_path:
+        return ""
+    return overrides.get((thash.strip().lower(), file_path), "")
+
+
 def _fetch_entry_subtitles(
     config: CuratorConfig,
     client: OpenSubtitlesClient,
     entry: dict,
     counters: dict,
     fetched_targets: list[str],
+    cancel_event: threading.Event | None = None,
+    query_override: str = "",
 ) -> None:
     target_path = Path(entry["target"])
     if target_path.suffix.lower() not in VIDEO_EXTENSIONS:
@@ -589,10 +659,26 @@ def _fetch_entry_subtitles(
 
     source_filename = Path(entry["source"]).name
     params = get_search_params(entry)
+    auto_query = params["query"]
+    if query_override:
+        params["query"] = query_override
     desc = _search_desc(params)
     feature_type = "movie" if entry["type"] == "movie" else "episode"
 
+    if query_override and query_override != auto_query:
+        record_event(
+            f"subtitle query for {source_filename}: "
+            f"'{query_override}' (override)"
+        )
+    else:
+        record_event(
+            f"subtitle query for {source_filename}: '{params['query']}'"
+        )
+
     for lang in config.subtitles.languages:
+        if cancel_event:
+            raise_if_cancelled(cancel_event)
+
         overlay_path = (
             config.subtitle_root
             / target_path.parent
@@ -678,14 +764,26 @@ def fetch_subtitles_for_library(
     config: CuratorConfig,
     mapping: list[dict] | None = None,
     torrent_name: str | None = None,
+    torrent_names: list[str] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> None:
-    """Fetch subtitles for the entire library or a single torrent."""
+    """Fetch subtitles for the entire library or specific torrents.
+
+    Pass ``torrent_name`` for a single torrent or ``torrent_names`` for a
+    batch of changed torrents. When neither is given, the whole library is
+    scanned.
+    """
     if not config.subtitles.enabled:
         return
 
-    mapping = _prepare_mapping(config, mapping, torrent_name)
+    names = list(torrent_names or [])
+    if torrent_name:
+        names.append(torrent_name)
+    mapping = _prepare_mapping(config, mapping, names or None)
     if not mapping:
         return
+
+    query_overrides, name_to_hash = _load_query_overrides(config)
 
     state.start()
     counters = {
@@ -699,12 +797,26 @@ def fetch_subtitles_for_library(
     try:
         with OpenSubtitlesClient(config.subtitles) as client:
             for entry in mapping:
-                _fetch_entry_subtitles(config, client, entry, counters, fetched_targets)
+                if cancel_event:
+                    raise_if_cancelled(cancel_event)
+                _fetch_entry_subtitles(
+                    config,
+                    client,
+                    entry,
+                    counters,
+                    fetched_targets,
+                    cancel_event=cancel_event,
+                    query_override=_query_override_for_entry(
+                        entry, name_to_hash, query_overrides
+                    ),
+                )
 
         state.stop()
         summary = _subtitle_summary(counters)
         print(f"[SUBS] {summary}", flush=True)
         record_event(summary)
+        if counters["errors"] > 0:
+            raise RuntimeError(summary)
 
         if (
             fetched_targets
@@ -716,17 +828,40 @@ def fetch_subtitles_for_library(
         print(f"[SUBS] FATAL: Subtitle fetcher failed: {e}", flush=True)
         record_event(f"subtitle fetcher failed: {e}", level="error")
         state.stop(error=True)
+        raise
 
 
 def apply_subtitle_overlay(
-    tmp_root: Path, subtitle_root: Path
+    tmp_root: Path,
+    subtitle_root: Path,
+    mapping: list[dict] | None = None,
 ) -> None:
-    """Symlink downloaded subtitles into the temporary root."""
+    """Symlink downloaded subtitles into the temporary root.
+
+    When a current Curator mapping is provided, only subtitles matching
+    currently mapped video targets are overlaid. This prevents stale subtitle
+    sidecars from recreating old curated folders after an identity override
+    changes a movie or show target path.
+    """
     if not subtitle_root.exists():
         return
 
+    allowed_targets: set[tuple[Path, str]] | None = None
+    if mapping is not None:
+        allowed_targets = set()
+        for entry in mapping:
+            target = Path(str(entry.get("target") or ""))
+            if target.suffix.lower() not in VIDEO_EXTENSIONS:
+                continue
+            allowed_targets.add((target.parent, target.stem))
+
     for sub_path in subtitle_root.rglob("*.srt"):
         rel_path = sub_path.relative_to(subtitle_root)
+        if allowed_targets is not None and (
+            rel_path.parent,
+            rel_path.stem.rsplit(".", 1)[0],
+        ) not in allowed_targets:
+            continue
         target_path = tmp_root / rel_path
         target_path.parent.mkdir(parents=True, exist_ok=True)
         if target_path.exists() or target_path.is_symlink():

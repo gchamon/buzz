@@ -48,9 +48,9 @@ Here are the core best practices to follow when writing Python:
 
 #### 0. Testing
 
-Always use `uvx pyright {folder}` to scan projects after implementing changes.
+Always use `uv run` to scan projects after implementing changes with `pytest`, `pyright` and `ruff`.
 
-When running the test suite, always use an ephemeral Docker container to run the tests:
+When running the test suite, use an ephemeral Docker container to run the full suite of tests:
 
 ```bash
 docker run --rm \

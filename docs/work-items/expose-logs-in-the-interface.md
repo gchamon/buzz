@@ -63,7 +63,7 @@ categories, not a raw tail of the container log.
   Restart Service button that prompts for confirmation. Lift shared styles
   into `buzz/static/buzz.css` and a small JS module under `buzz/static/`.
 - Document the new endpoints, filter grammar, and restart semantics in
-  `docs/architecture.md` under a new `Logs and Restart` section, and surface a
+  `docs/architecture/system.md` under a new `Logs and Restart` section, and surface a
   one-line pointer in the root `README.md` Configuration Reference.
 - Add tests under `tests/` covering:
   - ring-buffer bounds

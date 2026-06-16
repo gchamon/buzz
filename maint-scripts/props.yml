@@ -1,0 +1,403 @@
+# Deterministic UI prop rendering config for maint-scripts/render_ui_props.py.
+# Units are noted per field. "Normalized" means a fraction of the relevant
+# dimension (0.0-1.0 maps to 0..width or 0..height unless stated otherwise).
+
+# Directory where rendered props, background.png, and manifest.json are written.
+# Relative paths resolve against the repository root. [path]
+output_dir: docs/assets/ui
+
+# Browser viewport used to capture each route screenshot.
+viewport:
+  width:
+    auto # Capture width. "auto" derives it from the frame margins;
+    # otherwise an integer pixel value. [pixels | "auto"]
+  height:
+    auto # Capture height. "auto" derives it from the background
+    # and frame margins; otherwise an integer pixel value. [pixels | "auto"]
+
+# Routes to capture and compose, in order. Each becomes <route>.png. [list of route names]
+routes:
+  - cache
+  - archive
+  - logs
+  - threads
+  - config
+
+# Seeded UI state used only for deterministic README screenshots. These values
+# control visible names, labels, statuses, progress, and log levels in the
+# cache, archive, logs, and threads routes.
+ui_views:
+  global:
+    providers: [real_debrid, torbox]
+    snapshot_loaded: true
+    last_sync_at: "2026-06-15T12:00:00Z"
+    provider_degraded: false
+    last_error: ""
+    sync_in_progress: false
+    hook_phase: idle
+    hook_pending_paths: []
+    hook_active_paths: []
+    hook_in_progress: false
+
+  cache:
+    expanded_id: rd-pending-003
+    global:
+      curator_log_level: info
+      nav_log_level: info
+    entries:
+      - cache_key: rd-feature-001
+        id: rd-feature-001
+        provider: real_debrid
+        provider_torrent_id: 2K3ZTCX5PXXC4
+        hash: aaaa1111
+        name: Night of the Living Dead (1968)
+        original_name: Night.of.the.Living.Dead.1968.1080p.BluRay.x264
+        status: downloaded
+        progress: 100
+        bytes: 18253611008
+        links:
+          - https://example.invalid/night.mkv
+        ended: "2026-06-15T11:54:00Z"
+        files:
+          - id: "1"
+            path: /Night of the Living Dead (1968)/Night.of.the.Living.Dead.1968.mkv
+            bytes: 18253611008
+            selected: true
+          - id: "2"
+            path: /Night of the Living Dead (1968)/sample.mkv
+            bytes: 188743680
+            selected: false
+      - cache_key: torbox:anime-042
+        id: anime-042
+        provider: torbox
+        provider_torrent_id: "37310778"
+        hash: bbbb2222
+        name: His Girl Friday (1940)
+        status: downloaded
+        progress: 64
+        bytes: 9126805504
+        links:
+          - https://example.invalid/his-girl-friday.mkv
+        ended: "2026-06-15T10:22:00Z"
+        files:
+          - id: "1"
+            path: /His Girl Friday/His.Girl.Friday.1940.mkv
+            bytes: 9126805504
+            selected: false
+      - cache_key: rd-pending-003
+        id: rd-pending-003
+        provider: real_debrid
+        provider_torrent_id: 2OTNC4A4JD6IU
+        hash: cccc3333
+        name: Plan 9 from Outer Space (1959)
+        status: downloaded
+        progress: 100
+        bytes: 4831838208
+        links: []
+        ended: "2026-06-14T22:15:00Z"
+        category_override: movies
+        identity_override:
+          kind: movie
+          title: Plan 9 from Outer Space
+          year: "1959"
+          provider_ids:
+            imdbid: tt0052077
+        files:
+          - id: "1"
+            path: /Plan 9 from Outer Space/Plan.9.1959.mkv
+            bytes: 4831838208
+            selected: true
+      - cache_key: rd-archive-004
+        id: rd-archive-004
+        provider: real_debrid
+        provider_torrent_id: IA-THE-GENERAL-1926
+        hash: eeee5555
+        name: The General (1926)
+        original_name: The.General.1926.Internet.Archive.1080p
+        status: downloaded
+        progress: 100
+        bytes: 2684354560
+        links:
+          - https://archive.org/download/the-general-1926/The%20General%20%281926%29.mp4
+        ended: "2026-06-14T21:05:00Z"
+        category_override: movies
+        identity_override:
+          kind: movie
+          title: The General
+          year: "1926"
+          provider_ids:
+            imdbid: tt0017925
+        files:
+          - id: "1"
+            path: /The General (1926)/The.General.1926.mp4
+            bytes: 2684354560
+            selected: true
+      - cache_key: torbox:sync-884
+        id: sync-884
+        provider: torbox
+        provider_torrent_id: "37310781"
+        hash: dddd4444
+        name: Charade (1963)
+        status: downloading
+        progress: 100
+        bytes: 7516192768
+        links: []
+        ended: ""
+        files:
+          - id: "1"
+            path: /Example.mkv
+            bytes: 19126805504
+            selected: true
+
+  archive:
+    entries:
+      - hash: arch1111
+        name: Metropolis (1927)
+        bytes: 6442450944
+        files:
+          - path: /Metropolis.1927.mkv
+        deleted_at: "2026-06-12T09:30:00Z"
+        magnet: magnet:?xt=urn:btih:arch1111
+        providers:
+          - provider: real_debrid
+            provider_torrent_id: 2P9ZTCX5PXXC5
+      - hash: arch2222
+        name: The Phantom Creeps (1965)
+        bytes: 12884901888
+        files:
+          - path: /The.Phantom.Creeps.Part1.mkv
+          - path: /The.Phantom.Creeps.Part2.mkv
+        deleted_at: "2026-06-10T18:05:00Z"
+        magnet: magnet:?xt=urn:btih:arch2222
+        providers:
+          - provider: torbox
+            provider_torrent_id: "37310787"
+      - hash: arch3333
+        name: House on Haunted Hill (1959)
+        bytes: 3221225472
+        files:
+          - path: /House.on.Haunted.Hill.1959.mkv
+        deleted_at: "2026-06-08T14:45:00Z"
+        magnet: magnet:?xt=urn:btih:arch3333
+        providers:
+          - provider: real_debrid
+            provider_torrent_id: 2T9ZTCX5PXXC6
+          - provider: torbox
+            provider_torrent_id: "37310789"
+      - hash: arch4444
+        name: Detour (1963)
+        bytes: 1610612736
+        files:
+          - path: /Detour.1963.mkv
+        deleted_at: "2026-06-05T11:20:00Z"
+        magnet: magnet:?xt=urn:btih:arch4444
+        providers: []
+
+  logs:
+    global:
+      # Route-level global overrides only affect this rendered prop. This one
+      # forces the logs nav indicator to glow red in logs.png.
+      curator_log_level: error
+      nav_log_level: error
+    entries:
+      - message: buzz startup complete
+        timestamp: "2026-06-15T11:56:00Z"
+        level: info
+        source: dav
+      - message: "curator ready: 3 libraries mapped"
+        timestamp: "2026-06-15T11:57:10Z"
+        level: info
+        source: curator
+      - message: "provider degraded: TorBox detail refresh delayed"
+        timestamp: "2026-06-15T11:58:20Z"
+        level: warning
+        source: dav
+        count: 2
+      - message: "scanning Real-Debrid files for infringement: 3 file(s)"
+        timestamp: "2026-06-15T11:59:00Z"
+        level: info
+        source: dav
+      - message: "infringing file detected: The General (1926) :: /The General (1926)/The.General.1926.mp4"
+        timestamp: "2026-06-15T11:59:16Z"
+        level: warning
+        source: dav
+      - message: "infringing file scan complete: 1 file(s), 1 torrent(s); cleanup pending: cleanup-infringing-01"
+        timestamp: "2026-06-15T11:59:30Z"
+        level: warning
+        source: dav
+        count: 1
+        link_to_task_id: cleanup-infringing-01
+
+  threads:
+    selected_task_id: scan-complete
+    entries:
+      - id: cache-queue-01
+        kind: cache
+        label: "cache selection: Night of the Living Dead"
+        status: pending
+        started_at: ""
+        finished_at: ""
+        error: ""
+        logs: []
+      - id: sync-running
+        kind: sync
+        label: "library sync: provider refresh"
+        status: running
+        started_at: "2026-06-15T11:58:00Z"
+        finished_at: ""
+        error: ""
+        logs: []
+      - id: scan-complete
+        kind: maintenance
+        label: scan_rd_infringing
+        status: complete
+        started_at: "2026-06-15T11:40:00Z"
+        finished_at: "2026-06-15T11:44:30Z"
+        error: ""
+        logs:
+          - message: "scanning Real-Debrid files for infringement: 3 file(s)"
+            level: info
+            source: dav
+          - message: "infringing file detected: The General (1926) :: /The General (1926)/The.General.1926.mp4"
+            level: warning
+            source: dav
+          - message: "infringing file scan complete: 1 file(s), 1 torrent(s); cleanup pending: cleanup-infringing-01"
+            level: warning
+            source: dav
+      - id: cleanup-infringing-01
+        kind: maintenance
+        label: "cleanup_rd_infringing: 1 torrent(s)"
+        status: pending
+        started_at: ""
+        finished_at: ""
+        error: ""
+        logs: []
+      - id: restore-failed
+        kind: restore
+        label: "archive restore: Metropolis"
+        status: failed
+        started_at: "2026-06-15T10:10:00Z"
+        finished_at: "2026-06-15T10:11:15Z"
+        error: provider rejected duplicate hash
+        logs:
+          - message: restore requested for arch1111
+            level: info
+            source: dav
+          - message: "restore failed: duplicate hash"
+            level: error
+            source: dav
+
+  config:
+    favorites: [provider, media_server, subtitles]
+    restart_required: false
+    languages_refreshing: false
+    languages:
+      - code: en
+        name: English
+      - code: pt-br
+        name: Portuguese (Brazil)
+      - code: es
+        name: Spanish
+      - code: ja
+        name: Japanese
+      - code: fr
+        name: French
+
+background:
+  # Pixel dimensions of the generated Gaussian background canvas. [pixels]
+  size:
+    width: 1600
+    height: 1000
+
+  # Optional local image path or URL to sample center colors from. When empty,
+  # each center's own `color` is used. When set, colors are sampled by center
+  # order from the source's top-left, top-right, and lower regions (extra
+  # centers reuse the last sample). [path | URL | ""]
+  source: ""
+
+  # Gaussian color centers blended to form the background, as an ordered array.
+  # Each center is pinned to the canvas border: its position is where a ray
+  # leaving the canvas center (0.5, 0.5) at `polar_delta` degrees first meets an
+  # edge. The global `polar_delta` below adds to every center's angle, rotating
+  # the whole arrangement around the canvas center.
+  centers:
+    - color: "#210c24" # Center color, used unless `source` is set. [hex RGB]
+      polar_delta:
+        225.0 # Ray angle from canvas center, math convention:
+        # 0 = +x (right), 90 = down, 180 = left, 270 = up.
+        # (Image Y grows downward.) [degrees, 0-360]
+      sigma_x: 0.70 # Horizontal spread, fraction of canvas width. [0.0-1.0]
+      sigma_y: 0.75 # Vertical spread, fraction of canvas height. [0.0-1.0]
+    - color: "#1f0d27"
+      polar_delta: 315.0
+      sigma_x: 0.70
+      sigma_y: 0.75
+    - color: "#32c6a4"
+      polar_delta: 71.5616
+      sigma_x: 0.45
+      sigma_y: 0.38
+
+  # Gaussian blur applied to the finished background. [pixels, radius]
+  blur_radius: 0.6
+
+  # Global angle offset added to every center's `polar_delta`, rotating the
+  # whole arrangement around the canvas center. Same units and algorithm as the
+  # per-center angle (a ray from the canvas center, projected onto the border).
+  # Examples (effective angle = center angle + this offset):
+  #     0 -> no rotation (centers keep their configured angles)
+  #    90 -> rotate everything a quarter turn clockwise
+  #   180 -> rotate everything half a turn (centers move to the opposite edge)
+  #   270 -> rotate everything three-quarters clockwise (== 90 anticlockwise)
+  # [degrees]
+  polar_delta: 45.0
+
+frame:
+  # Hyprland config to read live window-frame styling from (border colors,
+  # border_size, rounding, shadow). [path]
+  hyprland_config: ~/.config/hypr/hyprland.conf
+
+  # When true, read frame values from `hyprland_config`; when false (or the file
+  # is missing), use the `fallback` values below. [boolean]
+  use_hyprland_values: true
+
+  # Border gradient mode:
+  #   active          -> active_border_start -> active_border_end
+  #   active_inverted -> active_border_end   -> active_border_start
+  # [enum: active | active_inverted]
+  border_gradient: active_inverted
+
+  # Values used when Hyprland config is unavailable or disabled.
+  fallback:
+    active_border_start: "#ff30c7" # Gradient start color. [hex RGB]
+    active_border_end: "#00ff99" # Gradient end color. [hex RGB]
+    inactive_border: "#5959b4" # Inactive border color. [hex RGB]
+    border_size: 2 # Border thickness. [pixels]
+    rounding: 5 # Corner radius. [pixels]
+    shadow: "#1a1a1a" # Drop-shadow color. [hex RGB]
+
+  # Minimum horizontal/vertical outer gap around the complete browser frame.
+  # Smaller values let the framed UI occupy more of the canvas. [pixels]
+  max_width_margin: 20
+  max_height_margin: 20
+
+  # Drop-shadow appearance. [alpha: 0-255 | blur radius: pixels | offset: pixels]
+  shadow_alpha: 120
+  shadow_blur_radius: 14
+  shadow_offset_y: 8
+
+  # Mock browser chrome drawn around each captured route. [pixels | CSS colors]
+  browser:
+    address_origin: localhost:9443 # Prefix shown before /<route>.
+    top_bar_height: 48
+    top_bar_background: "#11111b"
+    top_bar_border: "#1e1e2e"
+    top_bar_foreground: "#a6adc8"
+    address_background: "#1e1e2e"
+    address_border: "#313244"
+    address_foreground: "#cdd6f4"
+    address_width: 600
+    address_height: 32
+    address_font_size: 13
+    icon_size: 18
+    lock_icon_size: 14
+    sidebar_icon_size: 20

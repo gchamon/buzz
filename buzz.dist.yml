@@ -1,9 +1,18 @@
 # All settings in this file are also editable live from the Buzz web UI.
-# You generally don't need to hand-edit this file beyond provider.token.
+# You generally don't need to hand-edit this file beyond provider credentials.
+version: 2
 provider:
-  token: yourtoken
-  # Maximum number of concurrent upstream connections to Real-Debrid (count).
-  # Caps only the setup/opening phase for Real-Debrid media streams. Active
+  priority:
+    - real_debrid
+    - torbox
+  real_debrid:
+    enabled: true
+    token: yourtoken
+  torbox:
+    enabled: true
+    token: ""
+  # Maximum number of concurrent upstream connections to providers (count).
+  # Caps only the setup/opening phase for provider media streams. Active
   # media streams are intentionally not concurrency- or rate-limited here;
   # they cannot safely share metadata/listing throttles used for PROPFIND,
   # GET setup, directory lists, or scans.
@@ -21,11 +30,11 @@ tls:
   key_path: data/tls/buzz.key
 
 # Container path where machine-managed persistent state lives.
-state_dir: /app/data
+state_dir: data
 hooks:
-  on_library_change: "bash /app/scripts/media_update.sh"
+  on_library_change: "bash scripts/media_update.sh"
   curator_url: "http://buzz-curator:8400/rebuild"
-  # Wait for Real-Debrid inventory to settle before rebuilds triggered by RD changes.
+  # Wait for provider inventory to settle before rebuilds triggered by provider changes.
   # This delay is not applied to manual RESYNC LIB actions from the UI.
   rd_update_delay_secs: 15
 compat:
@@ -38,8 +47,8 @@ directories:
   shows: {}
   movies: {}
 request_timeout_secs: 30
-user_agent: buzz/0.1
-version_label: buzz/0.1
+user_agent: buzz/v2
+version_label: buzz/v2
 ui:
   # Frontend polling interval in seconds.
   # Set to 0 to disable auto-polling entirely.
@@ -74,7 +83,7 @@ media_server:
     shows: TV Shows
     anime: Anime
   # Before triggering Jellyfin scans, Buzz reads a sample of files through the
-  # mounted raw library. If Real-Debrid is down or returning gateway errors,
+  # mounted raw library. If the provider is down or returning gateway errors,
   # the scan is skipped so Jellyfin keeps its existing metadata.
   scan_probe:
     enabled: true
@@ -100,5 +109,3 @@ subtitles:
     exclude_machine: true
   search_delay_secs: 0.5
   download_delay_secs: 1.0
-  # Where downloaded .srt files land inside the container (container path).
-  root: /mnt/buzz/subs

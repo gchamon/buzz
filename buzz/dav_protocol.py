@@ -15,7 +15,7 @@ import httpx
 
 from .core.events import record_event
 from .core.media import is_probably_media_content_type, looks_like_markup
-from .core.state import BuzzState, HosterUnavailableError
+from .core.state import BuzzState, HosterUnavailableError, ProviderStreamResolutionError
 from .core.utils import http_date
 
 _TRANSIENT_ERRNOS = {
@@ -148,14 +148,16 @@ def _retry_sleep(attempt: int) -> None:
     time.sleep(base * (0.75 + random.random() * 0.5))
 
 
-def _acquire_upstream_slot(state: BuzzState) -> threading.BoundedSemaphore:
-    """Acquire a short-lived Real-Debrid setup slot or fail fast."""
+def _acquire_upstream_slot(
+    state: BuzzState, provider: str
+) -> threading.BoundedSemaphore:
+    """Acquire a short-lived provider setup slot or fail fast."""
     semaphore = _get_upstream_semaphore(state.config.connection_concurrency)
     timeout = max(1, int(state.config.request_timeout_secs))
     if semaphore.acquire(timeout=timeout):
         return semaphore
     raise ValueError(
-        "upstream connection limit reached while opening Real-Debrid media"
+        f"upstream connection limit reached while opening {provider} media"
     )
 
 
@@ -208,13 +210,16 @@ def _try_resolve_download_url(
     except HosterUnavailableError as exc:
         state.verbose_log(f"Hoster unavailable: {exc}")
         raise
+    except ProviderStreamResolutionError as exc:
+        state.verbose_log(f"Provider stream unavailable: {exc}")
+        raise
     except Exception as exc:
         state.verbose_log(f"Failed to resolve download URL: {exc}")
         if attempt < max_attempts - 1:
             record_event(
-                f"retrying Real-Debrid stream resolution after failure: {exc}",
+                f"retrying provider stream resolution after failure: {exc}",
                 level="debug",
-                event="rd_stream_retry",
+                event="provider_stream_retry",
                 path=source_url,
                 attempt=attempt + 1,
             )
@@ -302,9 +307,9 @@ def _try_open_stream(
         )
         if attempt < max_attempts - 1:
             record_event(
-                f"retrying Real-Debrid stream after upstream HTTP {exc.code}",
+                f"retrying provider stream after upstream HTTP {exc.code}",
                 level="debug",
-                event="rd_stream_retry",
+                event="provider_stream_retry",
                 path=source_url,
                 attempt=attempt + 1,
             )
@@ -319,9 +324,9 @@ def _try_open_stream(
         )
         if attempt < max_attempts - 1:
             record_event(
-                f"retrying Real-Debrid stream after connection error: {exc}",
+                f"retrying provider stream after connection error: {exc}",
                 level="debug",
-                event="rd_stream_retry",
+                event="provider_stream_retry",
                 path=source_url,
                 attempt=attempt + 1,
             )
@@ -333,24 +338,27 @@ def _try_open_stream(
 def open_remote_media(
     state: BuzzState,
     node: dict[str, Any],
-    range_header: tuple[int, int] | None,
+    range_header: tuple[int, int] | None = None,
 ) -> tuple[Any, bytes]:
     """Resolve and open a remote media stream with retry logic."""
     source_url = str(node.get("source_url") or node.get("url") or "").strip()
     if not source_url:
-        raise ValueError("missing Real-Debrid source URL")
-    last_error = "unable to resolve upstream media"
-    last_exception: Exception | None = None
+        raise ValueError("missing provider source URL")
+
     state.verbose_log(f"Opening remote media from {source_url!r}")
     max_attempts = 6
     resolution_max_attempts = 3
     resolution_failures = 0
+    last_error = "unable to resolve upstream media"
+    last_exception: Exception | None = None
+
     for attempt in range(max_attempts):
         try:
             download_url = _try_resolve_download_url(
                 state, source_url, attempt, resolution_max_attempts
             )
-        except HosterUnavailableError:
+            provider = state.resolved_url_provider(source_url)
+        except (HosterUnavailableError, ProviderStreamResolutionError):
             raise
         except Exception as exc:
             last_error = str(exc)
@@ -360,59 +368,91 @@ def open_remote_media(
                 raise
             continue
 
-        state.verbose_log(
-            f"Resolved to {download_url!r} (attempt {attempt + 1}/{max_attempts})"
-        )
-        response = None
-        semaphore = None
         try:
-            semaphore = _acquire_upstream_slot(state)
-            response = _try_open_stream(
-                state, download_url, source_url, range_header, attempt, max_attempts
+            return _execute_stream_attempt(
+                state,
+                source_url,
+                download_url,
+                provider,
+                range_header,
+                attempt,
+                max_attempts,
             )
-            first_chunk = validate_remote_media_response(response, range_header)
-            semaphore.release()
-            semaphore = None
-            return response, first_chunk
         except ValueError as exc:
-            if response is not None:
-                response.close()
-                state.invalidate_download_url(source_url)
-            if semaphore is not None:
-                semaphore.release()
-                semaphore = None
             last_error = str(exc)
             last_exception = exc
-            if response is not None:
-                state.verbose_log(
-                    f"Validation failed on attempt {attempt + 1}: {exc}"
-                )
             if attempt == max_attempts - 1:
                 raise
-            if response is not None:
-                record_event(
-                    f"retrying Real-Debrid stream after validation error: {exc}",
-                    level="debug",
-                    event="rd_stream_retry",
-                    path=source_url,
-                    attempt=attempt + 1,
-                )
             _retry_sleep(attempt)
             continue
-        finally:
-            if semaphore is not None:
-                semaphore.release()
+
+    _record_stream_exhausted(state, source_url, max_attempts, last_error, last_exception)
+    raise ValueError(last_error) from last_exception
+
+
+def _execute_stream_attempt(
+    state: BuzzState,
+    source_url: str,
+    download_url: str,
+    provider: str,
+    range_header: tuple[int, int] | None,
+    attempt: int,
+    max_attempts: int,
+) -> tuple[Any, bytes]:
+    """Acquire a slot, open the stream, and validate the response."""
+    state.verbose_log(
+        f"Resolved to {download_url!r} (attempt {attempt + 1}/{max_attempts})"
+    )
+    response = None
+    semaphore = _acquire_upstream_slot(state, provider)
+    try:
+        response = _try_open_stream(
+            state, download_url, source_url, range_header, attempt, max_attempts
+        )
+        first_chunk = validate_remote_media_response(response, range_header)
+        return response, first_chunk
+    except Exception as exc:
+        if response is not None:
+            response.close()
+            state.invalidate_download_url(source_url)
+        state.verbose_log(f"Validation failed on attempt {attempt + 1}: {exc}")
+        if (
+            isinstance(exc, ValueError)
+            and response is not None
+            and attempt < max_attempts - 1
+        ):
+            record_event(
+                f"retrying provider stream after validation error: {exc}",
+                level="debug",
+                event="provider_stream_retry",
+                path=source_url,
+                provider=provider,
+                attempt=attempt + 1,
+            )
+        raise
+    finally:
+        semaphore.release()
+
+
+def _record_stream_exhausted(
+    state: BuzzState,
+    source_url: str,
+    max_attempts: int,
+    last_error: str,
+    last_exception: Exception | None,
+) -> None:
+    """Record a failure event when all stream retries are exhausted."""
+    level = "error"
+    if last_exception is not None and is_transient_stream_error(last_exception):
+        level = "debug"
+
     record_event(
-        f"Real-Debrid stream exhausted retries ({max_attempts} attempts); "
+        f"provider stream exhausted retries ({max_attempts} attempts); "
         f"last error: {last_error}",
-        level="debug" if (
-            last_exception is not None
-            and is_transient_stream_error(last_exception)
-        ) else "error",
-        event="rd_stream_exhausted",
+        level=level,
+        event="provider_stream_exhausted",
         path=source_url,
     )
-    raise ValueError(last_error) from last_exception
 
 
 def validate_remote_media_response(

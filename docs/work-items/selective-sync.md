@@ -69,7 +69,7 @@ blocked by the contract chosen here.
   an optional `media_server.library_map` that overrides discovery.
 - Extend the curator rebuild report to include `jellyfin_scan_scope` and
   `jellyfin_scan_targets`.
-- Update `docs/architecture.md` to describe the new propagation path and
+- Update `docs/architecture/system.md` to describe the new propagation path and
   extend the root `README.md` Configuration Reference with
   `media_server.library_map`.
 - Add tests under `tests/` covering:

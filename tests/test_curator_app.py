@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
+from watchfiles import Change
 
 from buzz.core import db
 from buzz.core.curator import (
@@ -17,18 +18,27 @@ from buzz.core.curator import (
     scan_probe_sample_size,
     validate_media_server_startup_auth,
 )
+from buzz.core.events import record_event
+from buzz.core.events import registry as event_registry
 from buzz.core.media_server import JellyfinAuthProbe
-from buzz.curator_app import CuratorApp
+from buzz.curator_app import CuratorApp, SourceRootWatcher, changed_source_roots
 from buzz.models import CuratorConfig, ScanProbeConfig
 
 
 class CuratorAppTests(unittest.TestCase):
+    def setUp(self) -> None:
+        event_registry.clear(listeners=True)
+        event_registry.stdout_enabled = True
+
+    def tearDown(self) -> None:
+        event_registry.clear(listeners=True)
+        event_registry.stdout_enabled = True
+
     def _config(self, root: Path, **overrides) -> CuratorConfig:
         defaults = {
             "source_root": root / "raw",
             "target_root": root / "curated",
             "state_dir": root / "state",
-            "overrides_path": root / "overrides.yml",
             "trigger_lib_scan": False,
             "build_on_start": False,
         }
@@ -45,6 +55,71 @@ class CuratorAppTests(unittest.TestCase):
         shows.mkdir(parents=True, exist_ok=True)
         anime.mkdir(parents=True, exist_ok=True)
         (movies / "Movie.2026.1080p.mkv").write_text("video", encoding="utf-8")
+
+    def _create_torbox_source_tree(self, source_root: Path):
+        movies = source_root / "movies"
+        shows = source_root / "shows"
+        anime = source_root / "anime"
+        movies.mkdir(parents=True, exist_ok=True)
+        shows.mkdir(parents=True, exist_ok=True)
+        anime.mkdir(parents=True, exist_ok=True)
+        source = movies / "Torbox.File.2026.1080p.mkv"
+        source.write_text("video", encoding="utf-8")
+        return source
+
+    def test_changed_source_roots_collapses_paths_to_media_roots(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "raw"
+
+            roots = changed_source_roots(
+                root,
+                [
+                    str(root / "movies" / "Movie.Root" / "movie.mkv"),
+                    str(root / "movies" / "Movie.Root" / "movie.srt"),
+                    str(root / "shows" / "Show.Root" / "S01E01.mkv"),
+                    str(root / "version.txt"),
+                    "/outside/movies/Other/file.mkv",
+                ],
+            )
+
+            self.assertEqual(
+                roots,
+                ["movies/Movie.Root", "shows/Show.Root"],
+            )
+
+    def test_source_root_watcher_rebuilds_detected_roots(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_root = root / "raw"
+            source_root.mkdir(parents=True)
+            app = CuratorApp(
+                self._config(
+                    root,
+                    source_root=source_root,
+                    watch_source_root=True,
+                )
+            )
+            watcher = SourceRootWatcher(app)
+
+            with patch(
+                "buzz.curator_app.watch",
+                return_value=[
+                    {
+                        (
+                            Change.added,
+                            str(
+                                source_root
+                                / "movies"
+                                / "Movie.Root"
+                                / "movie.mkv"
+                            ),
+                        )
+                    }
+                ],
+            ), patch.object(app, "_run_rebuild") as rebuild:
+                watcher.run()
+
+            rebuild.assert_called_once_with(["movies/Movie.Root"])
 
     def test_scan_probe_sample_size_uses_percent_with_minimum(self):
         self.assertEqual(scan_probe_sample_size(125, 10, 1), 13)
@@ -90,6 +165,141 @@ class CuratorAppTests(unittest.TestCase):
             self.assertEqual(report["show_files"], 0)
             self.assertEqual(report["anime_files"], 0)
 
+    def test_build_library_resolves_hash_named_show_root_from_library_entry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            hash_name = "909fb7428de59f84d819a6bed64e7f37bbf10464"
+            show_root = config.source_root / "shows" / hash_name
+            show_root.mkdir(parents=True)
+            (config.source_root / "movies").mkdir(parents=True)
+            (config.source_root / "anime").mkdir(parents=True)
+            (
+                show_root
+                / "Adventure Time (2008) - S00E01 - Pilot.mkv"
+            ).write_text("video", encoding="utf-8")
+            (
+                show_root
+                / "Adventure Time (2008) - S00E02 - The Wand.mkv"
+            ).write_text("video", encoding="utf-8")
+
+            config.state_dir.mkdir(parents=True, exist_ok=True)
+            conn = db.connect(config.state_dir / "buzz.sqlite")
+            try:
+                db.apply_migrations(conn)
+                conn.execute(
+                    "INSERT INTO library_entries "
+                    "(hash, name, files_json, updated_at) "
+                    "VALUES (?, ?, '[]', '2026-01-01T00:00:00Z')",
+                    (hash_name, "Adventure Time (2008)"),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            report = build_library(config)
+
+            self.assertEqual(report["show_files"], 2)
+            self.assertTrue(
+                (
+                    config.target_root
+                    / "shows"
+                    / "Adventure Time (2008)"
+                    / "Season 00"
+                    / "Adventure Time (2008) S00E01.mkv"
+                ).exists()
+            )
+            self.assertFalse(
+                (config.target_root / "shows" / hash_name).exists()
+            )
+
+    def test_build_library_resolves_hash_show_root_from_provider_info(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            hash_name = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            show_root = config.source_root / "shows" / hash_name
+            show_root.mkdir(parents=True)
+            (config.source_root / "movies").mkdir(parents=True)
+            (config.source_root / "anime").mkdir(parents=True)
+            (
+                show_root
+                / "Example Show - S01E01 - Start.mkv"
+            ).write_text("video", encoding="utf-8")
+
+            config.state_dir.mkdir(parents=True, exist_ok=True)
+            conn = db.connect(config.state_dir / "buzz.sqlite")
+            try:
+                db.apply_migrations(conn)
+                conn.execute(
+                    "INSERT INTO library_entries "
+                    "(hash, name, files_json, updated_at) "
+                    "VALUES (?, NULL, '[]', '2026-01-01T00:00:00Z')",
+                    (hash_name,),
+                )
+                conn.execute(
+                    "INSERT INTO provider_links "
+                    "(provider, provider_torrent_id, hash, info_json, "
+                    "signature_json, updated_at) "
+                    "VALUES ('torbox', 'TB1', ?, ?, '{}', "
+                    "'2026-01-01T00:00:00Z')",
+                    (
+                        hash_name,
+                        json.dumps(
+                            {
+                                "original_filename": (
+                                    "Example Show (2026) Complete"
+                                )
+                            }
+                        ),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            report = build_library(config)
+
+            self.assertEqual(report["show_files"], 1)
+            self.assertTrue(
+                (
+                    config.target_root
+                    / "shows"
+                    / "Example Show (2026)"
+                    / "Season 01"
+                    / "Example Show (2026) S01E01.mkv"
+                ).exists()
+            )
+
+    def test_build_library_keeps_valid_show_files_when_one_file_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            show_root = config.source_root / "shows" / "Example.Show"
+            show_root.mkdir(parents=True)
+            (config.source_root / "movies").mkdir(parents=True)
+            (config.source_root / "anime").mkdir(parents=True)
+            (show_root / "Example Show - S01E01.mkv").write_text(
+                "video", encoding="utf-8"
+            )
+            (show_root / "Behind the Scenes.mkv").write_text(
+                "video", encoding="utf-8"
+            )
+
+            report = build_library(config)
+
+            self.assertEqual(report["show_files"], 1)
+            self.assertEqual(len(report["skipped_shows"]), 1)
+            self.assertTrue(
+                (
+                    config.target_root
+                    / "shows"
+                    / "Example Show"
+                    / "Season 01"
+                    / "Example Show S01E01.mkv"
+                ).exists()
+            )
+
     def test_curator_app_routes_use_fastapi(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -98,6 +308,7 @@ class CuratorAppTests(unittest.TestCase):
             (root / "raw" / "anime").mkdir(parents=True)
 
             app = CuratorApp(self._config(root))
+            event_registry.stdout_enabled = True
             client = TestClient(app.app)
 
             health = client.get("/healthz")
@@ -166,6 +377,33 @@ class CuratorAppTests(unittest.TestCase):
                 )
             )
 
+    def test_curator_lifespan_unregisters_dav_notify_listener(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "raw" / "movies").mkdir(parents=True)
+            (root / "raw" / "shows").mkdir(parents=True)
+            (root / "raw" / "anime").mkdir(parents=True)
+
+            response = MagicMock()
+            response.status = 200
+            response.__enter__.return_value = response
+            response.__exit__.return_value = False
+            config = self._config(
+                root,
+                dav_ui_notify_url="http://buzz-dav:9999/api/ui/notify",
+            )
+
+            with patch(
+                "urllib.request.urlopen", return_value=response
+            ) as mock_urlopen:
+                with TestClient(CuratorApp(config).app) as client:
+                    self.assertEqual(client.get("/healthz").status_code, 200)
+                calls_during_lifespan = mock_urlopen.call_count
+                record_event("post-shutdown event")
+
+            self.assertGreater(calls_during_lifespan, 0)
+            self.assertEqual(mock_urlopen.call_count, calls_during_lifespan)
+
     def test_curator_lifespan_logs_startup_auth_error_and_stays_up(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -174,6 +412,7 @@ class CuratorAppTests(unittest.TestCase):
             (root / "raw" / "anime").mkdir(parents=True)
 
             app = CuratorApp(self._config(root))
+            event_registry.stdout_enabled = True
             stdout = io.StringIO()
             with patch(
                 "buzz.curator_app.validate_media_server_startup_auth",
@@ -200,6 +439,7 @@ class CuratorAppTests(unittest.TestCase):
                 jellyfin_api_key="token",
             )
             app = CuratorApp(config)
+            event_registry.stdout_enabled = True
             stdout = io.StringIO()
             with patch(
                 "buzz.curator_app.validate_media_server_startup_auth"
@@ -395,9 +635,9 @@ class CuratorAppTests(unittest.TestCase):
             app = CuratorApp(config)
             client = TestClient(app.app)
 
-            # Mock background_fetch_subtitles to capture what name it gets
-            with patch(
-                "buzz.curator_app.background_fetch_subtitles"
+            # Mock _run_subtitle_fetch to capture what name it gets
+            with patch.object(
+                app, "_run_subtitle_fetch"
             ) as mock_fetch:
                 response = client.post(
                     "/api/subtitles/fetch",
@@ -406,7 +646,7 @@ class CuratorAppTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200)
                 mock_fetch.assert_called_once()
                 self.assertEqual(
-                    mock_fetch.call_args[1]["torrent_name"], original_filename
+                    mock_fetch.call_args[0][0], original_filename
                 )
 
             # 3. Verify mapping match
@@ -417,6 +657,45 @@ class CuratorAppTests(unittest.TestCase):
             self.assertTrue(
                 _source_matches_torrent(source_path, original_filename)
             )
+
+    @patch("buzz.curator_app.httpx.Client")
+    def test_subtitle_fetch_failure_signals_dav_task_failed(
+        self, mock_client_cls
+    ):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            from buzz.models import SubtitleConfig
+
+            config = self._config(
+                root,
+                dav_url="http://buzz-dav:8080",
+                dav_tls_cert="",
+                subtitles=SubtitleConfig(enabled=True, api_key="test"),
+            )
+            app = CuratorApp(config)
+            response = MagicMock()
+            response.status_code = 200
+            mock_client = mock_client_cls.return_value.__enter__.return_value
+            mock_client.post.return_value = response
+
+            app._run_subtitle_fetch(
+                task_id="task-1",
+                torrent_names=["Missing.Movie.2026"],
+            )
+
+            completion_calls = [
+                call
+                for call in mock_client.post.call_args_list
+                if call.args[0].endswith("/api/tasks/task-1/complete")
+            ]
+            self.assertEqual(len(completion_calls), 1)
+            url = completion_calls[0].args[0]
+            payload = completion_calls[0].kwargs["json"]
+            self.assertEqual(
+                url, "http://buzz-dav:8080/api/tasks/task-1/complete"
+            )
+            self.assertIn("error", payload)
+            self.assertIn("no library mapping found", payload["error"])
 
     def test_curator_config_load_merges_overrides(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -475,6 +754,7 @@ class CuratorAppTests(unittest.TestCase):
             (root / "raw" / "anime").mkdir(parents=True)
 
             app = CuratorApp(self._config(root))
+            event_registry.stdout_enabled = True
 
             with patch.object(
                 app.curator,
@@ -508,6 +788,247 @@ class CuratorAppTests(unittest.TestCase):
             )
             self.assertIsNone(report["jellyfin_scan_error"])
 
+    def test_build_library_applies_db_curator_title_override(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            movie_dir = config.source_root / "movies" / "Movie Pack"
+            movie_dir.mkdir(parents=True)
+            (config.source_root / "shows").mkdir(parents=True)
+            (config.source_root / "anime").mkdir(parents=True)
+            movie_file = movie_dir / "Movie.Pack.2020.mkv"
+            movie_file.write_text("video", encoding="utf-8")
+
+            config.state_dir.mkdir(parents=True)
+            conn = db.connect(config.state_dir / "buzz.sqlite")
+            try:
+                db.apply_migrations(conn)
+                db.replace_provider_library(
+                    conn,
+                    [
+                        {
+                            "hash": "abc123",
+                            "name": "Movie Pack",
+                            "bytes": 100,
+                            "files": [
+                                {
+                                    "id": "1",
+                                    "path": "Movie.Pack.2020.mkv",
+                                    "bytes": 100,
+                                }
+                            ],
+                            "magnet": None,
+                            "provider": "real_debrid",
+                            "provider_torrent_id": "RD1",
+                            "status": "downloaded",
+                            "progress": 100,
+                            "info_json": "{}",
+                            "signature_json": "{}",
+                        }
+                    ],
+                )
+                db.save_curator_title_override(
+                    conn,
+                    "abc123",
+                    {
+                        "kind": "movie",
+                        "title": "Real Title",
+                        "year": 2021,
+                        "provider_ids": {"imdbid": "tt1234567"},
+                    },
+                )
+            finally:
+                conn.close()
+
+            report = build_library(config)
+
+            self.assertEqual(report["movies"], 1)
+            self.assertTrue(
+                (
+                    config.target_root
+                    / "movies"
+                    / "Real Title (2021) [imdbid-tt1234567]"
+                    / "Real Title (2021) [imdbid-tt1234567].mkv"
+                ).is_symlink()
+            )
+
+    def test_db_show_override_renames_series_folder_entry_wide(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            (config.source_root / "movies").mkdir(parents=True)
+            (config.source_root / "anime").mkdir(parents=True)
+            show_dir = config.source_root / "shows" / "Example.Show.S01"
+            show_dir.mkdir(parents=True)
+            for episode in ("E01", "E02"):
+                (show_dir / f"Example.Show.S01{episode}.mkv").write_text(
+                    "video", encoding="utf-8"
+                )
+
+            config.state_dir.mkdir(parents=True)
+            conn = db.connect(config.state_dir / "buzz.sqlite")
+            try:
+                db.apply_migrations(conn)
+                db.replace_provider_library(
+                    conn,
+                    [
+                        {
+                            "hash": "show1",
+                            "name": "Example.Show.S01",
+                            "bytes": 200,
+                            "files": [
+                                {
+                                    "id": "1",
+                                    "path": "Example.Show.S01E01.mkv",
+                                    "bytes": 100,
+                                },
+                                {
+                                    "id": "2",
+                                    "path": "Example.Show.S01E02.mkv",
+                                    "bytes": 100,
+                                },
+                            ],
+                            "magnet": None,
+                            "provider": "real_debrid",
+                            "provider_torrent_id": "RD2",
+                            "status": "downloaded",
+                            "progress": 100,
+                            "info_json": "{}",
+                            "signature_json": "{}",
+                        }
+                    ],
+                )
+                # season/episode are intentionally omitted: only the top-level
+                # series folder is overridable; episode numbering is parsed.
+                db.save_curator_title_override(
+                    conn,
+                    "show1",
+                    {
+                        "kind": "show",
+                        "series": "Real Series",
+                        "year": 2022,
+                        "provider_ids": {"tvdbid": "12345"},
+                    },
+                )
+            finally:
+                conn.close()
+
+            report = build_library(config)
+
+            self.assertEqual(report["show_files"], 2)
+            series_dir = (
+                config.target_root / "shows" / "Real Series (2022) [tvdbid-12345]"
+            )
+            season_dir = series_dir / "Season 01"
+            # Both episodes share the single overridden top-level folder, with
+            # season/episode still derived from each filename.
+            self.assertTrue(
+                (
+                    season_dir
+                    / "Real Series (2022) [tvdbid-12345] S01E01.mkv"
+                ).is_symlink()
+            )
+            self.assertTrue(
+                (
+                    season_dir
+                    / "Real Series (2022) [tvdbid-12345] S01E02.mkv"
+                ).is_symlink()
+            )
+
+    def test_db_anime_override_renames_top_level_folder(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            (config.source_root / "movies").mkdir(parents=True)
+            (config.source_root / "shows").mkdir(parents=True)
+            anime_dir = config.source_root / "anime" / "Anime.Show.S01"
+            (anime_dir / "Season 01").mkdir(parents=True)
+            (
+                anime_dir / "Season 01" / "Anime.Show.S01E01.mkv"
+            ).write_text("video", encoding="utf-8")
+
+            config.state_dir.mkdir(parents=True)
+            conn = db.connect(config.state_dir / "buzz.sqlite")
+            try:
+                db.apply_migrations(conn)
+                db.replace_provider_library(
+                    conn,
+                    [
+                        {
+                            "hash": "anime1",
+                            "name": "Anime.Show.S01",
+                            "bytes": 100,
+                            "files": [
+                                {
+                                    "id": "1",
+                                    "path": (
+                                        "Season 01/Anime.Show.S01E01.mkv"
+                                    ),
+                                    "bytes": 100,
+                                }
+                            ],
+                            "magnet": None,
+                            "provider": "real_debrid",
+                            "provider_torrent_id": "RD3",
+                            "status": "downloaded",
+                            "progress": 100,
+                            "info_json": "{}",
+                            "signature_json": "{}",
+                        }
+                    ],
+                )
+                db.save_curator_title_override(
+                    conn,
+                    "anime1",
+                    {
+                        "kind": "anime",
+                        "series": "Real Anime",
+                        "year": 2023,
+                        "provider_ids": {"anidbid": "9876"},
+                    },
+                )
+            finally:
+                conn.close()
+
+            report = build_library(config)
+
+            self.assertEqual(report["anime_files"], 1)
+            # Only the top-level folder is renamed; the inner structure
+            # ("Season 01/<file>") is preserved verbatim.
+            self.assertTrue(
+                (
+                    config.target_root
+                    / "animes"
+                    / "Real Anime (2023) [anidbid-9876]"
+                    / "Season 01"
+                    / "Anime.Show.S01E01.mkv"
+                ).is_symlink()
+            )
+
+    def test_anime_without_override_preserves_relative_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            (config.source_root / "movies").mkdir(parents=True)
+            (config.source_root / "shows").mkdir(parents=True)
+            anime_dir = config.source_root / "anime" / "Anime.Show.S01"
+            anime_dir.mkdir(parents=True)
+            (anime_dir / "Anime.Show.S01E01.mkv").write_text(
+                "video", encoding="utf-8"
+            )
+
+            report = build_library(config)
+
+            self.assertEqual(report["anime_files"], 1)
+            self.assertTrue(
+                (
+                    config.target_root
+                    / "animes"
+                    / "Anime.Show.S01"
+                    / "Anime.Show.S01E01.mkv"
+                ).is_symlink()
+            )
+
     def test_rebuild_and_trigger_skips_scan_when_api_key_is_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -530,8 +1051,12 @@ class CuratorAppTests(unittest.TestCase):
                 "media_server.jellyfin.api_key is empty",
                 stdout.getvalue(),
             )
-            # The curator now always logs mapping events
-            self.assertIn("Curator mapping updated", stdout.getvalue())
+            # The curator now always logs mapping events, summarizing the
+            # library size and diff in the message.
+            self.assertIn(
+                "Curator mapping updated: 1 entries (+1 -0 ~0)",
+                stdout.getvalue(),
+            )
 
     def test_rebuild_and_trigger_warns_when_plex_token_is_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -608,6 +1133,10 @@ class CuratorAppTests(unittest.TestCase):
             self.assertEqual(mapping_log["added"], [])
             self.assertEqual(mapping_log["removed"], [])
             self.assertEqual(mapping_log["changed"], [])
+            self.assertTrue(
+                last_line.startswith("Curator mapping unchanged: 1 entries"),
+                last_line,
+            )
 
     @patch("buzz.core.curator.validate_jellyfin_auth")
     def test_rebuild_and_trigger_calls_jellyfin_scan_when_auth_is_configured(
@@ -662,6 +1191,70 @@ class CuratorAppTests(unittest.TestCase):
             )
 
     @patch("buzz.core.curator.validate_jellyfin_auth")
+    def test_scan_probe_matches_changed_root_against_mapping_target(
+        self, mock_validate
+    ):
+        mock_validate.return_value = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(
+                root,
+                trigger_lib_scan=True,
+                jellyfin_api_key="token",
+                scan_probe=ScanProbeConfig(sample_ratio_percent=100),
+            )
+            self._create_torbox_source_tree(config.source_root)
+            stdout = io.StringIO()
+            with patch("sys.stdout", stdout), patch(
+                "buzz.core.curator.trigger_jellyfin_selective_refresh"
+            ) as trigger_selective:
+                report = rebuild_and_trigger(
+                    config,
+                    changed_roots=["movies/Torbox File (2026)"],
+                )
+
+            trigger_selective.assert_called_once_with(
+                config, ["movies/Torbox File (2026)"]
+            )
+            self.assertTrue(report["jellyfin_scan_triggered"])
+            self.assertIn("jellyfin scan probe succeeded", stdout.getvalue())
+            self.assertNotIn(
+                "probing full mapped library",
+                stdout.getvalue(),
+            )
+
+    @patch("buzz.core.curator.validate_jellyfin_auth")
+    def test_scan_probe_falls_back_to_full_pool_for_unmatched_changed_roots(
+        self, mock_validate
+    ):
+        mock_validate.return_value = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(
+                root,
+                trigger_lib_scan=True,
+                jellyfin_api_key="token",
+                scan_probe=ScanProbeConfig(sample_ratio_percent=100),
+            )
+            self._create_torbox_source_tree(config.source_root)
+            stdout = io.StringIO()
+            with patch("sys.stdout", stdout), patch(
+                "buzz.core.curator.trigger_jellyfin_selective_refresh"
+            ) as trigger_selective:
+                report = rebuild_and_trigger(
+                    config,
+                    changed_roots=["movies/Torbox Torrent"],
+                )
+
+            trigger_selective.assert_called_once_with(
+                config, ["movies/Torbox Torrent"]
+            )
+            self.assertTrue(report["jellyfin_scan_triggered"])
+            logged = stdout.getvalue()
+            self.assertIn("probing full mapped library", logged)
+            self.assertIn("jellyfin scan probe succeeded", logged)
+
+    @patch("buzz.core.curator.validate_jellyfin_auth")
     def test_rebuild_and_trigger_skips_scan_when_probe_fails(
         self, mock_validate
     ):
@@ -690,6 +1283,7 @@ class CuratorAppTests(unittest.TestCase):
             )
             self.assertIn("HTTP 503", report["jellyfin_scan_error"])
             self.assertIn("jellyfin scan skipped", stdout.getvalue())
+            self.assertIn("media probe failed", stdout.getvalue())
 
     @patch("buzz.core.curator.validate_jellyfin_auth")
     def test_rebuild_and_trigger_can_disable_scan_probe(self, mock_validate):
@@ -848,6 +1442,7 @@ class CuratorAppTests(unittest.TestCase):
             (root / "raw" / "anime").mkdir(parents=True)
 
             app = CuratorApp(self._config(root))
+            event_registry.stdout_enabled = True
             client = TestClient(app.app)
 
             stdout = io.StringIO()
@@ -951,6 +1546,88 @@ class CuratorAppTests(unittest.TestCase):
             build_library(config)
 
             self.assertFalse(curated_file.exists())
+
+    def test_rebuild_does_not_restore_stale_identity_folder_from_subtitles(self):
+        from buzz.models import SubtitleConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_root = root / "raw"
+            source_file = (
+                source_root
+                / "movies"
+                / "Sample Feature 2004"
+                / "Sample Feature 2004.mkv"
+            )
+            source_file.parent.mkdir(parents=True)
+            source_file.write_text("video", encoding="utf-8")
+            config = self._config(
+                root,
+                subtitles=SubtitleConfig(enabled=True, api_key="test"),
+                subtitle_root=root / "subs",
+            )
+
+            build_library(config)
+            old_subtitle = (
+                config.subtitle_root
+                / "movies"
+                / "Sample Feature (2004)"
+                / "Sample Feature (2004).en.srt"
+            )
+            old_subtitle.parent.mkdir(parents=True)
+            old_subtitle.write_text("subtitle", encoding="utf-8")
+
+            conn = db.connect(config.state_dir / "buzz.sqlite")
+            try:
+                db.apply_migrations(conn)
+                db.replace_provider_library(
+                    conn,
+                    [
+                        {
+                            "hash": "hash-sample",
+                            "name": "Sample Feature 2004",
+                            "bytes": 100,
+                            "files": [
+                                {
+                                    "id": "1",
+                                    "path": "Sample Feature 2004.mkv",
+                                    "bytes": 100,
+                                }
+                            ],
+                            "magnet": "",
+                            "provider": "torbox",
+                            "provider_torrent_id": "37310789",
+                            "status": "downloaded",
+                            "progress": 100,
+                            "info_json": "{}",
+                            "signature_json": "{}",
+                        }
+                    ],
+                )
+                db.save_curator_title_override(
+                    conn,
+                    "hash-sample",
+                    {
+                        "kind": "movie",
+                        "title": "Sample Feature Revised",
+                        "year": 2004,
+                    },
+                )
+            finally:
+                conn.close()
+
+            build_library(config)
+
+            self.assertFalse(
+                (config.target_root / "movies" / "Sample Feature (2004)").exists()
+            )
+            self.assertTrue(
+                (
+                    config.target_root
+                    / "movies"
+                    / "Sample Feature Revised (2004)"
+                ).exists()
+            )
 
     def test_rebuild_updates_symlink_when_target_changes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
