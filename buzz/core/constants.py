@@ -33,6 +33,10 @@ SIDECAR_EXTENSIONS = {
 SHOW_PATTERNS = (
     re.compile(r"(?i)\bS(?P<season>\d{1,2})E(?P<episode>\d{1,2})\b"),
     re.compile(r"(?i)\b(?P<season>\d{1,2})x(?P<episode>\d{1,2})\b"),
+    re.compile(
+        r"(?i)\bseason\s*(?P<season>\d{1,2})\s+"
+        r"episode\s*(?P<episode>\d{1,2})\b"
+    ),
 )
 
 DEFAULT_ANIME_PATTERN = r"\b[a-fA-F0-9]{8}\b"

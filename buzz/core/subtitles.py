@@ -12,7 +12,7 @@ import httpx
 from ..models import CuratorConfig, SubtitleConfig, SubtitleFilters
 from . import db
 from .events import record_event
-from .media import VIDEO_EXTENSIONS
+from .media import VIDEO_EXTENSIONS, parse_show
 from .media_server import trigger_jellyfin_selective_refresh
 from .state import raise_if_cancelled
 
@@ -368,20 +368,129 @@ def get_search_params(entry: dict) -> dict:
             return {"query": match.group(1), "year": int(match.group(2))}
         return {"query": folder_name}
 
-    elif entry["type"] == "show":
+    elif entry["type"] in {"show", "anime"}:
         # shows/Series Name/Season 01/Series Name S01E01.mkv
-        series_name = target_path.parts[1]
-        stem = target_path.stem
-        match = re.search(r"(?i)S(\d+)E(\d+)", stem)
-        if match:
+        series_name = re.sub(r"\s+\[[^\]]+\]$", "", target_path.parts[1])
+        series_name = re.sub(r"\s+\((19|20)\d{2}\)$", "", series_name)
+        source_stem = Path(str(entry.get("source") or "")).stem
+        parsed = parse_show(source_stem) or parse_show(target_path.stem)
+        if parsed:
             return {
                 "query": series_name,
-                "season": int(match.group(1)),
-                "episode": int(match.group(2)),
+                "season": parsed["season"],
+                "episode": parsed["episode"],
             }
         return {"query": series_name}
 
     return {"query": target_path.stem}
+
+
+def _filename_query(entry: dict) -> str:
+    """Return the original source filename stem for fallback searches."""
+    source_name = Path(str(entry.get("source") or "")).stem
+    return source_name or Path(str(entry.get("target") or "")).stem
+
+
+def _series_filename_query(series: str, filename: str) -> str:
+    """Return a show/anime search query combining series and source filename."""
+    if not series:
+        return filename
+    if not filename:
+        return series
+    series_tokens = _tokenize(series)
+    filename_tokens = _tokenize(filename)
+    if series_tokens and series_tokens <= filename_tokens:
+        return filename
+    return f"{series} {filename}"
+
+
+def _subtitle_search_attempts(
+    entry: dict, params: dict, query_override: str
+) -> list[dict]:
+    """Return ordered OpenSubtitles search attempts for a mapping entry."""
+    if query_override:
+        attempt = dict(params)
+        attempt["query"] = query_override
+        return [attempt]
+
+    if entry.get("type") not in {"show", "anime"}:
+        return [dict(params)]
+
+    filename_query = _filename_query(entry)
+    if params.get("season") is None or params.get("episode") is None:
+        attempt = dict(params)
+        attempt["query"] = filename_query
+        return [attempt]
+
+    primary = dict(params)
+    primary["query"] = _series_filename_query(
+        str(params.get("query") or ""), filename_query
+    )
+    attempts = [primary]
+    if filename_query and filename_query != primary.get("query"):
+        fallback = dict(params)
+        fallback["query"] = filename_query
+        attempts.append(fallback)
+    return attempts
+
+
+def _sleep_or_cancel(seconds: float, cancel_event: threading.Event | None) -> None:
+    """Sleep for *seconds*, waking early when cancellation is requested."""
+    if seconds <= 0:
+        if cancel_event:
+            raise_if_cancelled(cancel_event)
+        return
+    if cancel_event and cancel_event.wait(seconds):
+        raise_if_cancelled(cancel_event)
+    if cancel_event is None:
+        time.sleep(seconds)
+
+
+def _select_subtitle_from_attempts(
+    client: OpenSubtitlesClient,
+    attempts: list[dict],
+    config: CuratorConfig,
+    source_filename: str,
+    feature_type: str,
+    lang: str,
+    cancel_event: threading.Event | None,
+) -> tuple[dict | None, dict]:
+    """Run ordered search attempts and return the first selected subtitle."""
+    selected_params = attempts[0]
+    for index, attempt in enumerate(attempts):
+        if cancel_event:
+            raise_if_cancelled(cancel_event)
+        desc = _search_desc(attempt)
+        print(
+            f"[SUBS] Searching OpenSubtitles: {desc}, "
+            f"lang={lang}, strategy={config.subtitles.strategy}",
+            flush=True,
+        )
+        results = client.search(
+            query=attempt["query"],
+            year=attempt.get("year"),
+            languages=lang,
+            season=attempt.get("season"),
+            episode=attempt.get("episode"),
+            type=feature_type,
+        )
+        print(
+            f"[SUBS] Search returned {len(results)} results for: {desc}",
+            flush=True,
+        )
+
+        best = _search_with_fallbacks(
+            client, results, config.subtitles.strategy,
+            config.subtitles.filters, source_filename, attempt,
+        )
+        if best:
+            return best, attempt
+        if index < len(attempts) - 1:
+            print(
+                "[SUBS] No suitable subtitle found, retrying with filename",
+                flush=True,
+            )
+    return None, selected_params
 
 
 def _source_matches_torrent(source: str, torrent_name: str) -> bool:
@@ -660,9 +769,7 @@ def _fetch_entry_subtitles(
     source_filename = Path(entry["source"]).name
     params = get_search_params(entry)
     auto_query = params["query"]
-    if query_override:
-        params["query"] = query_override
-    desc = _search_desc(params)
+    attempts = _subtitle_search_attempts(entry, params, query_override)
     feature_type = "movie" if entry["type"] == "movie" else "episode"
 
     if query_override and query_override != auto_query:
@@ -672,7 +779,8 @@ def _fetch_entry_subtitles(
         )
     else:
         record_event(
-            f"subtitle query for {source_filename}: '{params['query']}'"
+            f"subtitle query for {source_filename}: "
+            f"'{attempts[0]['query']}'"
         )
 
     for lang in config.subtitles.languages:
@@ -685,58 +793,60 @@ def _fetch_entry_subtitles(
             / f"{target_path.stem}.{lang}.srt"
         )
         state.set_current(f"{target_path.stem} ({lang})")
-        print(
-            f"[SUBS] Searching OpenSubtitles: {desc}, "
-            f"lang={lang}, strategy={config.subtitles.strategy}",
-            flush=True,
-        )
-
         try:
-            results = client.search(
-                query=params["query"],
-                year=params.get("year"),
-                languages=lang,
-                season=params.get("season"),
-                episode=params.get("episode"),
-                type=feature_type,
-            )
-            print(
-                f"[SUBS] Search returned {len(results)} results for: {desc}",
-                flush=True,
-            )
-
-            best = _search_with_fallbacks(
-                client, results, config.subtitles.strategy,
-                config.subtitles.filters, source_filename, params,
+            best, selected_params = _select_subtitle_from_attempts(
+                client,
+                attempts,
+                config,
+                source_filename,
+                feature_type,
+                lang,
+                cancel_event,
             )
             if not best:
+                desc = _search_desc(attempts[-1])
                 print(
                     f"[SUBS] No suitable subtitle found for: {desc} ({lang})",
                     flush=True,
                 )
                 counters["skipped"] += 1
-                time.sleep(config.subtitles.search_delay_secs)
+                _sleep_or_cancel(
+                    config.subtitles.search_delay_secs, cancel_event
+                )
                 continue
 
             is_new = _install_subtitle(
-                config, client, overlay_path, target_path, best, params, lang
+                config,
+                client,
+                overlay_path,
+                target_path,
+                best,
+                selected_params,
+                lang,
             )
             if is_new is None:
                 counters["already_exists"] += 1
-                time.sleep(config.subtitles.search_delay_secs)
+                _sleep_or_cancel(
+                    config.subtitles.search_delay_secs, cancel_event
+                )
                 continue
             if is_new:
                 counters["fetched"] += 1
             else:
                 counters["replaced"] += 1
             fetched_targets.append(entry["target"])
-            time.sleep(config.subtitles.download_delay_secs)
-            time.sleep(config.subtitles.search_delay_secs)
+            _sleep_or_cancel(
+                config.subtitles.download_delay_secs, cancel_event
+            )
+            _sleep_or_cancel(config.subtitles.search_delay_secs, cancel_event)
 
         except Exception as e:
-            print(f"[SUBS] ERROR: {params['query']} ({lang}): {e}", flush=True)
+            if str(e) == "cancelled":
+                raise
+            error_query = attempts[0]["query"]
+            print(f"[SUBS] ERROR: {error_query} ({lang}): {e}", flush=True)
             record_event(
-                f"subtitle error for {params['query']} ({lang}): {e}",
+                f"subtitle error for {error_query} ({lang}): {e}",
                 level="error",
             )
             state.error_count += 1
@@ -825,6 +935,11 @@ def fetch_subtitles_for_library(
         ):
             trigger_jellyfin_selective_refresh(config, fetched_targets)
     except Exception as e:
+        if str(e) == "cancelled":
+            print("[SUBS] subtitle fetch cancelled", flush=True)
+            record_event("subtitle fetch cancelled")
+            state.stop()
+            raise
         print(f"[SUBS] FATAL: Subtitle fetcher failed: {e}", flush=True)
         record_event(f"subtitle fetcher failed: {e}", level="error")
         state.stop(error=True)

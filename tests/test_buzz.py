@@ -2913,6 +2913,63 @@ class BuzzStateTests(unittest.TestCase):
             ).fetchone()
             self.assertEqual(row["name"], "Some.Show.S01.mkv")
 
+    def test_sync_resurrects_soft_deleted_entry_that_reappears_on_provider(self):
+        """A torrent removed then re-added to the provider must have deleted_at cleared."""
+        thash = "e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="rdtoken",
+                torbox_token="",
+                provider_priority=("real_debrid",),
+                state_dir=tmpdir,
+                hook_command="",
+                curator_url="",
+            )
+            rd = self._hash_provider("RD1", thash, "Atlanta.S01.mkv")
+            state = BuzzState(config, client={"real_debrid": rd})
+            # Manually mark the entry as soft-deleted to simulate a past removal.
+            with state.conn:
+                state.conn.execute(
+                    "INSERT INTO library_entries "
+                    "(hash, name, bytes, files_json, magnet, deleted_at, updated_at) "
+                    "VALUES (?, ?, 0, '[]', NULL, '2026-06-07T16:09:04Z', '2026-06-07T16:09:04Z')",
+                    (thash, "Atlanta.S01.mkv"),
+                )
+            state.sync(trigger_hook=False)
+            row = state.conn.execute(
+                "SELECT deleted_at FROM library_entries WHERE hash = ?", (thash,)
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertIsNone(row["deleted_at"])
+
+    def test_sync_preserves_deleted_at_for_entries_absent_from_provider(self):
+        """An entry soft-deleted and not returned by the provider must stay soft-deleted."""
+        thash = "f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="rdtoken",
+                torbox_token="",
+                provider_priority=("real_debrid",),
+                state_dir=tmpdir,
+                hook_command="",
+                curator_url="",
+            )
+            state = BuzzState(config, client={"real_debrid": self.FakeProvider()})
+            deleted_at = "2026-06-07T16:09:04Z"
+            with state.conn:
+                state.conn.execute(
+                    "INSERT INTO library_entries "
+                    "(hash, name, bytes, files_json, magnet, deleted_at, updated_at) "
+                    "VALUES (?, ?, 0, '[]', NULL, ?, ?)",
+                    (thash, "Gone.Movie.mkv", deleted_at, deleted_at),
+                )
+            state.sync(trigger_hook=False)
+            row = state.conn.execute(
+                "SELECT deleted_at FROM library_entries WHERE hash = ?", (thash,)
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row["deleted_at"], deleted_at)
+
     def test_lookup_and_children_use_normalized_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             state_dir = Path(tmpdir)
@@ -5261,6 +5318,34 @@ class BuzzStateTests(unittest.TestCase):
 
             self.assertEqual(task["status"], "cancelled")
 
+    def test_subtitle_task_cancel_forwards_to_curator(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                state_dir=tmpdir,
+                hook_command="",
+                curator_url="http://curator.invalid/rebuild",
+            )
+            state = BuzzState(config, client=None)
+            task_id = state.background_tasks.submit_manual(
+                kind="subtitles",
+                label="fetch_subtitles: Cobalt Harbor",
+                work=lambda _tid, _cancel_event: None,
+            )
+
+            with patch("buzz.core.state.request.urlopen") as urlopen:
+                state.cancel_background_task(task_id)
+
+            request_obj = urlopen.call_args.args[0]
+            self.assertEqual(
+                request_obj.full_url,
+                "http://curator.invalid/api/subtitles/cancel",
+            )
+            self.assertEqual(
+                json.loads(request_obj.data.decode("utf-8")),
+                {"task_id": task_id},
+            )
+
     def test_curator_rebuild_failure_completes_local_task(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
@@ -5969,13 +6054,13 @@ class DavAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("file_selection_pending", body)
-        self.assertIn("file-selection-pending", body)
-        pending_row_start = body.index("file-selection-pending")
+        self.assertIn("cache-entry-pending", body)
+        pending_row_start = body.index("cache-entry-pending")
         selected_name_start = body.index("Selected Movie")
         selected_row_start = body.rfind("<tr", 0, selected_name_start)
         selected_row = body[selected_row_start:selected_name_start]
         self.assertLess(pending_row_start, selected_name_start)
-        self.assertNotIn("file-selection-pending", selected_row)
+        self.assertNotIn("cache-entry-pending", selected_row)
 
     def _render_expanded_cache_panel(self, cache_key: str) -> str:
         from buzz.ui_live import _load_template
@@ -6026,6 +6111,14 @@ class DavAppTests(unittest.TestCase):
         self.assertNotIn("clear_curator_title", body)
         # Non-video rows reserve the subtitle-box height.
         self.assertIn("subtitle-row-placeholder", body)
+        self.assertIn('name="parse_regex"', body)
+        self.assertIn("data-parse-regex-input", body)
+        self.assertIn("data-parse-regex-test", body)
+        self.assertIn("data-identity-save", body)
+        self.assertIn("data-regex-save", body)
+        self.assertIn("pythex.org", body)
+        self.assertIn("Example%20Feature/Example.Feature.1999", body)
+        self.assertIn(">Save Regex<", body)
 
     def test_expanded_identity_prefills_derived_defaults(self):
         self.state.cache = {
@@ -6117,7 +6210,7 @@ class DavAppTests(unittest.TestCase):
         self.assertIn("identity-inputs-overridden", body)
         self.assertIn(">override<", body)
 
-    def test_expanded_show_subtitle_query_placeholder_uses_series(self):
+    def test_expanded_show_subtitle_query_placeholder_uses_filename(self):
         self.state.cache = {
             "torbox:37310789": {
                 "signature": {},
@@ -6145,7 +6238,40 @@ class DavAppTests(unittest.TestCase):
         body = self._render_expanded_cache_panel("torbox:37310789")
 
         self.assertIn('id="identity-section-torbox-37310789-show"', body)
-        self.assertIn('placeholder="subs query: Example Series"', body)
+        self.assertIn(
+            'placeholder="subs query: Example Series (2016) - S01E01 - Pilot"',
+            body,
+        )
+
+    def test_expanded_show_subtitle_query_placeholder_prepends_series(self):
+        self.state.cache = {
+            "torbox:37310789": {
+                "signature": {},
+                "info": {
+                    "id": "37310789",
+                    "filename": "Example Series 2016 Season 01",
+                    "status": "downloaded",
+                    "progress": 100,
+                    "bytes": 100,
+                    "files": [
+                        {
+                            "id": "1",
+                            "path": "/S01E01.Pilot.mkv",
+                            "bytes": 100,
+                            "selected": 1,
+                        },
+                    ],
+                },
+            }
+        }
+
+        body = self._render_expanded_cache_panel("torbox:37310789")
+
+        self.assertIn(
+            'placeholder="subs query: Example Series 2016 Season 01 '
+            'S01E01.Pilot"',
+            body,
+        )
 
     def test_expanded_anime_renders_series_style_identity_form(self):
         cache_key = "torbox:37310790"
@@ -6535,6 +6661,7 @@ class DavAppTests(unittest.TestCase):
         self.assertIn('id="nav-archive-count"', body)
         self.assertIn("archive(<span id=\"nav-archive-count\">1</span>)", body)
         self.assertIn('id="nav-log-count"', body)
+        self.assertIn('id="nav-thread-count"', body)
         self.assertIn("Old &amp; Gone", body)
         self.assertIn('href="/static/buzz.css"', body)
         self.assertIn('phx-click="prompt_restore"', body)
@@ -6643,7 +6770,9 @@ class DavAppTests(unittest.TestCase):
         self.assertIn(">[C]</button>", body)
         self.assertIn("Move to Real-Debrid", body)
         self.assertIn(">[M]</button>", body)
-        self.assertIn("not-allowed", Path("buzz/static/buzz.css").read_text())
+        css = Path("buzz/static/buzz.css").read_text()
+        self.assertIn("not-allowed", css)
+        self.assertIn(".nav-link #nav-thread-count", css)
 
     def test_archive_transfer_registers_manual_task(self):
         self.state.config.provider_priority = ("real_debrid", "torbox")
@@ -9212,7 +9341,9 @@ class SubtitleQueryOverrideTests(unittest.TestCase):
             "errors": 0,
             "already_exists": 0,
         }
-        with patch("buzz.core.subtitles.state"):
+        with patch("buzz.core.subtitles.record_event") as record_event, patch(
+            "buzz.core.subtitles.state"
+        ):
             subtitles._fetch_entry_subtitles(
                 cast(Any, config),
                 cast(Any, FakeClient()),
@@ -9222,6 +9353,267 @@ class SubtitleQueryOverrideTests(unittest.TestCase):
                 query_override="Custom Search Name",
             )
         self.assertEqual(captured.get("query"), "Custom Search Name")
+        record_event.assert_any_call(
+            "subtitle query for Movie.Pack.2020.mkv: "
+            "'Custom Search Name' (override)"
+        )
+
+    def test_show_subtitle_search_falls_back_to_filename(self):
+        from buzz.core import subtitles
+
+        entry = {
+            "source": (
+                "shows/Cobalt Harbor Season 01/"
+                "Cobalt.Harbor.S01E01.Pilot.Cut.mkv"
+            ),
+            "target": (
+                "shows/Cobalt Harbor (2024)/Season 01/"
+                "Cobalt Harbor (2024) S01E01.mkv"
+            ),
+            "type": "show",
+        }
+        calls = []
+
+        class FakeClient:
+            def search(self, **kwargs):
+                calls.append(kwargs)
+                return []
+
+        config = SimpleNamespace(
+            subtitle_root=Path("/tmp/subs"),
+            subtitles=SimpleNamespace(
+                languages=["en"],
+                strategy="best-match",
+                filters=None,
+                search_delay_secs=0,
+                download_delay_secs=0,
+            ),
+        )
+        counters = {
+            "fetched": 0,
+            "replaced": 0,
+            "skipped": 0,
+            "errors": 0,
+            "already_exists": 0,
+        }
+        with patch("buzz.core.subtitles.record_event") as record_event, patch(
+            "buzz.core.subtitles.state"
+        ):
+            subtitles._fetch_entry_subtitles(
+                cast(Any, config),
+                cast(Any, FakeClient()),
+                entry,
+                counters,
+                [],
+            )
+
+        expected_call = {
+            "query": "Cobalt.Harbor.S01E01.Pilot.Cut",
+            "year": None,
+            "languages": "en",
+            "season": 1,
+            "episode": 1,
+            "type": "episode",
+        }
+        self.assertEqual(calls, [expected_call])
+        record_event.assert_any_call(
+            "subtitle query for Cobalt.Harbor.S01E01.Pilot.Cut.mkv: "
+            "'Cobalt.Harbor.S01E01.Pilot.Cut'"
+        )
+
+    def test_show_subtitle_search_uses_season_episode_words_filename(self):
+        from buzz.core import subtitles
+
+        entry = {
+            "source": (
+                "shows/Rome Season 1/"
+                "Rome (2005) Season 1 Episode 03 2160p H.264 "
+                "(moviesbyrizzo conversion).mkv"
+            ),
+            "target": (
+                "shows/Rome/Season 01/"
+                "Rome Season 1 Episode 03 2160p H.264.mkv"
+            ),
+            "type": "show",
+        }
+        calls = []
+
+        class FakeClient:
+            def search(self, **kwargs):
+                calls.append(kwargs)
+                return []
+
+        config = SimpleNamespace(
+            subtitle_root=Path("/tmp/subs"),
+            subtitles=SimpleNamespace(
+                languages=["en"],
+                strategy="best-match",
+                filters=None,
+                search_delay_secs=0,
+                download_delay_secs=0,
+            ),
+        )
+        counters = {
+            "fetched": 0,
+            "replaced": 0,
+            "skipped": 0,
+            "errors": 0,
+            "already_exists": 0,
+        }
+        with patch("buzz.core.subtitles.record_event") as record_event, patch(
+            "buzz.core.subtitles.state"
+        ):
+            subtitles._fetch_entry_subtitles(
+                cast(Any, config),
+                cast(Any, FakeClient()),
+                entry,
+                counters,
+                [],
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "query": (
+                        "Rome (2005) Season 1 Episode 03 2160p H.264 "
+                        "(moviesbyrizzo conversion)"
+                    ),
+                    "year": None,
+                    "languages": "en",
+                    "season": 1,
+                    "episode": 3,
+                    "type": "episode",
+                }
+            ],
+        )
+        record_event.assert_any_call(
+            "subtitle query for Rome (2005) Season 1 Episode 03 2160p H.264 "
+            "(moviesbyrizzo conversion).mkv: 'Rome (2005) Season 1 Episode 03 "
+            "2160p H.264 (moviesbyrizzo conversion)'"
+        )
+
+    def test_show_subtitle_search_prepends_missing_series(self):
+        from buzz.core import subtitles
+
+        entry = {
+            "source": "shows/Cobalt Harbor Season 01/S01E01.Pilot.Cut.mkv",
+            "target": (
+                "shows/Cobalt Harbor/Season 01/"
+                "Cobalt Harbor S01E01.mkv"
+            ),
+            "type": "show",
+        }
+        calls = []
+
+        class FakeClient:
+            def search(self, **kwargs):
+                calls.append(kwargs)
+                return []
+
+        config = SimpleNamespace(
+            subtitle_root=Path("/tmp/subs"),
+            subtitles=SimpleNamespace(
+                languages=["en"],
+                strategy="best-match",
+                filters=None,
+                search_delay_secs=0,
+                download_delay_secs=0,
+            ),
+        )
+        counters = {
+            "fetched": 0,
+            "replaced": 0,
+            "skipped": 0,
+            "errors": 0,
+            "already_exists": 0,
+        }
+        with patch("buzz.core.subtitles.record_event") as record_event, patch(
+            "buzz.core.subtitles.state"
+        ):
+            subtitles._fetch_entry_subtitles(
+                cast(Any, config),
+                cast(Any, FakeClient()),
+                entry,
+                counters,
+                [],
+            )
+
+        self.assertEqual(calls[0]["query"], "Cobalt Harbor S01E01.Pilot.Cut")
+        self.assertEqual(calls[0]["season"], 1)
+        self.assertEqual(calls[0]["episode"], 1)
+        record_event.assert_any_call(
+            "subtitle query for S01E01.Pilot.Cut.mkv: "
+            "'Cobalt Harbor S01E01.Pilot.Cut'"
+        )
+
+    def test_anime_subtitle_search_uses_show_episode_params(self):
+        from buzz.core import subtitles
+
+        entry = {
+            "source": "anime/Star Loom/Star.Loom.S02E03.mkv",
+            "target": (
+                "anime/Star Loom/Season 02/"
+                "Star Loom S02E03.mkv"
+            ),
+            "type": "anime",
+        }
+        calls = []
+
+        class FakeClient:
+            def search(self, **kwargs):
+                calls.append(kwargs)
+                return []
+
+        config = SimpleNamespace(
+            subtitle_root=Path("/tmp/subs"),
+            subtitles=SimpleNamespace(
+                languages=["en"],
+                strategy="best-match",
+                filters=None,
+                search_delay_secs=0,
+                download_delay_secs=0,
+            ),
+        )
+        counters = {
+            "fetched": 0,
+            "replaced": 0,
+            "skipped": 0,
+            "errors": 0,
+            "already_exists": 0,
+        }
+        with patch("buzz.core.subtitles.state"):
+            subtitles._fetch_entry_subtitles(
+                cast(Any, config),
+                cast(Any, FakeClient()),
+                entry,
+                counters,
+                [],
+                query_override="Star Loom Custom",
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "query": "Star Loom Custom",
+                    "year": None,
+                    "languages": "en",
+                    "season": 2,
+                    "episode": 3,
+                    "type": "episode",
+                }
+            ],
+        )
+
+    def test_subtitle_delay_raises_when_cancelled(self):
+        from buzz.core import subtitles
+
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        with self.assertRaisesRegex(RuntimeError, "cancelled"):
+            subtitles._sleep_or_cancel(30, cancel_event)
 
 
 class CuratorTitleOverrideTests(unittest.TestCase):
@@ -9245,6 +9637,9 @@ class CuratorTitleOverrideTests(unittest.TestCase):
                     "kind": "show",
                     "series": "Example",
                     "year": 2024,
+                    "parse_regex": (
+                        r"(?P<series>.+?) - (?P<episode>\d+)"
+                    ),
                     "season": 1,
                     "episode": 2,
                     "tvdbid": "tvdb-1",
@@ -9256,6 +9651,9 @@ class CuratorTitleOverrideTests(unittest.TestCase):
                     "kind": "show",
                     "series": "Example",
                     "year": 2024,
+                    "parse_regex": (
+                        r"(?P<series>.+?) - (?P<episode>\d+)"
+                    ),
                     "provider_ids": {"tvdbid": "tvdb-1"},
                 }
             }

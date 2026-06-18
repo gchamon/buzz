@@ -93,6 +93,17 @@ class ParseShowTests(unittest.TestCase):
         self.assertEqual(result["season"], 2)
         self.assertEqual(result["episode"], 5)
 
+    def test_season_episode_words_pattern(self):
+        result = parse_show(
+            "Cobalt City (2005) Season 1 Episode 01 2160p H.264.mkv"
+        )
+        if result is None:
+            self.fail("Expected season/episode words show parse result")
+        self.assertEqual(result["series"], "Cobalt City")
+        self.assertEqual(result["year"], 2005)
+        self.assertEqual(result["season"], 1)
+        self.assertEqual(result["episode"], 1)
+
     def test_no_match_returns_none(self):
         self.assertIsNone(parse_show("Some.Movie.2020.mkv"))
 

@@ -133,6 +133,8 @@ class CuratorApp:
         )
         self.curator = Curator(config)
         self._source_watcher: SourceRootWatcher | None = None
+        self._subtitle_cancel_events: dict[str, threading.Event] = {}
+        self._subtitle_cancel_lock = threading.Lock()
         self._event_listener = self._notify_dav_ui
         registry.add_listener(self._event_listener)
 
@@ -261,6 +263,35 @@ class CuratorApp:
             )
             return {"status": "triggered"}
 
+        @self.app.post("/api/subtitles/cancel")
+        def cancel_subtitles_fetch(payload: dict[str, Any] | None = None):
+            return self._cancel_subtitle_fetch(payload)
+
+    def _cancel_subtitle_fetch(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, str] | JSONResponse:
+        """Request cancellation of a running subtitle fetch task."""
+        task_id = str((payload or {}).get("task_id") or "").strip()
+        if not task_id:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "task_id is required"},
+            )
+        with self._subtitle_cancel_lock:
+            cancel_event = self._subtitle_cancel_events.get(task_id)
+        if cancel_event is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "subtitle task not found"},
+            )
+        cancel_event.set()
+        record_event(
+            f"subtitle fetch cancellation requested: {task_id}",
+            event="subtitle_fetch_cancel_requested",
+            task_id=task_id,
+        )
+        return {"status": "cancelling"}
+
     def _run_subtitle_fetch(
         self,
         torrent_name: str | None = None,
@@ -273,22 +304,35 @@ class CuratorApp:
 
         with registry.task_context(task_id or ""):
             error = None
+            status = None
+            cancel_event = threading.Event()
+            if task_id:
+                with self._subtitle_cancel_lock:
+                    self._subtitle_cancel_events[task_id] = cancel_event
             try:
-                # We need a dummy event for fetch_subtitles_for_library if not using task pool locally
-                # but curator app uses fastapi background tasks, so we'll pass None and it will handle it.
-                # Actually, better to create an event so it doesn't crash on None access if we added it.
-                # But our core logic has `if cancel_event: raise_if_cancelled(cancel_event)`
                 fetch_subtitles_for_library(
                     self.config,
                     torrent_name=torrent_name,
                     torrent_names=torrent_names,
+                    cancel_event=cancel_event,
                 )
+            except RuntimeError as exc:
+                error = str(exc)
+                if error == "cancelled":
+                    status = "cancelled"
+                    error = None
+                    record_event("subtitle fetch cancelled")
+                else:
+                    record_event(f"subtitle fetch failed: {exc}", level="error")
             except Exception as exc:
                 error = str(exc)
                 record_event(f"subtitle fetch failed: {exc}", level="error")
             finally:
                 if task_id:
-                    self._signal_completion(task_id, error=error)
+                    with self._subtitle_cancel_lock:
+                        self._subtitle_cancel_events.pop(task_id, None)
+                if task_id:
+                    self._signal_completion(task_id, error=error, status=status)
 
     def reload_config(self) -> None:
         """Reload curator config from disk for future operations."""

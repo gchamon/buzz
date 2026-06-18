@@ -208,7 +208,7 @@
       <tbody>
         {% if has_torrents %}
         {% for torrent in torrents %}
-        <tr class="{% if expanded_id == torrent.id %}row-expanded{% endif %}{% if torrent.file_selection_pending %} file-selection-pending{% endif %}">
+        <tr class="{% if expanded_id == torrent.id %}row-expanded{% endif %}{% if torrent.file_selection_pending %} cache-entry-pending{% endif %}">
           <td class="name trunc-cell" data-value="{{ torrent.name }}">
             <span class="marquee-clip" data-marquee-clip phx-click="toggle_expand" phx-value-id="{{ torrent.id }}" style="cursor:pointer">
               <span class="marquee-label{% if torrent.has_override and expanded_id != torrent.id %} name-has-override{% endif %}" data-marquee-label title="{% if torrent.has_override %}has overrides — {% endif %}{{ torrent.name }}">{{ torrent.name }}</span>
@@ -283,9 +283,9 @@
           </td>
         </tr>
         {% if expanded_id == torrent.id %}
-        <tr class="file-select-row">
+        <tr class="cache-entry-metadata-row">
           <td colspan="8">
-            <div class="file-select-panel">
+            <div class="cache-entry-metadata-panel">
               <div class="detail-section category-actions" aria-label="Category override">
                 <span class="detail-label">Category</span>
                 <button
@@ -318,59 +318,7 @@
                   phx-value-mode="anime"
                 >Anime</button>
               </div>
-              {% if title_override_kind == "movie" %}
-              <div
-                class="detail-section identity-section"
-                aria-label="Identity override"
-                phx-hook="BuzzIdentityRevert"
-                id="identity-section-{{ expanded_dom_id }}-movie"
-              >
-                <span class="detail-label">Identity</span>
-                <form
-                  phx-submit="set_curator_title"
-                  class="subtitle-query-form curator-title-form"
-                  id="curator-title-form-{{ expanded_dom_id }}-movie"
-                >
-                  <input type="hidden" name="cache_id" value="{{ torrent.id }}">
-                  <input type="hidden" name="kind" value="movie">
-                  <div
-                    class="identity-inputs{% if title_override_active %} identity-inputs-overridden{% endif %}"
-                    phx-update="ignore"
-                    id="identity-inputs-{{ expanded_dom_id }}-movie"
-                  >
-                    <input
-                      type="text"
-                      name="title"
-                      class="subtitle-query-input"
-                      value="{{ title_override_fields.title }}"
-                      data-default="{{ title_override_defaults.title }}"
-                      placeholder="movie title"
-                      title="Custom movie title for Curator. Names this entry's top-level folder. Leave empty to auto-derive."
-                    >
-                    <input
-                      type="text"
-                      name="year"
-                      class="title-year-input"
-                      value="{{ title_override_fields.year }}"
-                      data-default="{{ title_override_defaults.year }}"
-                      placeholder="year"
-                      title="Custom movie year for Curator."
-                    >
-                    <input type="text" name="imdbid" class="title-id-input" value="{{ title_override_fields.provider_ids.imdbid }}" data-default="{{ title_override_defaults.provider_ids.imdbid }}" placeholder="imdbid" title="IMDb id for Jellyfin, for example tt1234567.">
-                    <input type="text" name="tmdbid" class="title-id-input" value="{{ title_override_fields.provider_ids.tmdbid }}" data-default="{{ title_override_defaults.provider_ids.tmdbid }}" placeholder="tmdbid" title="TMDb id for Jellyfin.">
-                  </div>
-                  <button type="submit" phx-disable-with="Saving...">
-                    Save
-                  </button>
-                  <button type="button" class="secondary" data-revert>
-                    Revert
-                  </button>
-                  {% if title_override_active %}
-                  <span class="yellow">override{% if title_override_provider_id %} [{{ title_override_provider_id }}]{% endif %}</span>
-                  {% endif %}
-                </form>
-              </div>
-              {% elif title_override_kind == "show" or title_override_kind == "anime" %}
+              {% if title_override_kind %}
               <div
                 class="detail-section identity-section"
                 aria-label="Identity override"
@@ -390,30 +338,49 @@
                     phx-update="ignore"
                     id="identity-inputs-{{ expanded_dom_id }}-{{ title_override_kind }}"
                   >
+                    {% if title_override_kind == "movie" %}
+                    <input
+                      type="text"
+                      name="title"
+                      class="subtitle-query-input"
+                      value="{{ title_override_fields.title }}"
+                      data-default="{{ title_override_defaults.title }}"
+                      data-saved="{{ title_override_saved.title }}"
+                      placeholder="movie title"
+                      title="Custom movie title for Curator. Names this entry's top-level folder. Leave empty to auto-derive."
+                    >
+                    {% else %}
                     <input
                       type="text"
                       name="series"
                       class="subtitle-query-input"
                       value="{{ title_override_fields.series }}"
                       data-default="{{ title_override_defaults.series }}"
+                      data-saved="{{ title_override_saved.series }}"
                       placeholder="series"
                       title="Custom series name for Curator. Names this entry's top-level folder. Leave empty to auto-derive."
                     >
+                    {% endif %}
                     <input
                       type="text"
                       name="year"
                       class="title-year-input"
                       value="{{ title_override_fields.year }}"
                       data-default="{{ title_override_defaults.year }}"
+                      data-saved="{{ title_override_saved.year }}"
                       placeholder="year"
-                      title="Optional series year for Curator."
+                      title="Year for Curator."
                     >
-                    <input type="text" name="tvdbid" class="title-id-input" value="{{ title_override_fields.provider_ids.tvdbid }}" data-default="{{ title_override_defaults.provider_ids.tvdbid }}" placeholder="tvdbid" title="TVDB id for Jellyfin.">
-                    <input type="text" name="tmdbid" class="title-id-input" value="{{ title_override_fields.provider_ids.tmdbid }}" data-default="{{ title_override_defaults.provider_ids.tmdbid }}" placeholder="tmdbid" title="TMDb id for Jellyfin.">
-                    <input type="text" name="imdbid" class="title-id-input" value="{{ title_override_fields.provider_ids.imdbid }}" data-default="{{ title_override_defaults.provider_ids.imdbid }}" placeholder="imdbid" title="IMDb id for Jellyfin, for example tt1234567.">
-                    <input type="text" name="anidbid" class="title-id-input" value="{{ title_override_fields.provider_ids.anidbid }}" data-default="{{ title_override_defaults.provider_ids.anidbid }}" placeholder="anidbid" title="AniDB id for Jellyfin anime metadata providers.">
+                    {% if title_override_kind != "movie" %}
+                    <input type="text" name="tvdbid" class="title-id-input" value="{{ title_override_fields.provider_ids.tvdbid }}" data-default="{{ title_override_defaults.provider_ids.tvdbid }}" data-saved="{{ title_override_saved.provider_ids.tvdbid }}" placeholder="tvdbid" title="TVDB id for Jellyfin.">
+                    {% endif %}
+                    <input type="text" name="tmdbid" class="title-id-input" value="{{ title_override_fields.provider_ids.tmdbid }}" data-default="{{ title_override_defaults.provider_ids.tmdbid }}" data-saved="{{ title_override_saved.provider_ids.tmdbid }}" placeholder="tmdbid" title="TMDb id for Jellyfin.">
+                    <input type="text" name="imdbid" class="title-id-input" value="{{ title_override_fields.provider_ids.imdbid }}" data-default="{{ title_override_defaults.provider_ids.imdbid }}" data-saved="{{ title_override_saved.provider_ids.imdbid }}" placeholder="imdbid" title="IMDb id for Jellyfin, for example tt1234567.">
+                    {% if title_override_kind != "movie" %}
+                    <input type="text" name="anidbid" class="title-id-input" value="{{ title_override_fields.provider_ids.anidbid }}" data-default="{{ title_override_defaults.provider_ids.anidbid }}" data-saved="{{ title_override_saved.provider_ids.anidbid }}" placeholder="anidbid" title="AniDB id for Jellyfin anime metadata providers.">
+                    {% endif %}
                   </div>
-                  <button type="submit" phx-disable-with="Saving...">
+                  <button type="submit" phx-disable-with="Saving..." data-identity-save>
                     Save
                   </button>
                   <button type="button" class="secondary" data-revert>
@@ -425,8 +392,12 @@
                 </form>
               </div>
               {% endif %}
-              <div class="detail-section file-selection-section">
-                <div class="file-selection-header">
+              <div
+                class="detail-section cache-entry-metadata-file-section"
+                phx-update="ignore"
+                id="file-section-{{ expanded_dom_id }}"
+              >
+                <div class="cache-entry-metadata-file-header">
                   <span class="detail-label">File selection</span>
                   <div class="file-actions">
                     <button
@@ -452,6 +423,34 @@
                       phx-value-id="{{ torrent.id }}"
                       phx-disable-with="Applying..."
                     >Apply Selection</button>
+                    {% if title_override_kind %}
+                    <input
+                      type="text"
+                      name="parse_regex"
+                      form="curator-title-form-{{ expanded_dom_id }}-{{ title_override_kind }}"
+                      class="parse-regex-input"
+                      value="{{ title_override_fields.parse_regex }}"
+                      data-default="{{ title_override_defaults.parse_regex }}"
+                      data-saved="{{ title_override_saved.parse_regex }}"
+                      placeholder="{{ parse_regex_placeholder }}"
+                      title="Python regex override. Use named groups: title or series, year, season, episode."
+                      data-parse-regex-input
+                    >
+                    <a
+                      class="secondary parse-regex-test-link"
+                      href="{{ parse_regex_test_url }}"
+                      data-parse-regex-test
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Open this regex and the current identity/filename lines in Pythex"
+                    >Test</a>
+                    <button
+                      type="submit"
+                      form="curator-title-form-{{ expanded_dom_id }}-{{ title_override_kind }}"
+                      phx-disable-with="Saving..."
+                      data-regex-save
+                    >Save Regex</button>
+                    {% endif %}
                   </div>
                 </div>
                 {% if expanded_folders %}
@@ -492,16 +491,14 @@
                     >
                       <input type="hidden" name="id" value="{{ torrent.id }}">
                       <input type="hidden" name="path" value="{{ file.path }}">
-                      <span phx-update="ignore" id="subtitle-wrap-{{ file.id }}">
-                        <input
-                          type="text"
-                          name="query"
-                          class="subtitle-query-input"
-                          value="{{ file.subtitle_query }}"
-                          placeholder="subs query: {{ file.subtitle_default_query }}"
-                          title="Custom name used to search OpenSubtitles. Leave empty to auto-derive."
-                        >
-                      </span>
+                      <input
+                        type="text"
+                        name="query"
+                        class="subtitle-query-input"
+                        value="{{ file.subtitle_query }}"
+                        placeholder="subs query: {{ file.subtitle_default_query }}"
+                        title="Custom name used to search OpenSubtitles. Leave empty to auto-derive."
+                      >
                       <button type="submit" phx-disable-with="Saving...">
                         Save
                       </button>

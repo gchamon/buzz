@@ -2918,6 +2918,13 @@ class BuzzState:
         provider_ids = BuzzState._normalized_provider_ids(override)
         if provider_ids:
             result["provider_ids"] = provider_ids
+        parse_regex = str(override.get("parse_regex") or "").strip()
+        if parse_regex:
+            try:
+                re.compile(parse_regex)
+            except re.error as exc:
+                raise ValueError(f"invalid parse regex: {exc}") from exc
+            result["parse_regex"] = parse_regex
         return result
 
     @staticmethod
@@ -3893,9 +3900,42 @@ class BuzzState:
 
     def cancel_background_task(self, task_id: str) -> OperationResult:
         """Request cancellation for a background task."""
+        task_kind = next(
+            (
+                str(task.get("kind") or "")
+                for task in self.background_tasks.snapshot()
+                if task.get("id") == task_id
+            ),
+            "",
+        )
         if not self.background_tasks.cancel(task_id):
             raise ValueError(f"background task not cancellable: {task_id}")
+        if task_kind == "subtitles":
+            self._cancel_curator_subtitle_task(task_id)
         return {"status": "success"}
+
+    def _cancel_curator_subtitle_task(self, task_id: str) -> None:
+        """Best-effort cancellation signal for a proxied Curator subtitle task."""
+        if not self.config.curator_url:
+            return
+        url = self.config.curator_url.replace(
+            "/rebuild", "/api/subtitles/cancel"
+        )
+        try:
+            data = json.dumps({"task_id": task_id}).encode("utf-8")
+            req = request.Request(
+                url,
+                data=data,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with request.urlopen(req, timeout=5):
+                pass
+        except Exception as exc:
+            record_event(
+                f"subtitle cancellation signal failed: {exc}",
+                level="warning",
+            )
 
     def complete_background_task(
         self, task_id: str, error: str | None = None, status: TaskStatus | None = None

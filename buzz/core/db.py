@@ -205,6 +205,13 @@ _MIGRATIONS: list[tuple[int, str]] = [
             RENAME TO curator_title_overrides;
         """,
     ),
+    (
+        11,
+        """
+        ALTER TABLE curator_title_overrides
+            ADD COLUMN parse_regex TEXT;
+        """,
+    ),
 ]
 
 def connect(path: Path | str, timeout: float = 30.0) -> sqlite3.Connection:
@@ -631,11 +638,13 @@ def replace_provider_library(
     conn: sqlite3.Connection,
     entries: list[dict[str, Any]],
 ) -> None:
-    """Replace live (non-archived) provider library rows in one transaction.
+    """Replace live provider library rows in one transaction.
 
     Each entry must have: hash, name, bytes, files (list of selected-file dicts),
     magnet, provider, provider_torrent_id, status, progress, info_json, signature_json.
-    Archived rows (deleted_at IS NOT NULL) in library_entries are preserved.
+    Entries present in the provider feed are (re)activated — deleted_at is cleared if
+    the hash reappears after being soft-deleted. Rows no longer served by any provider
+    stay soft-deleted and are not touched.
     """
     now = _now_iso()
     by_hash: dict[str, dict[str, Any]] = {}
@@ -677,8 +686,8 @@ def replace_provider_library(
                 "    WHEN excluded.files_json != '[]' THEN excluded.files_json "
                 "    ELSE library_entries.files_json END, "
                 "  magnet     = COALESCE(excluded.magnet, library_entries.magnet), "
-                "  updated_at = excluded.updated_at "
-                "WHERE library_entries.deleted_at IS NULL",
+                "  deleted_at = NULL, "
+                "  updated_at = excluded.updated_at",
                 (
                     thash,
                     _readable_name(entry.get("name")) or None,
@@ -971,7 +980,7 @@ def _curator_title_override_from_row(
     override: dict[str, Any] = {
         "kind": row["kind"],
     }
-    for key in ("title", "series", "year"):
+    for key in ("title", "series", "year", "parse_regex"):
         value = row[key]
         if value is not None and value != "":
             override[key] = value
@@ -998,7 +1007,7 @@ def load_curator_title_overrides(
 ) -> dict[str, dict[str, Any]]:
     """Return {hash: title override} for Curator naming rules."""
     rows = conn.execute(
-        "SELECT hash, kind, title, series, year, "
+        "SELECT hash, kind, title, series, year, parse_regex, "
         "external_id, provider_ids_json FROM curator_title_overrides"
     ).fetchall()
     overrides: dict[str, dict[str, Any]] = {}
@@ -1017,7 +1026,7 @@ def get_curator_title_override(
     if not thash:
         return None
     row = conn.execute(
-        "SELECT hash, kind, title, series, year, "
+        "SELECT hash, kind, title, series, year, parse_regex, "
         "external_id, provider_ids_json FROM curator_title_overrides "
         "WHERE hash = ?",
         (thash,),
@@ -1060,15 +1069,16 @@ def save_curator_title_override(
     with conn:
         conn.execute(
             "INSERT OR REPLACE INTO curator_title_overrides "
-            "(hash, kind, title, series, year, "
+            "(hash, kind, title, series, year, parse_regex, "
             "external_id, provider_ids_json, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 thash,
                 kind,
                 str(override.get("title") or "").strip() or None,
                 str(override.get("series") or "").strip() or None,
                 override.get("year"),
+                str(override.get("parse_regex") or "").strip() or None,
                 str(override.get("id") or "").strip() or None,
                 stable_json(provider_ids),
                 _now_iso(),

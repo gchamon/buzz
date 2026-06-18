@@ -2,6 +2,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -288,8 +289,8 @@ class CuratorAppTests(unittest.TestCase):
 
             report = build_library(config)
 
-            self.assertEqual(report["show_files"], 1)
-            self.assertEqual(len(report["skipped_shows"]), 1)
+            self.assertEqual(report["show_files"], 2)
+            self.assertEqual(len(report["skipped_shows"]), 0)
             self.assertTrue(
                 (
                     config.target_root
@@ -297,6 +298,14 @@ class CuratorAppTests(unittest.TestCase):
                     / "Example Show"
                     / "Season 01"
                     / "Example Show S01E01.mkv"
+                ).exists()
+            )
+            self.assertTrue(
+                (
+                    config.target_root
+                    / "shows"
+                    / "Example.Show"
+                    / "Behind the Scenes.mkv"
                 ).exists()
             )
 
@@ -697,6 +706,28 @@ class CuratorAppTests(unittest.TestCase):
             self.assertIn("error", payload)
             self.assertIn("no library mapping found", payload["error"])
 
+    def test_subtitle_cancel_endpoint_sets_task_event(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            from buzz.models import SubtitleConfig
+
+            config = self._config(
+                root, subtitles=SubtitleConfig(enabled=True, api_key="test")
+            )
+            app = CuratorApp(config)
+            cancel_event = threading.Event()
+            with app._subtitle_cancel_lock:
+                app._subtitle_cancel_events["task-1"] = cancel_event
+            client = TestClient(app.app)
+
+            response = client.post(
+                "/api/subtitles/cancel", json={"task_id": "task-1"}
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"status": "cancelling"})
+            self.assertTrue(cancel_event.is_set())
+
     def test_curator_config_load_merges_overrides(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -852,6 +883,73 @@ class CuratorAppTests(unittest.TestCase):
                 ).is_symlink()
             )
 
+    def test_db_movie_override_matches_actual_source_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            source_dir = config.source_root / "movies" / "Provider Short Name"
+            source_dir.mkdir(parents=True)
+            (config.source_root / "shows").mkdir(parents=True)
+            (config.source_root / "anime").mkdir(parents=True)
+            (source_dir / "Example.Movie.2007.mkv").write_text(
+                "video", encoding="utf-8"
+            )
+
+            config.state_dir.mkdir(parents=True)
+            conn = db.connect(config.state_dir / "buzz.sqlite")
+            try:
+                db.apply_migrations(conn)
+                db.replace_provider_library(
+                    conn,
+                    [
+                        {
+                            "hash": "movie1",
+                            "name": "Stale Longer Library Entry Name",
+                            "bytes": 100,
+                            "files": [
+                                {
+                                    "id": "1",
+                                    "path": "Example.Movie.2007.mkv",
+                                    "bytes": 100,
+                                }
+                            ],
+                            "magnet": None,
+                            "provider": "torbox",
+                            "provider_torrent_id": "TB1",
+                            "status": "downloaded",
+                            "progress": 100,
+                            "info_json": json.dumps(
+                                {"display_name": "Provider Short Name"}
+                            ),
+                            "signature_json": "{}",
+                        }
+                    ],
+                )
+                db.save_curator_title_override(
+                    conn,
+                    "movie1",
+                    {
+                        "kind": "movie",
+                        "title": "Example Movie Revised",
+                        "year": 2007,
+                        "provider_ids": {"imdbid": "tt0408236"},
+                    },
+                )
+            finally:
+                conn.close()
+
+            report = build_library(config)
+
+            self.assertEqual(report["movies"], 1)
+            self.assertTrue(
+                (
+                    config.target_root
+                    / "movies"
+                    / "Example Movie Revised (2007) [imdbid-tt0408236]"
+                    / "Example Movie Revised (2007) [imdbid-tt0408236].mkv"
+                ).is_symlink()
+            )
+
     def test_db_show_override_renames_series_folder_entry_wide(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -993,19 +1091,17 @@ class CuratorAppTests(unittest.TestCase):
             report = build_library(config)
 
             self.assertEqual(report["anime_files"], 1)
-            # Only the top-level folder is renamed; the inner structure
-            # ("Season 01/<file>") is preserved verbatim.
             self.assertTrue(
                 (
                     config.target_root
-                    / "animes"
+                    / "anime"
                     / "Real Anime (2023) [anidbid-9876]"
                     / "Season 01"
-                    / "Anime.Show.S01E01.mkv"
+                    / "Real Anime (2023) [anidbid-9876] S01E01.mkv"
                 ).is_symlink()
             )
 
-    def test_anime_without_override_preserves_relative_path(self):
+    def test_anime_without_override_uses_show_style_layout(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             config = self._config(root)
@@ -1023,9 +1119,388 @@ class CuratorAppTests(unittest.TestCase):
             self.assertTrue(
                 (
                     config.target_root
-                    / "animes"
-                    / "Anime.Show.S01"
-                    / "Anime.Show.S01E01.mkv"
+                    / "anime"
+                    / "Anime Show"
+                    / "Season 01"
+                    / "Anime Show S01E01.mkv"
+                ).is_symlink()
+            )
+
+    def test_anime_regex_override_parses_release_episode_numbers(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            (config.source_root / "movies").mkdir(parents=True)
+            (config.source_root / "shows").mkdir(parents=True)
+            anime_dir = (
+                config.source_root
+                / "anime"
+                / "[SubsPlease] Sousou no Frieren S2 (01-10) (1080p) [Batch]"
+            )
+            anime_dir.mkdir(parents=True)
+            for episode in range(1, 4):
+                filename = (
+                    "[SubsPlease] Sousou no Frieren S2 - "
+                    f"{episode:02d}v2 (1080p) [HASH].mkv"
+                )
+                (anime_dir / filename).write_text("video", encoding="utf-8")
+
+            config.state_dir.mkdir(parents=True)
+            conn = db.connect(config.state_dir / "buzz.sqlite")
+            try:
+                db.apply_migrations(conn)
+                db.replace_provider_library(
+                    conn,
+                    [
+                        {
+                            "hash": "frieren1",
+                            "name": anime_dir.name,
+                            "bytes": 300,
+                            "files": [
+                                {
+                                    "id": str(episode),
+                                    "path": (
+                                        f"{anime_dir.name}/"
+                                        "[SubsPlease] Sousou no Frieren S2 - "
+                                        f"{episode:02d}v2 (1080p) [HASH].mkv"
+                                    ),
+                                    "bytes": 100,
+                                }
+                                for episode in range(1, 4)
+                            ],
+                            "magnet": None,
+                            "provider": "real_debrid",
+                            "provider_torrent_id": "RD-FRIEREN",
+                            "status": "downloaded",
+                            "progress": 100,
+                            "info_json": "{}",
+                            "signature_json": "{}",
+                        }
+                    ],
+                )
+                db.save_curator_title_override(
+                    conn,
+                    "frieren1",
+                    {
+                        "kind": "anime",
+                        "parse_regex": (
+                            r"^\[SubsPlease\]\s+(?P<series>.+?) "
+                            r"S(?P<season>\d+) - "
+                            r"(?P<episode>\d+)(?:v\d+)?"
+                        ),
+                    },
+                )
+            finally:
+                conn.close()
+
+            report = build_library(config)
+
+            self.assertEqual(report["anime_files"], 3)
+            season_dir = (
+                config.target_root
+                / "anime"
+                / "Sousou no Frieren"
+                / "Season 02"
+            )
+            for episode in range(1, 4):
+                self.assertTrue(
+                    (
+                        season_dir
+                        / f"Sousou no Frieren S02E{episode:02d}.mkv"
+                    ).is_symlink()
+                )
+
+    def test_anime_regex_override_can_capture_season_from_identity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            (config.source_root / "movies").mkdir(parents=True)
+            (config.source_root / "shows").mkdir(parents=True)
+            anime_dir = (
+                config.source_root
+                / "anime"
+                / "[SubsPlease] Sousou no Frieren S2 (01-10) (1080p) [Batch]"
+            )
+            anime_dir.mkdir(parents=True)
+            source = (
+                anime_dir
+                / "[SubsPlease] Sousou no Frieren - 01v2 (1080p) [HASH].mkv"
+            )
+            source.write_text("video", encoding="utf-8")
+
+            config.state_dir.mkdir(parents=True)
+            conn = db.connect(config.state_dir / "buzz.sqlite")
+            try:
+                db.apply_migrations(conn)
+                db.replace_provider_library(
+                    conn,
+                    [
+                        {
+                            "hash": "frieren-s2-identity",
+                            "name": anime_dir.name,
+                            "bytes": 100,
+                            "files": [
+                                {
+                                    "id": "1",
+                                    "path": f"{anime_dir.name}/{source.name}",
+                                    "bytes": 100,
+                                }
+                            ],
+                            "magnet": None,
+                            "provider": "real_debrid",
+                            "provider_torrent_id": "RD-FRIEREN-S2",
+                            "status": "downloaded",
+                            "progress": 100,
+                            "info_json": "{}",
+                            "signature_json": "{}",
+                        }
+                    ],
+                )
+                db.save_curator_title_override(
+                    conn,
+                    "frieren-s2-identity",
+                    {
+                        "kind": "anime",
+                        "parse_regex": (
+                            r"S(?P<season>\d+).*/\[SubsPlease\]\s+"
+                            r"(?P<series>.+?) - "
+                            r"(?P<episode>\d+)(?:v\d+)?"
+                        ),
+                    },
+                )
+            finally:
+                conn.close()
+
+            report = build_library(config)
+
+            self.assertEqual(report["anime_files"], 1)
+            self.assertTrue(
+                (
+                    config.target_root
+                    / "anime"
+                    / "Sousou no Frieren"
+                    / "Season 02"
+                    / "Sousou no Frieren S02E01.mkv"
+                ).is_symlink()
+            )
+
+    def test_anime_regex_override_prefers_overridden_identity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            (config.source_root / "movies").mkdir(parents=True)
+            (config.source_root / "shows").mkdir(parents=True)
+            anime_dir = config.source_root / "anime" / "Frieren Raw Batch"
+            anime_dir.mkdir(parents=True)
+            source = (
+                anime_dir
+                / "[SubsPlease] Sousou no Frieren - 01v2 (1080p) [HASH].mkv"
+            )
+            source.write_text("video", encoding="utf-8")
+
+            config.state_dir.mkdir(parents=True)
+            conn = db.connect(config.state_dir / "buzz.sqlite")
+            try:
+                db.apply_migrations(conn)
+                db.replace_provider_library(
+                    conn,
+                    [
+                        {
+                            "hash": "frieren-override-s2",
+                            "name": anime_dir.name,
+                            "bytes": 100,
+                            "files": [
+                                {
+                                    "id": "1",
+                                    "path": source.name,
+                                    "bytes": 100,
+                                }
+                            ],
+                            "magnet": None,
+                            "provider": "real_debrid",
+                            "provider_torrent_id": "RD-FRIEREN-OVERRIDE-S2",
+                            "status": "downloaded",
+                            "progress": 100,
+                            "info_json": "{}",
+                            "signature_json": "{}",
+                        }
+                    ],
+                )
+                db.save_curator_title_override(
+                    conn,
+                    "frieren-override-s2",
+                    {
+                        "kind": "anime",
+                        "series": "Sousou no Frieren S2",
+                        "parse_regex": (
+                            r"S(?P<season>\d+)/\[SubsPlease\]\s+"
+                            r"(?P<series>.+?) - "
+                            r"(?P<episode>\d+)(?:v\d+)?"
+                        ),
+                    },
+                )
+            finally:
+                conn.close()
+
+            report = build_library(config)
+
+            self.assertEqual(report["anime_files"], 1)
+            self.assertTrue(
+                (
+                    config.target_root
+                    / "anime"
+                    / "Sousou no Frieren S2"
+                    / "Season 02"
+                    / "Sousou no Frieren S2 S02E01.mkv"
+                ).is_symlink()
+            )
+
+    def test_unparsed_anime_video_passthrough_uses_flat_torrent_folder(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            (config.source_root / "movies").mkdir(parents=True)
+            (config.source_root / "shows").mkdir(parents=True)
+            anime_dir = config.source_root / "anime" / "Loose Anime Batch"
+            anime_dir.mkdir(parents=True)
+            source = anime_dir / "Episode One Final Cut.mkv"
+            source.write_text("video", encoding="utf-8")
+
+            report = build_library(config)
+
+            self.assertEqual(report["anime_files"], 1)
+            self.assertTrue(
+                (
+                    config.target_root
+                    / "anime"
+                    / "Loose Anime Batch"
+                    / "Episode One Final Cut.mkv"
+                ).is_symlink()
+            )
+
+    def test_unparsed_anime_passthrough_uses_identity_override_folder(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            (config.source_root / "movies").mkdir(parents=True)
+            (config.source_root / "shows").mkdir(parents=True)
+            anime_dir = config.source_root / "anime" / "Raw Frieren Batch"
+            anime_dir.mkdir(parents=True)
+            source = anime_dir / "Frieren Episode One.mkv"
+            source.write_text("video", encoding="utf-8")
+
+            config.state_dir.mkdir(parents=True)
+            conn = db.connect(config.state_dir / "buzz.sqlite")
+            try:
+                db.apply_migrations(conn)
+                db.replace_provider_library(
+                    conn,
+                    [
+                        {
+                            "hash": "frieren-override",
+                            "name": anime_dir.name,
+                            "bytes": 100,
+                            "files": [
+                                {
+                                    "id": "1",
+                                    "path": source.name,
+                                    "bytes": 100,
+                                }
+                            ],
+                            "magnet": None,
+                            "provider": "real_debrid",
+                            "provider_torrent_id": "RD-FRIEREN-RAW",
+                            "status": "downloaded",
+                            "progress": 100,
+                            "info_json": "{}",
+                            "signature_json": "{}",
+                        }
+                    ],
+                )
+                db.save_curator_title_override(
+                    conn,
+                    "frieren-override",
+                    {
+                        "kind": "anime",
+                        "series": "Frieren Beyond Journey's End",
+                        "year": 2023,
+                        "provider_ids": {"tvdbid": "424536"},
+                    },
+                )
+            finally:
+                conn.close()
+
+            report = build_library(config)
+
+            self.assertEqual(report["anime_files"], 1)
+            self.assertTrue(
+                (
+                    config.target_root
+                    / "anime"
+                    / "Frieren Beyond Journey's End (2023) [tvdbid-424536]"
+                    / "Frieren Episode One.mkv"
+                ).is_symlink()
+            )
+
+    def test_unparsed_movie_passthrough_uses_title_only_override_folder(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = self._config(root)
+            movie_dir = config.source_root / "movies" / "Raw Movie Batch"
+            movie_dir.mkdir(parents=True)
+            (config.source_root / "shows").mkdir(parents=True)
+            (config.source_root / "anime").mkdir(parents=True)
+            source = movie_dir / "feature-final.mkv"
+            source.write_text("video", encoding="utf-8")
+
+            config.state_dir.mkdir(parents=True)
+            conn = db.connect(config.state_dir / "buzz.sqlite")
+            try:
+                db.apply_migrations(conn)
+                db.replace_provider_library(
+                    conn,
+                    [
+                        {
+                            "hash": "movie-override",
+                            "name": movie_dir.name,
+                            "bytes": 100,
+                            "files": [
+                                {
+                                    "id": "1",
+                                    "path": source.name,
+                                    "bytes": 100,
+                                }
+                            ],
+                            "magnet": None,
+                            "provider": "real_debrid",
+                            "provider_torrent_id": "RD-MOVIE-RAW",
+                            "status": "downloaded",
+                            "progress": 100,
+                            "info_json": "{}",
+                            "signature_json": "{}",
+                        }
+                    ],
+                )
+                db.save_curator_title_override(
+                    conn,
+                    "movie-override",
+                    {
+                        "kind": "movie",
+                        "title": "Custom Movie Title",
+                    },
+                )
+            finally:
+                conn.close()
+
+            report = build_library(config)
+
+            self.assertEqual(report["movies"], 1)
+            self.assertTrue(
+                (
+                    config.target_root
+                    / "movies"
+                    / "Custom Movie Title"
+                    / "feature-final.mkv"
                 ).is_symlink()
             )
 

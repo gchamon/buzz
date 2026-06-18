@@ -7,7 +7,7 @@ from buzz.core import db
 from buzz.core.state import canonical_snapshot
 from buzz.core.utils import stable_json
 
-EXPECTED_SCHEMA_VERSION = 10
+EXPECTED_SCHEMA_VERSION = 11
 
 
 class DatabaseTests(unittest.TestCase):
@@ -34,6 +34,9 @@ class DatabaseTests(unittest.TestCase):
                     "kind": "anime",
                     "series": "Real Anime",
                     "year": 2023,
+                    "parse_regex": (
+                        r"(?P<series>.+?) - (?P<episode>\d+)"
+                    ),
                     "provider_ids": {"anidbid": "9876"},
                 },
             )
@@ -44,6 +47,9 @@ class DatabaseTests(unittest.TestCase):
                         "kind": "anime",
                         "series": "Real Anime",
                         "year": 2023,
+                        "parse_regex": (
+                            r"(?P<series>.+?) - (?P<episode>\d+)"
+                        ),
                         "provider_ids": {"anidbid": "9876"},
                     }
                 },

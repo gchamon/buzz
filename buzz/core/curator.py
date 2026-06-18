@@ -67,12 +67,13 @@ def _db_override_source_paths(
         return {"movies": {}, "shows": {}, "anime": {}}
 
     entries = db.load_library_entry_files(conn)
+    provider_names = _db_provider_source_names(conn)
     by_source = {"movies": {}, "shows": {}, "anime": {}}
     for thash, override in title_overrides.items():
         entry = entries.get(thash)
         if entry is None:
             continue
-        torrent_name = entry[0]
+        torrent_name, files = entry
         kind = override.get("kind")
         if kind == "movie":
             category = "movies"
@@ -82,13 +83,44 @@ def _db_override_source_paths(
             category = "anime"
         else:
             continue
-        source = f"{category}/{torrent_name}"
-        by_source[category][source] = {
+        sources = {f"{category}/{torrent_name}"}
+        for provider_name in provider_names.get(thash, ()):
+            sources.add(f"{category}/{provider_name}")
+        for file in files:
+            file_path = str(file.get("path") or "").strip("/")
+            if not file_path:
+                continue
+            first_part = Path(file_path).parts[0]
+            sources.add(f"{category}/{first_part}")
+        source_override = {
             key: value
             for key, value in override.items()
             if key != "kind"
         }
+        for source in sources:
+            by_source[category][source] = source_override
     return by_source
+
+
+def _db_provider_source_names(conn) -> dict[str, set[str]]:
+    """Return provider-backed root names keyed by torrent hash."""
+    names: dict[str, set[str]] = {}
+    rows = conn.execute("SELECT hash, info_json FROM provider_links").fetchall()
+    for row in rows:
+        thash = str(row["hash"] or "").strip().lower()
+        if not thash:
+            continue
+        try:
+            info = json.loads(row["info_json"] or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(info, dict):
+            continue
+        for key in ("display_name", "original_filename", "filename"):
+            name = _clean_metadata_name(info.get(key))
+            if name:
+                names.setdefault(thash, set()).add(name)
+    return names
 
 
 def load_effective_overrides(conn) -> dict:
@@ -195,6 +227,98 @@ def apply_show_override(entry: dict, override: dict) -> None:
         entry["id"] = sanitize_path_component(override["id"])
     if override.get("provider_ids"):
         entry["provider_ids"] = override["provider_ids"]
+
+
+def _coerce_int(value: object, default: int | None = None) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return default
+    try:
+        return int(text)
+    except ValueError:
+        return default
+
+
+def parse_with_override_regex(
+    text: str, override: dict, kind: str
+) -> dict | None:
+    """Parse *text* with an entry-level named-group regex override."""
+    pattern = str(override.get("parse_regex") or "").strip()
+    if not pattern:
+        return None
+    try:
+        match = re.search(pattern, text)
+    except re.error:
+        return None
+    if not match:
+        return None
+    groups = {
+        key: str(value).strip()
+        for key, value in match.groupdict().items()
+        if value is not None and str(value).strip()
+    }
+    if kind == "movie":
+        title = groups.get("title") or groups.get("series")
+        if not title:
+            return None
+        parsed: dict = {
+            "title": sanitize_path_component(pretty_regex_title(title)),
+        }
+        if year := _coerce_int(groups.get("year")):
+            parsed["year"] = year
+        return parsed
+
+    series = groups.get("series") or groups.get("title")
+    episode = _coerce_int(groups.get("episode"))
+    if not series or episode is None:
+        return None
+    parsed = {
+        "series": sanitize_path_component(pretty_regex_title(series)),
+        "season": _coerce_int(groups.get("season"), 1),
+        "episode": episode,
+    }
+    if year := _coerce_int(groups.get("year")):
+        parsed["year"] = year
+    return parsed
+
+
+def pretty_regex_title(value: str) -> str:
+    """Return a readable title from a regex capture."""
+    return re.sub(r"\s+", " ", value.replace(".", " ").replace("_", " ")).strip()
+
+
+def parse_source_with_override_regex(
+    path: Path,
+    source_root: Path,
+    override: dict,
+    kind: str,
+) -> dict | None:
+    """Parse a file using identity/filename text, then filename alone."""
+    pattern = str(override.get("parse_regex") or "").strip()
+    rel = path.relative_to(source_root)
+    raw_identity = rel.parts[0] if len(rel.parts) > 1 else path.parent.name
+    if "/" not in pattern:
+        return parse_with_override_regex(path.stem, override, kind)
+    identities = [
+        identity
+        for identity in (
+            _override_identity_name(override),
+            raw_identity,
+        )
+        if identity
+    ]
+    for identity in dict.fromkeys(identities):
+        parsed = parse_with_override_regex(
+            f"{identity}/{path.stem}", override, kind
+        )
+        if parsed is not None:
+            return parsed
+    return parse_with_override_regex(path.stem, override, kind)
+
+
+def _override_identity_name(override: dict) -> str:
+    """Return the user-facing Curator identity name, if overridden."""
+    return str(override.get("title") or override.get("series") or "").strip()
 
 
 def _provider_id_suffix(entry: dict) -> str:
@@ -655,7 +779,7 @@ def build_library(config: CuratorConfig) -> dict:
             )
             build_anime(
                 anime_source,
-                tmp_root / "animes",
+                tmp_root / "anime",
                 overrides.get("anime", {}),
                 mapping,
                 report,
@@ -698,21 +822,19 @@ def _process_movie_file(
     source_rel = path.relative_to(source_root)
     folder = source_rel.parts[0] if len(source_rel.parts) > 1 else ""
 
-    parsed = parse_movie(path.stem, folder=folder)
     override = overrides.get(entry_source_key(all_source_root, path), {})
-    if parsed is None and not override:
-        report["skipped_movies"].append(
-            {"source": rel_path, "reason": "unable to parse movie title/year"}
-        )
-        return False
+    parsed = (
+        parse_source_with_override_regex(path, source_root, override, "movie")
+        or parse_movie(path.stem, folder=folder)
+    )
 
     parsed = parsed or {"title": "", "year": 0}
     apply_movie_override(parsed, override)
     if not parsed.get("title") or not parsed.get("year"):
-        report["skipped_movies"].append(
-            {"source": rel_path, "reason": "movie override missing title/year"}
+        return _process_passthrough_file(
+            path, source_root, target_root, all_source_root, used_targets,
+            report, mapping, "movie", "movies", override,
         )
-        return False
 
     folder_name = movie_folder_name(parsed)
     target_file = target_root / folder_name / f"{folder_name}{path.suffix.lower()}"
@@ -765,6 +887,77 @@ def build_movies(
         )
 
 
+def _passthrough_target(
+    path: Path,
+    source_root: Path,
+    target_root: Path,
+    used_targets: set[str],
+    override: dict | None = None,
+    mapping_type: str = "",
+) -> Path:
+    rel = path.relative_to(source_root)
+    group_name = rel.parts[0] if len(rel.parts) > 1 else path.parent.name
+    folder = _passthrough_folder_name(group_name, override or {}, mapping_type)
+    filename = path.name
+    candidate = target_root / folder / filename
+    if candidate.as_posix() not in used_targets:
+        return candidate
+
+    stem = Path(filename).stem
+    suffix = Path(filename).suffix
+    index = 2
+    while True:
+        candidate = target_root / folder / f"{stem} ({index}){suffix}"
+        if candidate.as_posix() not in used_targets:
+            return candidate
+        index += 1
+
+
+def _passthrough_folder_name(
+    group_name: str, override: dict, mapping_type: str
+) -> str:
+    """Return the top-level folder for unparsed passthrough files."""
+    del mapping_type
+    name = str(override.get("title") or override.get("series") or "").strip()
+    if name:
+        folder = sanitize_path_component(name)
+        if override.get("year") is not None:
+            folder = f"{folder} ({int(override['year'])})"
+        if suffix := _provider_id_suffix(override):
+            folder = f"{folder} [{suffix}]"
+        return sanitize_path_component(folder)
+    return sanitize_path_component(group_name) or "unparsed"
+
+
+def _process_passthrough_file(
+    path: Path,
+    source_root: Path,
+    target_root: Path,
+    all_source_root: Path,
+    used_targets: set[str],
+    report: dict,
+    mapping: list[dict],
+    mapping_type: str,
+    report_key: str,
+    override: dict | None = None,
+) -> bool:
+    rel_path = source_relpath(all_source_root, path)
+    target_file = _passthrough_target(
+        path, source_root, target_root, used_targets, override, mapping_type
+    )
+    ensure_symlink(path, target_file)
+    used_targets.add(target_file.as_posix())
+    mapping.append(
+        {
+            "source": rel_path,
+            "target": target_file.relative_to(target_root.parent).as_posix(),
+            "type": mapping_type,
+        }
+    )
+    report[report_key] += 1
+    return True
+
+
 def _plan_show_group(
     files: list[Path],
     source_root: Path,
@@ -773,6 +966,7 @@ def _plan_show_group(
     overrides: dict,
     global_targets: set[str],
     series_hint: str = "",
+    mapping_type: str = "show",
 ) -> tuple[list[dict], list[dict]]:
     planned = []
     group_errors = []
@@ -781,11 +975,30 @@ def _plan_show_group(
     used_targets: set[str] = set()
     for path in sorted(files):
         rel_path = source_relpath(all_source_root, path)
-        parsed = parse_show(path.stem)
         override = overrides.get(entry_source_key(all_source_root, path), {})
-        if parsed is None and not override:
-            group_errors.append(
-                {"source": rel_path, "reason": "unable to parse show season/episode"}
+        parsed = (
+            parse_source_with_override_regex(
+                path, source_root, override, mapping_type
+            )
+            or parse_show(path.stem)
+        )
+        if parsed is None:
+            target_file = _passthrough_target(
+                path,
+                source_root,
+                target_root,
+                global_targets | used_targets,
+                override,
+                mapping_type,
+            )
+            used_targets.add(target_file.as_posix())
+            planned.append(
+                {
+                    "path": path,
+                    "rel_path": rel_path,
+                    "target_file": target_file,
+                    "base_name": target_file.stem,
+                }
             )
             continue
 
@@ -853,6 +1066,8 @@ def _apply_show_planned(
     mapping: list[dict],
     report: dict,
     companion_index: CompanionIndex,
+    mapping_type: str = "show",
+    report_key: str = "show_files",
 ) -> None:
     for item in planned:
         path = item["path"]
@@ -867,10 +1082,10 @@ def _apply_show_planned(
                 "target": target_file.relative_to(
                     target_root.parent
                 ).as_posix(),
-                "type": "show",
+                "type": mapping_type,
             }
         )
-        report["show_files"] += 1
+        report[report_key] += 1
         for companion in find_companion_files(path, companion_index):
             extra = companion.name[len(path.stem) :]
             companion_target = target_file.parent / f"{base_name}{extra}"
@@ -906,6 +1121,9 @@ def build_shows(
     report: dict,
     all_source_root: Path,
     torrent_name_hints: dict[str, str] | None = None,
+    mapping_type: str = "show",
+    report_key: str = "show_files",
+    error_key: str = "skipped_shows",
 ) -> None:
     """Symlink show files into canonical series/season structures."""
     torrent_name_hints = torrent_name_hints or {}
@@ -928,9 +1146,10 @@ def build_shows(
             files, source_root, target_root, all_source_root,
             overrides, global_targets,
             _series_hint_for_group(group_name, torrent_name_hints),
+            mapping_type,
         )
         if group_errors:
-            report["skipped_shows"].append(
+            report[error_key].append(
                 {"group": group_name, "errors": group_errors}
             )
         if not planned:
@@ -942,23 +1161,9 @@ def build_shows(
             mapping,
             report,
             companion_index,
+            mapping_type,
+            report_key,
         )
-
-
-def _anime_folder_override(override: dict) -> str:
-    """Return the overridden top-level anime folder name, or '' if none.
-
-    Anime identity overrides are series-shaped, so reuse the show series-name
-    builder (``Series (year) [provider-id]``) to name the entry's top-level
-    folder while keeping the rest of the relative path intact.
-    """
-    if not override or not override.get("series"):
-        return ""
-    entry: dict = {}
-    apply_show_override(entry, override)
-    if not entry.get("series"):
-        return ""
-    return show_series_name(entry)
 
 
 def build_anime(
@@ -969,33 +1174,18 @@ def build_anime(
     report: dict,
     all_source_root: Path,
 ) -> None:
-    """Symlink anime files, preserving relative paths.
-
-    The entry's top-level folder is renamed when a Curator identity override is
-    present for it; the remaining path structure is preserved verbatim.
-    """
-    target_root.mkdir(parents=True, exist_ok=True)
-    if not source_root.exists():
-        return
-    for path in iter_files(source_root):
-        rel_path = source_relpath(all_source_root, path)
-        target_rel = path.relative_to(source_root)
-        override = overrides.get(entry_source_key(all_source_root, path), {})
-        folder_name = _anime_folder_override(override)
-        if folder_name and len(target_rel.parts) > 1:
-            target_rel = Path(folder_name, *target_rel.parts[1:])
-        target_file = target_root / target_rel
-        ensure_symlink(path, target_file)
-        mapping.append(
-            {
-                "source": rel_path,
-                "target": target_file.relative_to(
-                    target_root.parent
-                ).as_posix(),
-                "type": "anime",
-            }
-        )
-        report["anime_files"] += 1
+    """Symlink anime files into show-style series/season structures."""
+    build_shows(
+        source_root,
+        target_root,
+        overrides,
+        mapping,
+        report,
+        all_source_root,
+        mapping_type="anime",
+        report_key="anime_files",
+        error_key="skipped_shows",
+    )
 
 
 def validate_media_server_startup_auth(

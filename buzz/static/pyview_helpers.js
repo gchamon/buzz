@@ -310,20 +310,66 @@ if (typeof window !== "undefined") {
 
   hooks.BuzzIdentityRevert = {
     mounted() {
+      this._prevConsoleMsg = document.getElementById("meta-console-msg")?.textContent;
       this._updateOverriddenInputs = () => {
+        const isDirty = (input) => {
+          const saved = input.dataset.saved || "";
+          const def = input.dataset.default || "";
+          // Not dirty if value matches what's already saved.
+          // Also not dirty if nothing is saved yet and value matches the
+          // auto-derived default (pristine prefill, no action needed).
+          return input.value !== saved && (saved !== "" || input.value !== def);
+        };
         const inputs = this.el.querySelectorAll(".identity-inputs input");
         inputs.forEach((input) => {
-          input.classList.toggle("input-overridden", input.value !== (input.dataset.default || ""));
+          input.classList.toggle("input-overridden", isDirty(input));
         });
+        this._identitySave?.classList.toggle("save-dirty", Array.from(inputs).some(isDirty));
+        const regexDirty = this._regexInput ? isDirty(this._regexInput) : false;
+        this._regexInput?.classList.toggle("input-overridden", regexDirty);
+        this._regexSave?.classList.toggle("save-dirty", regexDirty);
+      };
+      this._maybeRebaselineSaved = () => {
+        const msg = document.getElementById("meta-console-msg")?.textContent;
+        const transitioned =
+          msg === "curator title override updated" && this._prevConsoleMsg !== msg;
+        this._prevConsoleMsg = msg;
+        if (!transitioned) return;
+        this.el.querySelectorAll(".identity-inputs input").forEach((input) => {
+          input.dataset.saved = input.value;
+        });
+        if (this._regexInput) this._regexInput.dataset.saved = this._regexInput.value;
+      };
+      this._onSaveClick = () => {
+        this.el.querySelectorAll(".identity-inputs input").forEach((input) => {
+          input.dataset.saved = input.value;
+        });
+        if (this._regexInput) this._regexInput.dataset.saved = this._regexInput.value;
       };
       this._bind = () => {
         this._button?.removeEventListener("click", this._onClick);
         this._container?.removeEventListener("input", this._updateOverriddenInputs);
+        this._regexInput?.removeEventListener("input", this._updateOverriddenInputs);
+        this._identitySave?.removeEventListener("click", this._onSaveClick);
+        this._regexSave?.removeEventListener("click", this._onSaveClick);
         this._dedupeForms();
         this._button = this.el.querySelector(".curator-title-form [data-revert]");
         this._button?.addEventListener("click", this._onClick);
+        this._identitySave = this.el.querySelector(".curator-title-form [data-identity-save]");
+        this._identitySave?.addEventListener("click", this._onSaveClick);
         this._container = this.el.querySelector(".identity-inputs");
         this._container?.addEventListener("input", this._updateOverriddenInputs);
+        const idParts = this.el.id.replace("identity-section-", "").split("-");
+        const kind = idParts.pop();
+        const domId = idParts.join("-");
+        this._fileSectionId = kind ? `file-section-${domId}` : "";
+        const fileSection = this._fileSectionId
+          ? document.getElementById(this._fileSectionId)
+          : null;
+        this._regexInput = fileSection?.querySelector("[data-parse-regex-input]");
+        this._regexSave = fileSection?.querySelector("[data-regex-save]");
+        this._regexInput?.addEventListener("input", this._updateOverriddenInputs);
+        this._regexSave?.addEventListener("click", this._onSaveClick);
       };
       this._dedupeForms = () => {
         buzzDedupeIdentityForms(this.el);
@@ -342,11 +388,15 @@ if (typeof window !== "undefined") {
     },
     updated() {
       this._bind?.();
+      this._maybeRebaselineSaved?.();
       this._updateOverriddenInputs?.();
     },
     destroyed() {
       this._button?.removeEventListener("click", this._onClick);
+      this._identitySave?.removeEventListener("click", this._onSaveClick);
+      this._regexSave?.removeEventListener("click", this._onSaveClick);
       this._container?.removeEventListener("input", this._updateOverriddenInputs);
+      this._regexInput?.removeEventListener("input", this._updateOverriddenInputs);
     },
   };
 

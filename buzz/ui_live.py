@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict, TypeVar, cast
-from urllib.parse import ParseResult, parse_qs, urlparse
+from urllib.parse import ParseResult, parse_qs, quote, urlparse
 
 import yaml
 from markupsafe import Markup
@@ -287,6 +287,9 @@ class CacheContext(PageContext):
     title_override_provider_id: str
     title_override_fields: dict[str, Any]
     title_override_defaults: dict[str, Any]
+    title_override_saved: dict[str, Any]
+    parse_regex_placeholder: str
+    parse_regex_test_url: str
     has_torrents: bool
     show_overlay: bool
     sort_col: int
@@ -981,6 +984,7 @@ class CacheLiveView(_BaseBuzzLiveView):
             "tmdbid": _first_value(data.get("tmdbid")),
             "tvdbid": _first_value(data.get("tvdbid")),
             "anidbid": _first_value(data.get("anidbid")),
+            "parse_regex": _first_value(data.get("parse_regex")),
         }
         try:
             self.owner.state.set_curator_title_override(cache_id, override)
@@ -1290,6 +1294,10 @@ class CacheLiveView(_BaseBuzzLiveView):
         expanded_files = self._expanded_files(expanded_id)
         expanded_category = self.owner.state.torrent_category(expanded_id)
         expanded_folders = self._expanded_folders(expanded_files)
+        title_override_context = self._title_override_context(expanded_id)
+        expanded_identity = self._parse_regex_identity(
+            title_override_context["title_override_fields"]
+        )
         enabled_providers = [
             (name, name.replace("_", " ").upper())
             for name, _ in self.owner.state._ordered_clients()
@@ -1308,7 +1316,13 @@ class CacheLiveView(_BaseBuzzLiveView):
                 "expanded_id": expanded_id,
                 "expanded_files": expanded_files,
                 "expanded_folders": expanded_folders,
-                **self._title_override_context(expanded_id),
+                **title_override_context,
+                "parse_regex_placeholder": self._parse_regex_placeholder(
+                    expanded_id
+                ),
+                "parse_regex_test_url": self._parse_regex_test_url(
+                    expanded_id, expanded_files, expanded_identity
+                ),
                 "has_torrents": bool(torrents),
                 "show_overlay": analyzing or caching,
                 "sort_col": sort_col,
@@ -1320,6 +1334,48 @@ class CacheLiveView(_BaseBuzzLiveView):
                 "single_provider": len(enabled_providers) == 1,
             },
         )
+
+    def _parse_regex_placeholder(self, expanded_id: str | None) -> str:
+        kind = self._title_override_kind(expanded_id)
+        if kind == "movie":
+            return r"(?P<title>.+?) (?P<year>19\d{2}|20\d{2})"
+        return (
+            r"(?P<series>.+?) S(?P<season>\d+) - "
+            r"(?P<episode>\d+)(?:v\d+)?"
+        )
+
+    def _parse_regex_test_url(
+        self,
+        expanded_id: str | None,
+        expanded_files: list[CacheFileItem],
+        expanded_identity: str = "",
+    ) -> str:
+        regex = self.owner.state.curator_title_override(expanded_id).get(
+            "parse_regex"
+        ) or self._parse_regex_placeholder(expanded_id)
+        test_string = "\n".join(
+            self._parse_regex_test_line(file, expanded_identity)
+            for file in expanded_files
+            if file["is_video"]
+        )
+        return (
+            "https://pythex.org/?regex="
+            f"{quote(str(regex))}&test_string={quote(test_string)}"
+            "&mode=finditer"
+        )
+
+    @staticmethod
+    def _parse_regex_test_line(
+        file: CacheFileItem, expanded_identity: str = ""
+    ) -> str:
+        stem = Path(str(file["path"])).stem
+        if expanded_identity:
+            return f"{expanded_identity}/{stem}"
+        return stem
+
+    @staticmethod
+    def _parse_regex_identity(fields: dict[str, Any]) -> str:
+        return str(fields.get("title") or fields.get("series") or "").strip()
 
     def _expanded_files(
         self, expanded_id: str | None
@@ -1349,17 +1405,35 @@ class CacheLiveView(_BaseBuzzLiveView):
         return files
 
     @staticmethod
+    def _query_with_series(series: str, filename: str) -> str:
+        """Return a filename query, adding series only when it is absent."""
+        if not series:
+            return filename
+        if not filename:
+            return series
+        series_tokens = set(re.split(r"[\s._\-]+", series.lower()))
+        filename_tokens = set(re.split(r"[\s._\-]+", filename.lower()))
+        series_tokens.discard("")
+        filename_tokens.discard("")
+        if series_tokens and series_tokens <= filename_tokens:
+            return filename
+        return f"{series} {filename}"
+
+    @staticmethod
     def _subtitle_default_query(
         path: str, kind: str, defaults: dict[str, Any]
     ) -> str:
         """Return the visible default subtitle search query for a file."""
+        filename_query = Path(path).stem
         if kind in {"show", "anime"}:
-            query = defaults.get("series")
+            query = CacheLiveView._query_with_series(
+                str(defaults.get("series") or ""), filename_query
+            )
         elif kind == "movie":
             query = defaults.get("title")
         else:
             query = ""
-        return str(query or Path(path).stem)
+        return str(query or filename_query)
 
     def _title_override_context(
         self, expanded_id: str | None
@@ -1373,7 +1447,10 @@ class CacheLiveView(_BaseBuzzLiveView):
         # Effective form values: saved override when present, else the
         # locally derived default. ``fields`` feeds the input ``value`` and
         # ``defaults`` feeds ``data-default`` for the client-side Revert.
-        fields = self._merge_title_override_fields(defaults, saved)
+        # ``saved_fields`` feeds ``data-saved`` for the dirty baseline: empty
+        # strings when nothing is saved, actual saved values otherwise.
+        fields = self._merge_title_override_fields(defaults, saved, active)
+        saved_fields = self._title_override_field_dict(saved)
         return {
             "title_override": saved,
             "title_override_kind": kind,
@@ -1383,6 +1460,7 @@ class CacheLiveView(_BaseBuzzLiveView):
             ),
             "title_override_fields": fields,
             "title_override_defaults": defaults,
+            "title_override_saved": saved_fields,
             # Provider-prefixed cache ids contain ':' (e.g. "torbox:38618447"),
             # which is not a valid CSS identifier and breaks LiveView morphdom's
             # id matching (it appends duplicate forms on each re-render). Use a
@@ -1419,6 +1497,7 @@ class CacheLiveView(_BaseBuzzLiveView):
             "title": str(override.get("title") or ""),
             "series": str(override.get("series") or ""),
             "year": str(override.get("year") or ""),
+            "parse_regex": str(override.get("parse_regex") or ""),
             "provider_ids": {
                 provider: str(provider_ids.get(provider) or "")
                 for provider in ("imdbid", "tmdbid", "tvdbid", "anidbid")
@@ -1427,17 +1506,37 @@ class CacheLiveView(_BaseBuzzLiveView):
 
     @staticmethod
     def _merge_title_override_fields(
-        defaults: dict[str, Any], saved: dict[str, Any]
+        defaults: dict[str, Any], saved: dict[str, Any], active: bool
     ) -> dict[str, Any]:
-        """Prefer a saved override value, else fall back to the default."""
+        """Build form field values from saved override and auto-derived defaults.
+
+        When an override is active, saved values are shown as-is — an absent
+        key means the user intentionally cleared that field. When no override
+        is active, defaults are used as prefill values.
+        """
         saved_provider_ids = saved.get("provider_ids")
         if not isinstance(saved_provider_ids, dict):
             saved_provider_ids = {}
         default_provider_ids = defaults["provider_ids"]
+        if active:
+            return {
+                "title": str(saved.get("title") or ""),
+                "series": str(saved.get("series") or ""),
+                "year": str(saved.get("year") or ""),
+                "parse_regex": str(saved.get("parse_regex") or ""),
+                "provider_ids": {
+                    provider: str(saved_provider_ids.get(provider) or "")
+                    for provider in ("imdbid", "tmdbid", "tvdbid", "anidbid")
+                },
+            }
         return {
             "title": str(saved.get("title") or "") or defaults["title"],
             "series": str(saved.get("series") or "") or defaults["series"],
             "year": str(saved.get("year") or "") or defaults["year"],
+            "parse_regex": (
+                str(saved.get("parse_regex") or "")
+                or defaults["parse_regex"]
+            ),
             "provider_ids": {
                 provider: (
                     str(saved_provider_ids.get(provider) or "")
