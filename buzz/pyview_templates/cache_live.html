@@ -474,7 +474,7 @@
                   {% endfor %}
                 </div>
                 {% endif %}
-                <div class="file-list">
+                <div class="file-list" id="file-list-{{ expanded_dom_id }}">
                   {% for file in expanded_files %}
                   <div class="file-item" id="file-item-{{ file.id }}">
                     <input
@@ -494,16 +494,15 @@
                     >
                       <input type="hidden" name="id" value="{{ torrent.id }}">
                       <input type="hidden" name="path" value="{{ file.path }}">
-                      <div phx-update="ignore" id="subtitle-query-{{ file.id }}">
-                        <input
-                          type="text"
-                          name="query"
-                          class="subtitle-query-input"
-                          value="{{ file.subtitle_query }}"
-                          placeholder="subs query: {{ file.subtitle_default_query }}"
-                          title="Custom name used to search OpenSubtitles. Leave empty to auto-derive."
-                        >
-                      </div>
+                      <input
+                        type="text"
+                        id="subtitle-query-{{ file.id }}"
+                        name="query"
+                        class="subtitle-query-input"
+                        value="{{ file.subtitle_query }}"
+                        placeholder="subs query: {{ file.subtitle_default_query }}"
+                        title="Custom name used to search OpenSubtitles. Leave empty to auto-derive."
+                      >
                       <button type="submit" id="subtitle-save-{{ file.id }}" phx-disable-with="Saving...">
                         Save
                       </button>
