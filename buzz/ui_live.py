@@ -517,9 +517,11 @@ def _torrent_short_id(torrent: dict[str, Any]) -> str:
     """Return a display-friendly short ID for a torrent cache entry."""
     cache_id: str = torrent.get("id", "")
     provider_torrent_id: str = torrent.get("provider_torrent_id", "")
-    # For RD the cache key is the bare RD ID (long hex); take first 8 chars.
-    # For other providers the cache key is "provider:id"; use a short label instead.
+    provider: str = torrent.get("provider", "")
     if ":" not in cache_id:
+        label = _PROVIDER_SHORT_LABELS.get(provider)
+        if label and provider_torrent_id:
+            return f"{label}:{provider_torrent_id}"
         return cache_id[:8]
     provider = cache_id.split(":", 1)[0]
     label = _PROVIDER_SHORT_LABELS.get(provider, provider[:2])

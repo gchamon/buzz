@@ -2701,6 +2701,7 @@ class BuzzState:
                 results.append(
                     {
                         "id": torrent_id,
+                        "provider": str(info.get("provider") or ""),
                         "provider_torrent_id": str(
                             info.get("provider_torrent_id")
                             or info.get("id")
