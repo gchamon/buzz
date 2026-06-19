@@ -221,8 +221,8 @@ def apply_show_override(entry: dict, override: dict) -> None:
     """Apply override fields to a show entry in place."""
     if override.get("series"):
         entry["series"] = sanitize_path_component(override["series"])
-    if override.get("year") is not None:
-        entry["year"] = int(override["year"])
+    if "year" in override:
+        entry["year"] = int(override["year"]) if override["year"] is not None else None
     if override.get("id"):
         entry["id"] = sanitize_path_component(override["id"])
     if override.get("provider_ids"):
@@ -389,6 +389,26 @@ def _merge_tree(src: Path, dst: Path) -> None:
             if dst_item.exists() or dst_item.is_symlink():
                 dst_item.unlink()
             shutil.move(str(src_item), str(dst_item))
+
+
+def _sweep_orphaned_dirs(target_root: Path, mapping: list[dict]) -> None:
+    """Remove real dirs in target_root that have no entries in mapping."""
+    known: dict[str, set[str]] = {}
+    for entry in mapping:
+        target_parts = Path(entry["target"]).parts
+        if len(target_parts) >= 2:
+            category, title_dir = target_parts[0], target_parts[1]
+            known.setdefault(category, set()).add(title_dir)
+
+    for category_dir in target_root.iterdir():
+        if not category_dir.is_dir() or category_dir.is_symlink():
+            continue
+        if category_dir.name.startswith(".curator-tmp-"):
+            continue
+        known_names = known.get(category_dir.name, set())
+        for item in list(category_dir.iterdir()):
+            if item.is_dir() and not item.is_symlink() and item.name not in known_names:
+                shutil.rmtree(item)
 
 
 def replace_root(tmp_root: Path, target_root: Path) -> None:
@@ -795,6 +815,7 @@ def build_library(config: CuratorConfig) -> dict:
                 shutil.rmtree(tmp_root, ignore_errors=True)
             raise
 
+        _sweep_orphaned_dirs(config.target_root, mapping)
         report["mapping_entries"] = len(mapping)
         db.replace_curator_mapping(conn, mapping)
         db.save_curator_report(conn, report)
@@ -926,7 +947,12 @@ def _passthrough_folder_name(
         if suffix := _provider_id_suffix(override):
             folder = f"{folder} [{suffix}]"
         return sanitize_path_component(folder)
-    return sanitize_path_component(group_name) or "unparsed"
+    sanitized = sanitize_path_component(group_name)
+    if re.search(r"[\[\(]|[._-]\d{3,4}p\b|s\d{2}-s\d{2}", group_name, re.I):
+        hint = _series_hint_from_name(group_name)
+        if hint:
+            return hint
+    return sanitized or "unparsed"
 
 
 def _process_passthrough_file(
@@ -983,12 +1009,19 @@ def _plan_show_group(
             or parse_show(path.stem)
         )
         if parsed is None:
+            if not override and hint_series:
+                hint_override: dict = {"series": hint_series}
+                if hint_year is not None:
+                    hint_override["year"] = hint_year
+                effective_override = hint_override
+            else:
+                effective_override = override
             target_file = _passthrough_target(
                 path,
                 source_root,
                 target_root,
                 global_targets | used_targets,
-                override,
+                effective_override,
                 mapping_type,
             )
             used_targets.add(target_file.as_posix())

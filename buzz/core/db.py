@@ -980,10 +980,16 @@ def _curator_title_override_from_row(
     override: dict[str, Any] = {
         "kind": row["kind"],
     }
-    for key in ("title", "series", "year", "parse_regex"):
+    for key in ("title", "series", "parse_regex"):
         value = row[key]
         if value is not None and value != "":
             override[key] = value
+    # year is always included when series is set so apply_show_override can
+    # clear a year parsed from the torrent folder name
+    if row["series"] is not None and row["series"] != "":
+        override["year"] = int(row["year"]) if row["year"] is not None else None
+    elif row["year"] is not None:
+        override["year"] = int(row["year"])
     external_id = str(row["external_id"] or "").strip()
     if external_id:
         override["id"] = external_id
