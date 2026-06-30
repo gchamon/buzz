@@ -9,6 +9,7 @@ import yaml
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 from .core.constants import DEFAULT_ANIME_PATTERN
+from .core.utils import sanitize_path_component
 
 type TaskStatus = Literal[
     "pending",
@@ -28,6 +29,7 @@ DEFAULT_APP_VERSION = "buzz/v2"
 DEFAULT_TLS_CERT_PATH = "data/tls/buzz.crt"
 DEFAULT_TLS_KEY_PATH = "data/tls/buzz.key"
 FIELD_ANIME_PATTERNS = "directories.anime.patterns"
+FIELD_CATEGORIES = "categories"
 FIELD_SUBTITLES_LANGUAGES = "subtitles.languages"
 RESTART_REQUIRED_FIELDS = (
     "server.bind",
@@ -69,9 +71,8 @@ UI_MANAGED_CONFIG_FIELDS = (
     "media_server.jellyfin.scan_task_id",
     "media_server.plex.url",
     "media_server.plex.token",
-    "media_server.library_map.movies",
-    "media_server.library_map.shows",
-    "media_server.library_map.anime",
+    "media_server.library_map",
+    FIELD_CATEGORIES,
     "subtitles.enabled",
     "subtitles.fetch_on_resync",
     "subtitles.opensubtitles.api_key",
@@ -92,6 +93,63 @@ HOT_RELOADABLE_FIELDS = tuple(
     field for field in UI_MANAGED_CONFIG_FIELDS
     if field not in RESTART_REQUIRED_FIELDS
 )
+
+BUILTIN_CATEGORY_KINDS: dict[str, str] = {
+    "movies": "movie",
+    "shows": "show",
+    "anime": "anime",
+}
+
+VALID_CATEGORY_KINDS = frozenset({"movie", "show", "anime"})
+
+
+def normalize_category_name(value: object) -> str:
+    """Return a sanitized category name."""
+    return sanitize_path_component(str(value or "").strip())
+
+
+def normalize_category_kind(value: object) -> str:
+    """Return a normalized category kind."""
+    return str(value or "").strip().lower()
+
+
+def normalize_custom_categories(raw: object) -> dict[str, str]:
+    """Return a validated custom category mapping."""
+    if not isinstance(raw, dict):
+        return {}
+
+    categories: dict[str, str] = {}
+    for raw_name, raw_kind in raw.items():
+        name = normalize_category_name(raw_name)
+        kind = normalize_category_kind(raw_kind)
+        if not name:
+            continue
+        if name in BUILTIN_CATEGORY_KINDS:
+            raise ValueError(f"custom category duplicates builtin category: {name}")
+        if name.startswith("__"):
+            raise ValueError(f"invalid category name: {name}")
+        if kind not in VALID_CATEGORY_KINDS:
+            raise ValueError(f"invalid category kind for {name}: {raw_kind}")
+        if name in categories:
+            raise ValueError(f"duplicate custom category: {name}")
+        categories[name] = kind
+    return categories
+
+
+def category_definitions(
+    custom_categories: dict[str, str] | None = None,
+) -> tuple[dict[str, str], ...]:
+    """Return built-in categories followed by custom category definitions."""
+    definitions = [
+        {"name": name, "kind": kind}
+        for name, kind in BUILTIN_CATEGORY_KINDS.items()
+    ]
+    if custom_categories:
+        for name, kind in custom_categories.items():
+            if name in BUILTIN_CATEGORY_KINDS:
+                continue
+            definitions.append({"name": name, "kind": kind})
+    return tuple(definitions)
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +368,7 @@ _OVERRIDE_SCHEMA = {
         "port": True,
     },
     "state_dir": True,
+    "categories": True,
     "hooks": {
         "on_library_change": True,
         "curator_url": True,
@@ -472,6 +531,7 @@ def to_nested_dict(config: DavConfig) -> dict:
         "directories": {
             "anime": {"patterns": list(config.anime_patterns)},
         },
+        "categories": dict(config.categories),
         "compat": {
             "enable_all_dir": config.enable_all_dir,
             "enable_unplayable_dir": config.enable_unplayable_dir,
@@ -648,6 +708,7 @@ class DavConfig(BaseModel):
     state_dir: str = DEFAULT_STATE_DIR
     hook_command: str = ""
     anime_patterns: tuple[str, ...] = (DEFAULT_ANIME_PATTERN,)
+    categories: dict[str, str] = Field(default_factory=dict)
     enable_all_dir: bool = True
     enable_unplayable_dir: bool = True
     request_timeout_secs: int = 30
@@ -696,6 +757,7 @@ class DavConfig(BaseModel):
         hooks = raw.get("hooks", {})
         directories = raw.get("directories", {})
         anime = directories.get("anime", {})
+        categories = normalize_custom_categories(raw.get("categories"))
         compat = raw.get("compat", {})
         logging_raw = raw.get("logging", {})
         ui_raw = raw.get("ui", {})
@@ -771,6 +833,7 @@ class DavConfig(BaseModel):
             library_mount=os.path.join(
                 os.environ.get("BUZZ_MOUNT_ROOT", "/mnt/buzz"), "raw"
             ),
+            categories=categories,
             anime_patterns=tuple(anime.get("patterns", [DEFAULT_ANIME_PATTERN])),
             enable_all_dir=bool(compat.get("enable_all_dir", True)),
             enable_unplayable_dir=bool(
@@ -960,6 +1023,7 @@ class CuratorConfig(BaseModel):
             )
         )
     )
+    categories: dict[str, str] = Field(default_factory=dict)
     _base_raw: dict = PrivateAttr(default_factory=dict)
     _raw_overrides: dict = PrivateAttr(default_factory=dict)
     _raw_merged: dict = PrivateAttr(default_factory=dict)
@@ -991,6 +1055,9 @@ class CuratorConfig(BaseModel):
 
                 cls._load_subtitle_config(data, merged)
                 cls._load_media_server_config(data, merged)
+                data["categories"] = normalize_custom_categories(
+                    merged.get("categories")
+                )
 
                 config = cls(**data)
                 config._config_path = config_path

@@ -40,7 +40,7 @@ Held state:
 | `archive` | Archived/deleted torrents keyed by hash, for restore. |
 | `snapshot` / `snapshot_digest` | The current virtual WebDAV tree and its stable fingerprint. |
 | `file_selections` | Per-torrent selected file paths (survives restarts). |
-| `category_overrides` | User category overrides (`movies`/`shows`/`anime`). |
+| `category_overrides` | User category overrides by category name. |
 | `resolved_urls` | Cache of resolved provider stream URLs. |
 | `stream_sources` | Index of provider stream refs by source URL. |
 | `background_tasks` | A `BackgroundTaskPool` for async operations. |

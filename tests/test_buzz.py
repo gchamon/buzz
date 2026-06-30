@@ -1572,6 +1572,83 @@ class BuzzStateTests(unittest.TestCase):
             output2 = buf2.getvalue()
             self.assertNotIn("Fetching entry:", output2)
 
+    def test_sync_refetches_terminal_cached_info_when_summary_changes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                provider_poll_interval_secs=10,
+                bind="127.0.0.1",
+                port=9999,
+                state_dir=tmpdir,
+                hook_command="",
+                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
+                enable_all_dir=True,
+                enable_unplayable_dir=True,
+                request_timeout_secs=30,
+                user_agent="buzz-tests",
+                version_label="buzz/test",
+                curator_url="",
+            )
+            initial_summary = {
+                "id": "SHOW1",
+                "filename": "Static.Dreams.S07.2160p.mkv",
+                "bytes": 456,
+                "progress": 100,
+                "status": "downloaded",
+                "ended": "2026-01-02T00:00:00Z",
+                "links": ["https://example.invalid/show"],
+            }
+            changed_summary = {
+                **initial_summary,
+                "bytes": 789,
+                "ended": "2026-01-03T00:00:00Z",
+            }
+            stale_info = {
+                "id": "SHOW1",
+                "status": "downloaded",
+                "progress": 50,
+                "filename": "Static.Dreams.S07.2160p.mkv",
+                "links": ["https://example.invalid/old-show"],
+                "files": [
+                    {
+                        "id": 1,
+                        "path": "/Static.Dreams.S07E01.mkv",
+                        "bytes": 456,
+                        "selected": 1,
+                    }
+                ],
+            }
+            fresh_info = {
+                **stale_info,
+                "progress": 100,
+                "links": ["https://example.invalid/new-show"],
+            }
+            client = self.FakeProvider(
+                torrents_list=[changed_summary],
+                torrent_infos={"SHOW1": fresh_info},
+            )
+            state = BuzzState(config, client=client)
+            signature = state._summary_signature(initial_summary)
+            state.cache["SHOW1"] = {
+                "signature": signature,
+                "info": stale_info,
+                "magnet": None,
+            }
+            state._full_cache["SHOW1"] = state.cache["SHOW1"]
+
+            buf = io.StringIO()
+            with patch("sys.stdout", buf):
+                state.sync(trigger_hook=False)
+
+            output = buf.getvalue()
+            self.assertIn("Fetching entry: SHOW1 (1/1)", output)
+            self.assertEqual(client.info_calls, ["SHOW1"])
+            self.assertEqual(state.cache["SHOW1"]["info"]["progress"], 100)
+            self.assertEqual(
+                state.cache["SHOW1"]["info"]["links"],
+                ["https://example.invalid/new-show"],
+            )
+
     def test_sync_uses_cached_torbox_detail_on_transient_detail_error(self):
         class FailingDetailProvider(self.FakeProvider):
             def is_healthy(self):
@@ -4608,6 +4685,55 @@ class BuzzStateTests(unittest.TestCase):
             )
             state.close()
 
+    def test_custom_category_override_moves_snapshot_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                provider_priority=("real_debrid",),
+                state_dir=tmpdir,
+                hook_command="",
+                curator_url="",
+                categories={"documentaries": "movie"},
+            )
+            state = BuzzState(config, client=self.FakeProvider())
+            cache_key = "RD1"
+            info = {
+                "id": "RD1",
+                "hash": "abc123",
+                "status": "downloaded",
+                "filename": "Doc Pack",
+                "links": ["rd-link-1"],
+                "files": [
+                    {
+                        "id": "1",
+                        "path": "/Doc.Pack.2020.mkv",
+                        "bytes": 100,
+                        "selected": 1,
+                        "stream_ref": "rd-link-1",
+                    }
+                ],
+            }
+            state.cache[cache_key] = {
+                "signature": {},
+                "info": info,
+                "magnet": None,
+            }
+            state._refresh_snapshot_from_cache()
+            state.set_torrent_category(cache_key, "documentaries")
+
+            self.assertEqual(
+                state.category_overrides["abc123"], "documentaries"
+            )
+            self.assertIn(
+                "documentaries/Doc Pack/Doc.Pack.2020.mkv",
+                state.snapshot["files"],
+            )
+            self.assertNotIn(
+                "movies/Doc Pack/Doc.Pack.2020.mkv",
+                state.snapshot["files"],
+            )
+            state.close()
+
     def test_config_favorites_default_seed_and_toggle(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             conn = db.connect(Path(tmpdir) / "buzz.sqlite")
@@ -5168,6 +5294,81 @@ class BuzzStateTests(unittest.TestCase):
             _kind, _label, work = state.background_tasks.submitted[0]
             work("test-task-id", threading.Event())
 
+            self.assertEqual(
+                [item[0] for item in state.background_tasks.submitted],
+                ["cache", "sync"],
+            )
+            state.background_tasks.submitted[1][2]("test-task-id", threading.Event())
+            state.sync.assert_called_once_with()
+
+    def test_cache_selection_task_allows_empty_provider_selection(self):
+        class FakeTaskPool:
+            def __init__(self):
+                self.submitted = []
+
+            def submit(self, kind, label, work, **_kwargs):
+                self.submitted.append((kind, label, work))
+                return f"task-{len(self.submitted)}"
+
+        class FakePoller:
+            def __init__(self):
+                self.wake_count = 0
+
+            def wake(self):
+                self.wake_count += 1
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                torbox_token="token",
+                provider_priority=("torbox",),
+                state_dir=tmpdir,
+                hook_command="",
+                curator_url="",
+            )
+            torbox = self.FakeProvider()
+            state = BuzzState(config, client={"torbox": torbox})
+            state.background_tasks = cast(Any, FakeTaskPool())
+            poller = FakePoller()
+            state.attach_poller(cast(Any, poller))
+            state.sync = MagicMock()
+
+            task_id = state.submit_cache_selection({"torbox:TB1": []})
+            _kind, _label, work = state.background_tasks.submitted[0]
+            work("test-task-id", threading.Event())
+
+            self.assertEqual(task_id, "task-1")
+            self.assertEqual(torbox.selected_files_calls, [])
+            state.sync.assert_not_called()
+            self.assertEqual(poller.wake_count, 1)
+            self.assertEqual(len(state.background_tasks.submitted), 1)
+
+    def test_cache_selection_task_allows_empty_provider_selection_without_poller(self):
+        class FakeTaskPool:
+            def __init__(self):
+                self.submitted = []
+
+            def submit(self, kind, label, work, **_kwargs):
+                self.submitted.append((kind, label, work))
+                return f"task-{len(self.submitted)}"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                torbox_token="token",
+                provider_priority=("torbox",),
+                state_dir=tmpdir,
+                hook_command="",
+                curator_url="",
+            )
+            torbox = self.FakeProvider()
+            state = BuzzState(config, client={"torbox": torbox})
+            state.background_tasks = cast(Any, FakeTaskPool())
+            state.sync = MagicMock()
+
+            task_id = state.submit_cache_selection({"torbox:TB1": []})
+            _kind, _label, work = state.background_tasks.submitted[0]
+            work("test-task-id", threading.Event())
+
+            self.assertEqual(task_id, "task-1")
             self.assertEqual(
                 [item[0] for item in state.background_tasks.submitted],
                 ["cache", "sync"],
@@ -8501,6 +8702,27 @@ class ConfigUITests(unittest.TestCase):
                 {"movies": "Movies", "shows": "Shows", "anime": "Anime"},
             )
 
+    def test_curator_config_loads_custom_categories_from_yaml(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            base_path.write_text(
+                (
+                    "version: 1\nprovider:\n  token: testtoken\n"
+                    f"state_dir: {tmpdir}\n"
+                    "categories:\n"
+                    "  documentaries: movie\n"
+                    "  kids shows: show\n"
+                ),
+                encoding="utf-8",
+            )
+
+            config = CuratorConfig.load(str(base_path))
+
+            self.assertEqual(
+                config.categories,
+                {"documentaries": "movie", "kids shows": "show"},
+            )
+
     def test_curator_config_loads_media_server_settings_from_yaml(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base_path = Path(tmpdir) / "buzz.yml"
@@ -8578,6 +8800,32 @@ class ConfigUITests(unittest.TestCase):
             self.assertEqual(
                 nested["media_server"]["library_map"], {"shows": "Shows"}
             )
+
+    def test_dav_config_round_trips_custom_categories(self):
+        config = Config._from_merged_dict(
+            {
+                "version": 2,
+                "provider": {
+                    "priority": ["real_debrid"],
+                    "real_debrid": {"enabled": True, "token": "token"},
+                },
+                "categories": {
+                    "documentaries": "movie",
+                    "kids shows": "show",
+                },
+            }
+        )
+
+        nested = to_nested_dict(config)
+
+        self.assertEqual(
+            config.categories,
+            {"documentaries": "movie", "kids shows": "show"},
+        )
+        self.assertEqual(
+            nested["categories"],
+            {"documentaries": "movie", "kids shows": "show"},
+        )
 
     def test_dav_config_round_trips_media_server_settings(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -8699,6 +8947,9 @@ class ConfigUITests(unittest.TestCase):
         self.assertIn('name="media_server.jellyfin.scan_task_id"', template)
         self.assertIn('name="media_server.plex.url"', template)
         self.assertIn('name="media_server.plex.token"', template)
+        self.assertIn('name="categories"', template)
+        self.assertIn('name="media_server.library_map"', template)
+        self.assertNotIn('name="media_server.library_map.movies"', template)
 
     def test_config_form_parses_scan_probe_fields(self):
         from buzz.ui_live import _config_overrides_from_payload

@@ -212,6 +212,26 @@ _MIGRATIONS: list[tuple[int, str]] = [
             ADD COLUMN parse_regex TEXT;
         """,
     ),
+    (
+        12,
+        """
+        CREATE TABLE category_overrides_v12 (
+            hash TEXT PRIMARY KEY,
+            category TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        INSERT INTO category_overrides_v12
+            (hash, category, updated_at)
+        SELECT hash, category, updated_at
+        FROM category_overrides;
+
+        DROP TABLE category_overrides;
+
+        ALTER TABLE category_overrides_v12
+            RENAME TO category_overrides;
+        """,
+    ),
 ]
 
 def connect(path: Path | str, timeout: float = 30.0) -> sqlite3.Connection:
@@ -854,7 +874,7 @@ def load_category_overrides(conn: sqlite3.Connection) -> dict[str, str]:
     for row in rows:
         thash = str(row["hash"] or "").strip().lower()
         category = str(row["category"] or "").strip()
-        if thash and category in {"movies", "shows", "anime"}:
+        if thash and category:
             overrides[thash] = category
     return overrides
 
@@ -874,8 +894,6 @@ def save_category_override(
                 (thash,),
             )
             return
-        if normalized not in {"movies", "shows", "anime"}:
-            raise ValueError(f"invalid category override: {category}")
         conn.execute(
             "INSERT OR REPLACE INTO category_overrides "
             "(hash, category, updated_at) VALUES (?, ?, ?)",

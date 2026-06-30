@@ -29,6 +29,7 @@ from . import console, events
 from .core.utils import format_bytes
 from .models import (
     FIELD_ANIME_PATTERNS,
+    FIELD_CATEGORIES,
     FIELD_SUBTITLES_LANGUAGES,
     RESTART_REQUIRED_FIELDS,
     TaskStatus,
@@ -98,11 +99,7 @@ _CONFIG_NUMBER_FIELDS = (
     "subtitles.search_delay_secs",
     "subtitles.download_delay_secs",
 )
-_LIBRARY_MAP_KEYS = ("movies", "shows", "anime")
 _FIELD_LIBRARY_MAP = "media_server.library_map"
-_LIBRARY_MAP_FIELDS = tuple(
-    f"{_FIELD_LIBRARY_MAP}.{key}" for key in _LIBRARY_MAP_KEYS
-)
 
 _CONFIG_TRACKED_FIELDS = (
     "provider.priority",
@@ -138,7 +135,8 @@ _CONFIG_TRACKED_FIELDS = (
     "media_server.jellyfin.scan_task_id",
     "media_server.plex.url",
     "media_server.plex.token",
-    *_LIBRARY_MAP_FIELDS,
+    _FIELD_LIBRARY_MAP,
+    FIELD_CATEGORIES,
     "subtitles.enabled",
     "subtitles.fetch_on_resync",
     FIELD_SUBTITLES_LANGUAGES,
@@ -237,6 +235,14 @@ class CacheTorrentItem(TypedDict):
     has_override: bool
 
 
+class CategoryChoice(TypedDict):
+    """A category override choice shown in the cache panel."""
+    name: str
+    label: str
+    kind: str
+    active: bool
+
+
 class ArchiveProviderTag(TypedDict):
     """A UI tag representing a provider in the archive."""
     label: str
@@ -298,6 +304,7 @@ class CacheContext(PageContext):
     torrents: list[CacheTorrentItem]
     enabled_providers: list[tuple[str, str]]
     add_provider: str
+    category_choices: list[CategoryChoice]
     single_provider: bool
 
 
@@ -379,6 +386,7 @@ class ConfigLanguage(TypedDict):
 
 class ConfigValues(TypedDict):
     """Raw configuration values for the UI."""
+    categories: str
     anime_patterns: str
     bind: str
     connection_concurrency: int
@@ -393,7 +401,7 @@ class ConfigValues(TypedDict):
     jellyfin_api_key: str
     jellyfin_scan_task_id: str
     jellyfin_url: str
-    library_map: dict[str, str]
+    library_map: str
     media_server_kind: str
     provider_priority: str
     real_debrid_enabled: bool
@@ -442,6 +450,7 @@ _CONFIG_SECTIONS: tuple[str, ...] = (
     "hooks",
     "compat",
     "directories.anime",
+    "categories",
     "request",
     "ui",
     "logging",
@@ -1304,6 +1313,15 @@ class CacheLiveView(_BaseBuzzLiveView):
             (name, name.replace("_", " ").upper())
             for name, _ in self.owner.state._ordered_clients()
         ]
+        category_choices = [
+            {
+                "name": definition["name"],
+                "label": definition["name"].replace("_", " ").title(),
+                "kind": definition["kind"],
+                "active": expanded_category["override"] == definition["name"],
+            }
+            for definition in self.owner.state.builder.category_definitions
+        ]
         return cast(
             CacheContext,
             {
@@ -1332,6 +1350,7 @@ class CacheLiveView(_BaseBuzzLiveView):
                 "subtitle_enabled": self.owner.config.subtitles.enabled,
                 "torrents": torrents,
                 "enabled_providers": enabled_providers,
+                "category_choices": category_choices,
                 "add_provider": add_provider,
                 "single_provider": len(enabled_providers) == 1,
             },
@@ -1561,13 +1580,7 @@ class CacheLiveView(_BaseBuzzLiveView):
 
     def _title_override_kind(self, expanded_id: str | None) -> str:
         category = self.owner.state.torrent_category(expanded_id)["effective"]
-        if category == "movies":
-            return "movie"
-        if category == "shows":
-            return "show"
-        if category == "anime":
-            return "anime"
-        return ""
+        return self.owner.state.category_kind(category)
 
     @staticmethod
     def _expanded_folders(
@@ -2915,6 +2928,16 @@ def _language_rows(
     return rows
 
 
+def _format_mapping_text(value: dict[str, str]) -> str:
+    """Render a mapping dict as editable ``key: value`` lines."""
+    lines = [
+        f"{key}: {val}"
+        for key, val in value.items()
+        if str(key).strip() and str(val).strip()
+    ]
+    return "\n".join(lines)
+
+
 def _config_values(
     config: Any,
     payload: dict[str, Any] | None = None,
@@ -2925,6 +2948,9 @@ def _config_values(
     subtitle_filters = subtitles["filters"]
     scan_probe = effective["media_server"]["scan_probe"]
     return {
+        "categories": _format_mapping_text(
+            effective.get("categories", {})
+        ),
         "anime_patterns": "\n".join(
             effective["directories"]["anime"]["patterns"]
         ),
@@ -2945,14 +2971,9 @@ def _config_values(
             "scan_task_id"
         ],
         "jellyfin_url": effective["media_server"]["jellyfin"]["url"],
-        "library_map": {
-            key: str(
-                effective.get("media_server", {})
-                .get("library_map", {})
-                .get(key, "")
-            )
-            for key in _LIBRARY_MAP_KEYS
-        },
+        "library_map": _format_mapping_text(
+            effective.get("media_server", {}).get("library_map", {})
+        ),
         "media_server_kind": effective["media_server"]["kind"],
         "on_library_change": effective["hooks"]["on_library_change"],
         "provider_priority": "\n".join(effective["provider"]["priority"]),
@@ -3005,6 +3026,23 @@ def _extract_language_values(values: list[Any]) -> list[str]:
     return [str(v) for v in values if str(v).strip()]
 
 
+def _parse_key_value_lines(text: str) -> dict[str, str]:
+    """Parse ``key: value`` lines into a dict."""
+    result: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            result[key] = value
+    return result
+
+
 def _config_overrides_from_payload(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -3050,6 +3088,20 @@ def _config_overrides_from_payload(
     _set_nested_value(
         overrides, FIELD_ANIME_PATTERNS, _extract_pattern_lines(patterns)
     )
+    if FIELD_CATEGORIES in normalized and normalized[FIELD_CATEGORIES]:
+        _set_nested_value(
+            overrides,
+            FIELD_CATEGORIES,
+            _parse_key_value_lines(_first_value(normalized[FIELD_CATEGORIES])),
+        )
+    if _FIELD_LIBRARY_MAP in normalized and normalized[_FIELD_LIBRARY_MAP]:
+        _set_nested_value(
+            overrides,
+            _FIELD_LIBRARY_MAP,
+            _parse_key_value_lines(
+                _first_value(normalized[_FIELD_LIBRARY_MAP])
+            ),
+        )
     priority = _extract_pattern_lines(normalized.get("provider.priority", [""]))
     if priority:
         _set_nested_value(overrides, "provider.priority", priority)
@@ -3058,12 +3110,6 @@ def _config_overrides_from_payload(
         normalized.get(FIELD_SUBTITLES_LANGUAGES, [])
     )
     _set_nested_value(overrides, FIELD_SUBTITLES_LANGUAGES, languages)
-
-    for field in _LIBRARY_MAP_FIELDS:
-        if field in normalized and normalized[field]:
-            value = str(normalized[field][0]).strip()
-            if value:
-                _set_nested_value(overrides, field, value)
 
     return overrides
 

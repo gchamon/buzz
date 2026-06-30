@@ -296,27 +296,16 @@
                   phx-value-mode="auto"
                   title="Automatic category: {{ expanded_category }}"
                 >Auto: {{ expanded_category }}</button>
+                {% for choice in category_choices %}
                 <button
                   type="button"
-                  class="secondary {% if expanded_category_override == 'movies' %}active{% endif %}"
+                  class="secondary {% if choice.active %}active{% endif %}"
                   phx-click="set_category"
                   phx-value-id="{{ torrent.id }}"
-                  phx-value-mode="movies"
-                >Movies</button>
-                <button
-                  type="button"
-                  class="secondary {% if expanded_category_override == 'shows' %}active{% endif %}"
-                  phx-click="set_category"
-                  phx-value-id="{{ torrent.id }}"
-                  phx-value-mode="shows"
-                >Shows</button>
-                <button
-                  type="button"
-                  class="secondary {% if expanded_category_override == 'anime' %}active{% endif %}"
-                  phx-click="set_category"
-                  phx-value-id="{{ torrent.id }}"
-                  phx-value-mode="anime"
-                >Anime</button>
+                  phx-value-mode="{{ choice.name }}"
+                  title="Category kind: {{ choice.kind }}"
+                >{{ choice.label }}</button>
+                {% endfor %}
               </div>
               {% if title_override_kind %}
               <div

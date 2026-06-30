@@ -319,6 +319,32 @@
             </div>
           </fieldset>
 
+          <fieldset class="config-section" id="config-section-categories" style="order: {{ section_states.categories.order }}">
+            <legend>
+              categories
+              <button
+                type="button"
+                class="{{ section_states.categories.star_class }}"
+                phx-click="toggle_favorite"
+                phx-value-section="categories"
+                title="Toggle favorite"
+                aria-pressed="{{ section_states.categories.favorite }}"
+              >
+                <i class="{{ section_states.categories.star_icon }}" aria-hidden="true"></i>
+              </button>
+            </legend>
+            <div class="config-field {{ field_states.categories.css_class }}">
+              <label for="categories">custom categories (one `name: kind` per line)</label>
+              <span class="config-reload-mode">{{ field_states.categories.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.categories.baseline_value }}</span>
+              <textarea
+                id="categories"
+                name="categories"
+                rows="4"
+              >{{ values.categories }}</textarea>
+            </div>
+          </fieldset>
+
           <fieldset class="config-section" id="config-section-request" style="order: {{ section_states.request.order }}">
             <legend>
               request
@@ -585,38 +611,15 @@
                 autocomplete="off"
               >
             </div>
-            <div class="config-field {{ field_states.media_server_library_map_movies.css_class }}">
-              <label for="media_server.library_map.movies">movies</label>
-              <span class="config-reload-mode">{{ field_states.media_server_library_map_movies.reload_mode }}</span>
-              <span class="config-baseline"># Default: {{ field_states.media_server_library_map_movies.baseline_value }}</span>
-              <input
-                type="text"
-                id="media_server.library_map.movies"
-                name="media_server.library_map.movies"
-                value="{{ values.library_map.movies }}"
-              >
-            </div>
-            <div class="config-field {{ field_states.media_server_library_map_shows.css_class }}">
-              <label for="media_server.library_map.shows">shows</label>
-              <span class="config-reload-mode">{{ field_states.media_server_library_map_shows.reload_mode }}</span>
-              <span class="config-baseline"># Default: {{ field_states.media_server_library_map_shows.baseline_value }}</span>
-              <input
-                type="text"
-                id="media_server.library_map.shows"
-                name="media_server.library_map.shows"
-                value="{{ values.library_map.shows }}"
-              >
-            </div>
-            <div class="config-field {{ field_states.media_server_library_map_anime.css_class }}">
-              <label for="media_server.library_map.anime">anime</label>
-              <span class="config-reload-mode">{{ field_states.media_server_library_map_anime.reload_mode }}</span>
-              <span class="config-baseline"># Default: {{ field_states.media_server_library_map_anime.baseline_value }}</span>
-              <input
-                type="text"
-                id="media_server.library_map.anime"
-                name="media_server.library_map.anime"
-                value="{{ values.library_map.anime }}"
-              >
+            <div class="config-field {{ field_states.media_server_library_map.css_class }}">
+              <label for="media_server.library_map">library_map (one `category: library` per line)</label>
+              <span class="config-reload-mode">{{ field_states.media_server_library_map.reload_mode }}</span>
+              <span class="config-baseline"># Default: {{ field_states.media_server_library_map.baseline_value }}</span>
+              <textarea
+                id="media_server.library_map"
+                name="media_server.library_map"
+                rows="4"
+              >{{ values.library_map }}</textarea>
             </div>
           </fieldset>
 

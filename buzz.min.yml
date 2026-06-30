@@ -13,10 +13,13 @@ media_server:
   trigger_lib_scan: true
   jellyfin:
     api_key: ""
+  # Built-in categories are embedded in code; custom categories live in buzz.yml.
   library_map:
     movies: Movies
     shows: TV Shows
     anime: Anime
+
+categories: {}
 
 subtitles:
   enabled: true

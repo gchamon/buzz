@@ -46,6 +46,7 @@ directories:
       - "\\b[a-fA-F0-9]{8}\\b"
   shows: {}
   movies: {}
+categories: {}
 request_timeout_secs: 30
 user_agent: buzz/v2
 version_label: buzz/v2
@@ -75,9 +76,7 @@ media_server:
     url: ""
     token: ""
   # Map debrid category directory names to Jellyfin library names.
-  # Keys must match the directory names produced by the debrid layer
-  # (movies, shows, anime). Values must match the Jellyfin library
-  # names exactly as they appear in the Jellyfin UI.
+  # Keys must match the directory names produced by the debrid layer.
   library_map:
     movies: Movies
     shows: TV Shows

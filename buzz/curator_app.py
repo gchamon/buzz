@@ -26,16 +26,17 @@ from .core.subtitles import (
     state as subtitle_state,
 )
 from .core.tls import httpx_verify
-from .models import CuratorConfig
+from .models import BUILTIN_CATEGORY_KINDS, CuratorConfig
 
 logger = logging.getLogger(__name__)
 
-WATCHED_SOURCE_CATEGORIES = frozenset({"movies", "shows", "anime"})
+WATCHED_SOURCE_CATEGORIES = frozenset(BUILTIN_CATEGORY_KINDS)
 
 
 def changed_source_roots(
     source_root: Path,
     paths: list[str],
+    categories: frozenset[str] = WATCHED_SOURCE_CATEGORIES,
 ) -> list[str]:
     """Return changed media roots relative to the raw source tree."""
     roots: set[str] = set()
@@ -46,7 +47,7 @@ def changed_source_roots(
         except ValueError:
             continue
         parts = rel.parts
-        if len(parts) < 2 or parts[0] not in WATCHED_SOURCE_CATEGORIES:
+        if len(parts) < 2 or parts[0] not in categories:
             continue
         roots.add(f"{parts[0]}/{parts[1]}")
     return sorted(roots)
@@ -86,6 +87,8 @@ class SourceRootWatcher(threading.Thread):
                         if change
                         in {Change.added, Change.modified, Change.deleted}
                     ],
+                    frozenset(self.app.config.categories)
+                    | WATCHED_SOURCE_CATEGORIES,
                 )
                 if not roots:
                     continue

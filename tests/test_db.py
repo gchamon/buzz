@@ -7,7 +7,7 @@ from buzz.core import db
 from buzz.core.state import canonical_snapshot
 from buzz.core.utils import stable_json
 
-EXPECTED_SCHEMA_VERSION = 11
+EXPECTED_SCHEMA_VERSION = 12
 
 
 class DatabaseTests(unittest.TestCase):
@@ -53,6 +53,18 @@ class DatabaseTests(unittest.TestCase):
                         "provider_ids": {"anidbid": "9876"},
                     }
                 },
+            )
+        finally:
+            conn.close()
+
+    def test_category_override_accepts_custom_category(self):
+        conn = db.connect(":memory:")
+        try:
+            db.apply_migrations(conn)
+            db.save_category_override(conn, "hash-1", "documentaries")
+            self.assertEqual(
+                db.load_category_overrides(conn),
+                {"hash-1": "documentaries"},
             )
         finally:
             conn.close()

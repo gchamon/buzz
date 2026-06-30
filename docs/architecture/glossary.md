@@ -214,9 +214,9 @@ exposed through WebDAV and are not downloaded.
 
 ### Category Override
 
-A **category override** is a manually assigned classification (`movie`, `show`,
-or `anime`) for a torrent hash. Overrides take precedence over the automatic
-detection logic that classifies by filename pattern.
+A **category override** is a manually assigned category name for a torrent
+hash. Overrides take precedence over the automatic detection logic that
+classifies by filename pattern.
 
 ### Subtitle Query Override
 

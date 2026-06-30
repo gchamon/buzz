@@ -21,7 +21,7 @@ from urllib import parse, request
 
 import httpx
 
-from ..models import DavConfig, TaskStatus
+from ..models import DavConfig, TaskStatus, category_definitions
 from . import db
 from .constants import SHOW_PATTERNS
 from .events import record_event
@@ -502,6 +502,11 @@ class LibraryBuilder:
     def __init__(self, config: DavConfig) -> None:
         """Initialize with the DAV configuration."""
         self.config = config
+        self.category_definitions = category_definitions(config.categories)
+        self.category_kinds = {
+            definition["name"]: definition["kind"]
+            for definition in self.category_definitions
+        }
         self.anime_regexes = tuple(
             re.compile(pattern) for pattern in config.anime_patterns
         )
@@ -587,9 +592,10 @@ class LibraryBuilder:
                 files, dirs, "__all__", torrent_name, linked_playable, modified
             )
         current_roots.add(f"{category}/{torrent_name}")
-        if category == "movies":
+        kind = self.category_kind(category)
+        if kind == "movie":
             report["movies"] += len(linked_playable)
-        elif category == "shows":
+        elif kind == "show":
             report["show_files"] += len(linked_playable)
         else:
             report["anime_files"] += len(linked_playable)
@@ -644,7 +650,7 @@ class LibraryBuilder:
         override = str(
             entries[0].get("category_override") if entries else ""
         ).strip()
-        if override in {"movies", "shows", "anime"}:
+        if override in self.category_kinds:
             return override
         for entry in entries:
             rel = entry["path"]
@@ -654,6 +660,17 @@ class LibraryBuilder:
             if any(pattern.search(entry["path"]) for pattern in SHOW_PATTERNS):
                 return "shows"
         return "movies"
+
+    def category_kind(self, category: str) -> str:
+        """Return the behavior kind for a configured category name."""
+        return self.category_kinds.get(category, "")
+
+    def category_name_for_kind(self, kind: str) -> str:
+        """Return the first configured category name for a given kind."""
+        for definition in self.category_definitions:
+            if definition["kind"] == kind:
+                return definition["name"]
+        return ""
 
     def _add_tree(
         self,
@@ -777,6 +794,7 @@ class BuzzState:
             self.client = client
             self.clients = {"real_debrid": client} if client is not None else {}
         self.builder = LibraryBuilder(config)
+        self.category_kinds = dict(self.builder.category_kinds)
         self.lock = threading.RLock()
         self._poller: Poller | None = None
         self.state_dir = config.state_dir
@@ -829,9 +847,12 @@ class BuzzState:
         self.file_selections: dict[str, set[str]] = db.load_file_selections(
             self.conn
         )
-        self.category_overrides: dict[str, str] = db.load_category_overrides(
-            self.conn
-        )
+        self.category_overrides: dict[str, str] = {
+            thash: category
+            for thash, category in db.load_category_overrides(self.conn).items()
+            if category in self.category_kinds
+        }
+        self.category_names = tuple(self.category_kinds)
         # Per-file subtitle search query overrides, keyed by
         # (torrent hash, normalized in-torrent file path).
         self.subtitle_query_overrides: dict[tuple[str, str], str] = (
@@ -922,6 +943,21 @@ class BuzzState:
         with self.lock:
             self.config = config
             self.builder = LibraryBuilder(config)
+            self.category_kinds = dict(self.builder.category_kinds)
+            self.category_names = tuple(self.builder.category_kinds)
+            self.category_overrides = {
+                thash: category
+                for thash, category in self.category_overrides.items()
+                if category in self.builder.category_kinds
+            }
+
+    def category_kind(self, category: str) -> str:
+        """Return the behavior kind for a configured category name."""
+        return self.builder.category_kind(category)
+
+    def category_name_for_kind(self, kind: str) -> str:
+        """Return the first configured category name for a given kind."""
+        return self.builder.category_name_for_kind(kind)
 
     def _rebuild_snapshot_indexes(self) -> None:
         """Rebuild derived lookup indexes for the active snapshot."""
@@ -1080,7 +1116,7 @@ class BuzzState:
             return None
         if is_internal_category(parts[0]):
             return None
-        if parts[0] not in {"movies", "shows", "anime"}:
+        if parts[0] not in self.category_names:
             return None
         return "/".join(parts[:2])
 
@@ -1511,6 +1547,7 @@ class BuzzState:
             )
             terminal_hit = (
                 not resync
+                and signature_matches
                 and cached_info is not None
                 and cached_status in ("downloaded", "error")
                 and bool(cached_info.get("links"))
@@ -2369,7 +2406,7 @@ class BuzzState:
         to_check = [
             (root, root in snapshot_roots)
             for root in roots
-            if any(root.startswith(p) for p in ("movies/", "shows/", "anime/"))
+            if root.split("/", 1)[0] in self.category_names
         ]
         if not to_check:
             return
@@ -2729,7 +2766,11 @@ class BuzzState:
         selected = self.builder._selected_files(info)
         for item in selected:
             item.pop("category_override", None)
-        return self.builder._category_for(selected) if selected else "movies"
+        return (
+            self.builder._category_for(selected)
+            if selected
+            else self.builder.category_name_for_kind("movie") or "movies"
+        )
 
     def torrent_files(self, cache_key: str) -> list[dict[str, Any]]:
         """Return the file list for a cached torrent, for the UI selector."""
@@ -2759,12 +2800,20 @@ class BuzzState:
     def torrent_category(self, cache_key: str | None) -> dict[str, str]:
         """Return override and effective category for a cached torrent."""
         if not cache_key:
-            return {"override": "", "effective": "movies"}
+            return {
+                "override": "",
+                "effective": self.builder.category_name_for_kind("movie")
+                or "movies",
+            }
         with self.lock:
             cached = self.cache.get(cache_key)
             info = cached.get("info") if isinstance(cached, dict) else None
             if not isinstance(info, dict):
-                return {"override": "", "effective": "movies"}
+                return {
+                    "override": "",
+                    "effective": self.builder.category_name_for_kind("movie")
+                    or "movies",
+                }
             thash = str(info.get("hash") or "").strip().lower()
             override = self.category_overrides.get(thash, "")
             effective = self._effective_category_for_info(cast(TorrentInfo, info))
@@ -2777,7 +2826,7 @@ class BuzzState:
         normalized = str(category or "").strip()
         if normalized == "auto":
             normalized = ""
-        if normalized and normalized not in {"movies", "shows", "anime"}:
+        if normalized and normalized not in self.category_kinds:
             raise ValueError(f"invalid category override: {category}")
         with self.lock:
             cached = self.cache.get(cache_key)
@@ -3820,8 +3869,7 @@ class BuzzState:
             for torrent_id, file_ids in selections.items()
             if file_ids
         }
-        if not clean_selections:
-            raise ValueError("no files selected")
+        selection_count = len(clean_selections or selections)
 
         def run_cache_selection(task_id: str, cancel_event: threading.Event) -> None:
             for torrent_id, file_ids in clean_selections.items():
@@ -3840,7 +3888,7 @@ class BuzzState:
 
         return self._submit_background_task(
             kind="cache",
-            label=f"cache_selections: {len(clean_selections)} torrent(s)",
+            label=f"cache_selections: {selection_count} torrent(s)",
             run=run_cache_selection,
         )
 

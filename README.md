@@ -147,8 +147,8 @@ want Buzz to manage, pointing each at the matching folder under
    - **Anime** → content type `Shows`, folder `/mnt/buzz/curated/anime`
 
    The library names must match `media_server.library_map` in `buzz.yml`
-   (defaults: `Movies`, `TV Shows`, `Anime`). Finish the wizard with the
-   remaining defaults.
+   (defaults: `Movies`, `TV Shows`, `Anime`). Custom categories are defined
+   separately in `categories`. Finish the wizard with the remaining defaults.
 4. Optional: to let Buzz trigger Jellyfin library scans after Curator rebuilds,
 set `media_server.trigger_lib_scan: true`. Then, in the Jellyfin UI, open
 **Dashboard → API Keys**, click the **+** button, give the key an app name
@@ -205,7 +205,8 @@ Model](./docs/architecture/system.md#configuration-model).
 | `media_server.jellyfin.scan_task_id` | *(Empty)* | Optional. Used if automatic Jellyfin task discovery fails. |
 | `media_server.plex.url` | *(Empty)* | URL to the Plex server, e.g. `http://127.0.0.1:32400`. *(untested)* |
 | `media_server.plex.token` | *(Empty)* | Plex Access Token for library update API calls. *(untested)* |
-| `media_server.library_map.{movies,shows,anime}` | `Movies` / `TV Shows` / `Anime` | Maps debrid category directories to Jellyfin library names. |
+| `media_server.library_map` | `Movies` / `TV Shows` / `Anime` | Maps debrid category directories to Jellyfin library names. |
+| `categories` | `{}` | Custom category names and kinds. Built-ins `movies`, `shows`, and `anime` stay embedded in the code. |
 
 These settings control the Jellyfin scan probe — buzz reads a sample of
 source files through the rclone mount before each scan; if the read fails,
@@ -272,10 +273,15 @@ media_server:
     url: http://jellyfin:8096
     api_key: "YOUR_JELLYFIN_API_KEY"
     scan_task_id: ""
+  # Built-in categories are embedded in code.
   library_map:
     movies: Movies
     shows: TV Shows
     anime: Anime
+
+categories:
+  documentaries: movie
+  kids shows: show
 
 subtitles:
   enabled: true

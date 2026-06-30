@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from pathlib import Path
 
-from ..models import CuratorConfig
+from ..models import CuratorConfig, category_definitions
 from . import db
 from .events import record_event
 from .media import (
@@ -745,10 +745,6 @@ def validate_scan_probe(
 
 def build_library(config: CuratorConfig) -> dict:
     """Build the curated library from source directories."""
-    movies_source = config.source_root / "movies"
-    shows_source = config.source_root / "shows"
-    anime_source = config.source_root / "anime"
-
     if not config.source_root.exists():
         raise FileNotFoundError(
             f"Source root does not exist: {config.source_root}"
@@ -780,31 +776,42 @@ def build_library(config: CuratorConfig) -> dict:
             tmp_root = Path(
                 tempfile.mkdtemp(prefix=".curator-tmp-", dir=config.target_root)
             )
-            build_movies(
-                movies_source,
-                tmp_root / "movies",
-                overrides.get("movies", {}),
-                mapping,
-                report,
-                config.source_root,
-            )
-            build_shows(
-                shows_source,
-                tmp_root / "shows",
-                overrides.get("shows", {}),
-                mapping,
-                report,
-                config.source_root,
-                torrent_name_hints,
-            )
-            build_anime(
-                anime_source,
-                tmp_root / "anime",
-                overrides.get("anime", {}),
-                mapping,
-                report,
-                config.source_root,
-            )
+            for definition in category_definitions(config.categories):
+                category = definition["name"]
+                kind = definition["kind"]
+                source_root = config.source_root / category
+                target_root = tmp_root / category
+                category_overrides = overrides.get(category, {})
+                if kind == "movie":
+                    build_movies(
+                        source_root,
+                        target_root,
+                        category_overrides,
+                        mapping,
+                        report,
+                        config.source_root,
+                    )
+                elif kind == "show":
+                    build_shows(
+                        source_root,
+                        target_root,
+                        category_overrides,
+                        mapping,
+                        report,
+                        config.source_root,
+                        torrent_name_hints,
+                        mapping_type="show",
+                        report_key="show_files",
+                    )
+                else:
+                    build_anime(
+                        source_root,
+                        target_root,
+                        category_overrides,
+                        mapping,
+                        report,
+                        config.source_root,
+                    )
 
             if config.subtitles.enabled:
                 apply_subtitle_overlay(tmp_root, config.subtitle_root, mapping)

@@ -60,7 +60,7 @@ the `.yml` files are *user config*.
 | `library_entries` | shared | Provider-neutral torrent metadata keyed by content hash (v4+). | `hash` (PK), `name`, `bytes`, `files_json`, `magnet`, `deleted_at`, `updated_at` |
 | `provider_links` | shared | Per-provider tracking rows that point at a `library_entries.hash` (v4+). | (`provider`, `provider_torrent_id`) PK, `hash` (FK → `library_entries`, cascade), `status`, `progress`, `info_json`, `signature_json`, `updated_at` |
 | `file_selections` | shared | User per-file selection per torrent (v5+). | (`hash`, `path`) PK, `selected`, `updated_at` |
-| `category_overrides` | shared | User category override per torrent (v6+). | `hash` (PK), `category` ∈ {`movies`,`shows`,`anime`}, `updated_at` |
+| `category_overrides` | shared | User category override per torrent (v6+). | `hash` (PK), `category` text, `updated_at` |
 
 The provider-neutral pair (`library_entries` + `provider_links`) is the current
 model: one library entry per torrent hash, with one or more provider links

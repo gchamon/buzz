@@ -166,6 +166,39 @@ class CuratorAppTests(unittest.TestCase):
             self.assertEqual(report["show_files"], 0)
             self.assertEqual(report["anime_files"], 0)
 
+    def test_build_library_handles_custom_category_roots(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_root = root / "raw"
+            target_root = root / "curated"
+            (source_root / "movies").mkdir(parents=True)
+            (source_root / "shows").mkdir(parents=True)
+            (source_root / "anime").mkdir(parents=True)
+            doc_root = source_root / "documentaries"
+            doc_root.mkdir(parents=True)
+            (doc_root / "Planet.Earth.2026.mkv").write_text(
+                "video", encoding="utf-8"
+            )
+
+            config = self._config(
+                root,
+                source_root=source_root,
+                target_root=target_root,
+                categories={"documentaries": "movie"},
+            )
+
+            report = build_library(config)
+
+            self.assertEqual(report["movies"], 1)
+            self.assertTrue(
+                (
+                    target_root
+                    / "documentaries"
+                    / "Planet Earth (2026)"
+                    / "Planet Earth (2026).mkv"
+                ).exists()
+            )
+
     def test_build_library_resolves_hash_named_show_root_from_library_entry(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
