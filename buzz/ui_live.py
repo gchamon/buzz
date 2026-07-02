@@ -259,6 +259,12 @@ class ArchiveItem(TypedDict):
     name: str
     size: str
     provider_tags: list[ArchiveProviderTag]
+    seed_active: bool
+    seed_disabled: bool
+    seed_show: bool
+    seed_status_class: str
+    seed_status_label: str
+    seed_title: str
     transfer_disabled: bool
     transfer_label: str
     transfer_show: bool
@@ -313,6 +319,7 @@ class ArchiveContext(PageContext):
     archive_items: list[ArchiveItem]
     confirm_delete_hash: str | None
     confirm_restore_hash: str | None
+    confirm_stop_seed_hash: str | None
     has_items: bool
     sort_col: int
     sort_dir: str
@@ -1656,6 +1663,7 @@ class ArchiveLiveView(_BaseBuzzLiveView):
         to: str = "",
         hash: str = "",
         col: str = "",
+        mode: str = "",
     ) -> None:
         if event == EVENT_NAVIGATE:
             await socket.push_navigate(to)
@@ -1663,6 +1671,7 @@ class ArchiveLiveView(_BaseBuzzLiveView):
         if event == "prompt_restore":
             socket.context["confirm_restore_hash"] = hash
             socket.context["confirm_delete_hash"] = None
+            socket.context["confirm_stop_seed_hash"] = None
             return
         if event == "cancel_restore":
             socket.context["confirm_restore_hash"] = None
@@ -1670,9 +1679,54 @@ class ArchiveLiveView(_BaseBuzzLiveView):
         if event == "prompt_delete":
             socket.context["confirm_delete_hash"] = hash
             socket.context["confirm_restore_hash"] = None
+            socket.context["confirm_stop_seed_hash"] = None
             return
         if event == "cancel_delete":
             socket.context["confirm_delete_hash"] = None
+            return
+        if event == "prompt_stop_seed":
+            socket.context["confirm_stop_seed_hash"] = hash
+            socket.context["confirm_delete_hash"] = None
+            socket.context["confirm_restore_hash"] = None
+            return
+        if event == "cancel_stop_seed":
+            socket.context["confirm_stop_seed_hash"] = None
+            return
+        if event == "reseed":
+            try:
+                task_id = self.owner.state.submit_reseed(hash)
+                console_msg = f"reseed queued: {task_id}"
+                console_class = console.Level.RESTART
+            except Exception as exc:
+                console_msg = f"reseed failed: {exc}"
+                console_class = console.Level.ERROR
+            socket.context = self._context(
+                console_msg=console_msg,
+                console_class=console_class,
+                sort_col=socket.context["sort_col"],
+                sort_dir=socket.context["sort_dir"],
+            )
+            return
+        if event == "stop_seed":
+            try:
+                self.owner.state.stop_seed(
+                    hash, delete_files=mode == "delete"
+                )
+                console_msg = (
+                    "seed stopped, staged files deleted"
+                    if mode == "delete"
+                    else "seed stopped, staged files kept"
+                )
+                console_class = console.Level.SUCCESS
+            except Exception as exc:
+                console_msg = f"stop seed failed: {exc}"
+                console_class = console.Level.ERROR
+            socket.context = self._context(
+                console_msg=console_msg,
+                console_class=console_class,
+                sort_col=socket.context["sort_col"],
+                sort_dir=socket.context["sort_dir"],
+            )
             return
         if event == "restore":
             task_id = self.owner.state.submit_archive_restore(hash)
@@ -1735,6 +1789,7 @@ class ArchiveLiveView(_BaseBuzzLiveView):
                 console_class=socket.context["console_class"],
                 confirm_delete_hash=socket.context["confirm_delete_hash"],
                 confirm_restore_hash=socket.context["confirm_restore_hash"],
+                confirm_stop_seed_hash=socket.context["confirm_stop_seed_hash"],
                 sort_col=sort_col,
                 sort_dir=sort_dir,
             )
@@ -1751,6 +1806,7 @@ class ArchiveLiveView(_BaseBuzzLiveView):
             console_class=socket.context["console_class"],
             confirm_delete_hash=socket.context["confirm_delete_hash"],
             confirm_restore_hash=socket.context["confirm_restore_hash"],
+            confirm_stop_seed_hash=socket.context["confirm_stop_seed_hash"],
             sort_col=socket.context["sort_col"],
             sort_dir=socket.context["sort_dir"],
         )
@@ -1784,10 +1840,13 @@ class ArchiveLiveView(_BaseBuzzLiveView):
         console_class: str = "",
         confirm_delete_hash: str | None = None,
         confirm_restore_hash: str | None = None,
+        confirm_stop_seed_hash: str | None = None,
         sort_col: int = 0,
         sort_dir: str = "asc",
     ) -> ArchiveContext:
         from .core import db as buzz_db
+        seed_configured = self.owner.state.seeding_configured()
+        seed_statuses = self.owner.state.seeding_statuses()
         items: list[ArchiveItem] = []
         for torrent in self.owner.state.archive_torrents():
             thash = torrent["hash"]
@@ -1803,6 +1862,11 @@ class ArchiveLiveView(_BaseBuzzLiveView):
                 }
                 for p in unique_providers
             ]
+            seed = self._archive_seed_action(
+                seed_configured,
+                seed_statuses.get(thash.lower()),
+                torrent["bytes"],
+            )
             items.append(
                 {
                     "bytes": torrent["bytes"],
@@ -1813,6 +1877,12 @@ class ArchiveLiveView(_BaseBuzzLiveView):
                     "name": torrent["name"],
                     "size": format_bytes(torrent["bytes"]),
                     "provider_tags": provider_tags,
+                    "seed_active": seed["seed_active"],
+                    "seed_disabled": seed["seed_disabled"],
+                    "seed_show": seed["seed_show"],
+                    "seed_status_class": seed["seed_status_class"],
+                    "seed_status_label": seed["seed_status_label"],
+                    "seed_title": seed["seed_title"],
                     "transfer_disabled": transfer["disabled"],
                     "transfer_label": transfer["label"],
                     "transfer_show": transfer["show"],
@@ -1830,11 +1900,59 @@ class ArchiveLiveView(_BaseBuzzLiveView):
                 "archive_items": items,
                 "confirm_delete_hash": confirm_delete_hash,
                 "confirm_restore_hash": confirm_restore_hash,
+                "confirm_stop_seed_hash": confirm_stop_seed_hash,
                 "has_items": bool(items),
                 "sort_col": sort_col,
                 "sort_dir": sort_dir,
             },
         )
+
+    def _archive_seed_action(
+        self,
+        seed_configured: bool,
+        status: dict[str, Any] | None,
+        entry_bytes: int,
+    ) -> dict[str, Any]:
+        """Seed action and status tag fields for one archive row."""
+        if not seed_configured:
+            return {
+                "seed_active": False,
+                "seed_disabled": True,
+                "seed_show": False,
+                "seed_status_class": "",
+                "seed_status_label": "",
+                "seed_title": "",
+            }
+        if status is not None:
+            label = str(status.get("label") or "unknown")
+            return {
+                "seed_active": True,
+                "seed_disabled": False,
+                "seed_show": True,
+                "seed_status_class": _SEED_STATUS_CSS_CLASSES.get(
+                    label, "label-grey"
+                ),
+                "seed_status_label": label,
+                "seed_title": "Stop seeding",
+            }
+        capacity_error = self.owner.state.reseed_capacity_error(entry_bytes)
+        if capacity_error:
+            return {
+                "seed_active": False,
+                "seed_disabled": True,
+                "seed_show": True,
+                "seed_status_class": "",
+                "seed_status_label": "",
+                "seed_title": f"Cannot reseed: {capacity_error}",
+            }
+        return {
+            "seed_active": False,
+            "seed_disabled": False,
+            "seed_show": True,
+            "seed_status_class": "",
+            "seed_status_label": "",
+            "seed_title": "Reseed via external torrent client",
+        }
 
     def _archive_transfer_action(
         self,

@@ -285,6 +285,10 @@ button.secondary.auto-category-anime {
   color: var(--cyan);
 }
 
+.label-orange {
+  color: var(--orange);
+}
+
 .label-grey {
   color: var(--comment);
 }

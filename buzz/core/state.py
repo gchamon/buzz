@@ -22,6 +22,10 @@ from urllib import parse, request
 import httpx
 
 from ..models import DavConfig, TaskStatus, category_definitions
+from ..seeding import SeedClient, SeedClientError
+from ..seeding import staging as seed_staging
+from ..seeding.qbittorrent import QBittorrentSeedClient
+from ..seeding.staging import SeedUsageLimitError
 from . import db
 from .constants import SHOW_PATTERNS
 from .events import record_event
@@ -57,6 +61,12 @@ type CacheSelection = dict[str, list[str]]
 type InfringingCandidate = dict[str, Any]
 type MigrationCandidate = dict[str, Any]
 
+
+# Reseed staging timings. Restores can take a while when the provider has to
+# fetch the torrent; polling stays cancellable through the task pool.
+RESEED_RESTORE_TIMEOUT_SECS = 600.0
+RESEED_POLL_INTERVAL_SECS = 2.0
+RESEED_METADATA_TIMEOUT_SECS = 120.0
 
 # Stable epoch used for synthetic nodes (version.txt etc.) whose mtime must
 # not churn. Real-Debrid does not expose per-file mtimes, so file nodes use
@@ -866,6 +876,11 @@ class BuzzState:
         # The `subtitles` section is seeded by migration 8 on first run.
         self.config_favorites: set[str] = db.load_config_favorites(self.conn)
         self._file_selection_unresolved_warnings: set[tuple[str, str]] = set()
+        # Lazily-built external seed client plus a short-lived status cache
+        # so archive renders do not hammer the client API on every poll.
+        self._seed_client: SeedClient | None = None
+        self._seed_status_cache: dict[str, dict[str, Any]] = {}
+        self._seed_status_cached_at = 0.0
         self._closed = False
         self.on_ui_change = on_ui_change
         self._rebuild_stream_sources_from_cache()
@@ -942,6 +957,10 @@ class BuzzState:
         """Swap in a refreshed runtime config for future operations."""
         with self.lock:
             self.config = config
+            # Drop the cached seed client so credential changes take effect.
+            self._seed_client = None
+            self._seed_status_cache = {}
+            self._seed_status_cached_at = 0.0
             self.builder = LibraryBuilder(config)
             self.category_kinds = dict(self.builder.category_kinds)
             self.category_names = tuple(self.builder.category_kinds)
@@ -4271,6 +4290,531 @@ class BuzzState:
                 self._delete_archive_entry(thash)
         if provider_targets:
             db.delete_library_entry(self.conn, thash)
+        self._notify_ui_change("archive")
+        return {"status": "success"}
+
+    # -- reseed ---------------------------------------------------------------
+
+    def seeding_configured(self) -> bool:
+        """Return True when the seed client and save path are configured."""
+        seeding = self.config.seeding
+        return bool(seeding.qbittorrent.url and seeding.save_path)
+
+    def seed_client(self) -> SeedClient:
+        """Return the configured seed client, building it lazily."""
+        with self.lock:
+            if self._seed_client is None:
+                qbittorrent = self.config.seeding.qbittorrent
+                self._seed_client = QBittorrentSeedClient(
+                    qbittorrent.url,
+                    qbittorrent.username,
+                    qbittorrent.password,
+                    timeout_secs=max(
+                        1.0, float(self.config.request_timeout_secs)
+                    ),
+                )
+            return self._seed_client
+
+    def reseed_capacity_error(self, additional_bytes: int) -> str:
+        """Return '' when the bytes fit under the usage limit, else why not."""
+        if not self.seeding_configured():
+            return "seeding is not configured"
+        seeding = self.config.seeding
+        return seed_staging.check_fs_usage(
+            seeding.save_path,
+            max(0, int(additional_bytes)),
+            seeding.max_fs_usage_percent,
+        )
+
+    @staticmethod
+    def _archive_entry_bytes(entry: dict[str, Any]) -> int:
+        file_bytes = sum(
+            int(item.get("bytes") or 0)
+            for item in entry.get("files", [])
+            if isinstance(item, dict)
+        )
+        return file_bytes or int(entry.get("bytes") or 0)
+
+    def submit_reseed(self, thash: str) -> str:
+        """Queue staging and seed-client handoff for an archived torrent."""
+        clean_hash = thash.strip().lower()
+        if not self.seeding_configured():
+            raise ValueError("seeding is not configured")
+        with self.lock:
+            entry = self.archive.get(clean_hash)
+            if not entry:
+                raise ValueError("Torrent not found in archive")
+            name = str(entry.get("name") or clean_hash)
+            entry_bytes = self._archive_entry_bytes(entry)
+        capacity_error = self.reseed_capacity_error(entry_bytes)
+        if capacity_error:
+            raise ValueError(capacity_error)
+
+        def run_reseed(task_id: str, cancel_event: threading.Event) -> None:
+            self._run_reseed(clean_hash, cancel_event)
+
+        task_id = self._submit_background_task(
+            kind="seed",
+            label=f"reseed: {name}",
+            run=run_reseed,
+        )
+        record_event(
+            f"reseed queued: {task_id}",
+            event="reseed_queued",
+            hash=clean_hash,
+            link_to_task_id=task_id,
+        )
+        return task_id
+
+    def _run_reseed(self, thash: str, cancel_event: threading.Event) -> None:
+        with self.lock:
+            entry = dict(self.archive.get(thash) or {})
+        if not entry:
+            raise ValueError("Torrent not found in archive")
+        name = str(entry.get("name") or thash)
+        magnet = str(entry.get("magnet") or f"magnet:?xt=urn:btih:{thash}")
+        seeding = self.config.seeding
+
+        provider, files = self._reseed_source_files(
+            thash, entry, magnet, cancel_event
+        )
+        total_bytes = sum(int(item.get("bytes") or 0) for item in files)
+        capacity_error = self.reseed_capacity_error(total_bytes)
+        if capacity_error:
+            raise SeedUsageLimitError(capacity_error)
+
+        staged: list[Path] = []
+        try:
+            for item in files:
+                raise_if_cancelled(cancel_event)
+                self._stage_reseed_file(provider, item, staged, cancel_event)
+        except SeedUsageLimitError as exc:
+            seed_staging.remove_staged_files(seeding.save_path, staged)
+            record_event(
+                f"reseed aborted for {name}: {exc}",
+                level="warning",
+                event="reseed_limit_breached",
+                hash=thash,
+            )
+            raise RuntimeError(str(exc)) from exc
+        except RuntimeError:
+            if cancel_event.is_set():
+                seed_staging.remove_staged_files(seeding.save_path, staged)
+            raise
+        record_event(
+            f"reseed staged {len(files)} file(s) for {name}",
+            event="reseed_staged",
+            hash=thash,
+            provider=provider,
+            staged_bytes=total_bytes,
+        )
+
+        raise_if_cancelled(cancel_event)
+        self._hand_off_to_seed_client(thash, name, magnet, staged, cancel_event)
+        with self.lock:
+            self._seed_status_cached_at = 0.0
+        self._notify_ui_change("archive")
+        record_event(
+            f"reseed handed to seed client: {name}",
+            event="reseed_complete",
+            hash=thash,
+            provider=provider,
+        )
+
+    def _reseed_source_files(
+        self,
+        thash: str,
+        entry: dict[str, Any],
+        magnet: str,
+        cancel_event: threading.Event,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Return (provider, stageable files) for an archived torrent.
+
+        Prefers the highest-priority provider that already has live links;
+        otherwise restores the torrent via magnet on provider priority.
+        """
+        selected_paths = {
+            normalize_posix_path(str(item.get("path") or ""))
+            for item in entry.get("files", [])
+            if isinstance(item, dict) and str(item.get("path") or "").strip()
+        }
+        with self.lock:
+            cache_items = list(self.cache.items())
+        infos_by_provider = {
+            provider: info
+            for provider, _cache_key, info in self._cache_infos(cache_items)
+            if str(info.get("hash") or "").strip().lower() == thash
+        }
+        ordered = [name for name, _client in self._ordered_clients()]
+        ordered += [p for p in infos_by_provider if p not in ordered]
+        for provider in ordered:
+            info = infos_by_provider.get(provider)
+            if not isinstance(info, dict):
+                continue
+            files = self._reseed_files_from_info(info, selected_paths, thash)
+            if files:
+                return provider, files
+
+        record_event(
+            "no live provider link for reseed; restoring via magnet: "
+            + str(entry.get("name") or thash),
+            event="reseed_restore_first",
+            hash=thash,
+        )
+        errors: list[str] = []
+        for provider, client in self._ordered_clients():
+            raise_if_cancelled(cancel_event)
+            try:
+                torrent_id = client.add_magnet(magnet)
+                files = self._await_reseed_files(
+                    provider,
+                    client,
+                    torrent_id,
+                    thash,
+                    magnet,
+                    selected_paths,
+                    cancel_event,
+                )
+            except Exception as exc:
+                if cancel_event.is_set():
+                    raise
+                errors.append(f"{provider}: {exc}")
+                continue
+            return provider, files
+        raise ValueError(
+            "no provider could restore torrent for reseed: "
+            + "; ".join(errors)
+        )
+
+    def _reseed_files_from_info(
+        self,
+        info: TorrentInfo,
+        selected_paths: set[str],
+        thash: str,
+    ) -> list[dict[str, Any]]:
+        """Return stageable file dicts, or [] when live links are missing."""
+        if selected_paths:
+            matched_ids = set(
+                self._matching_destination_file_ids(
+                    info, selected_paths, thash=thash
+                )
+            )
+            candidates = [
+                item
+                for item in info.get("files", [])
+                if isinstance(item, dict)
+                and str(item.get("id")) in matched_ids
+            ]
+        else:
+            candidates = [
+                item
+                for item in info.get("files", [])
+                if isinstance(item, dict) and item.get("selected")
+            ]
+        if not candidates:
+            return []
+        files: list[dict[str, Any]] = []
+        for item in candidates:
+            path = normalize_posix_path(str(item.get("path") or ""))
+            stream_ref = str(item.get("stream_ref") or "").strip()
+            if not path or not stream_ref:
+                return []
+            files.append(
+                {
+                    "path": path,
+                    "bytes": int(item.get("bytes") or 0),
+                    "stream_ref": stream_ref,
+                }
+            )
+        return files
+
+    def _await_reseed_files(
+        self,
+        provider: str,
+        client: Any,
+        torrent_id: str,
+        thash: str,
+        magnet: str,
+        selected_paths: set[str],
+        cancel_event: threading.Event,
+    ) -> list[dict[str, Any]]:
+        """Select files after a restore and wait for live stream refs."""
+        selection_applied = False
+        deadline = time.monotonic() + RESEED_RESTORE_TIMEOUT_SECS
+        while True:
+            raise_if_cancelled(cancel_event)
+            detail = client.get_torrent(torrent_id)
+            info = self._detail_to_info(detail)
+            if not selection_applied:
+                if selected_paths:
+                    file_ids = self._matching_destination_file_ids(
+                        info,
+                        selected_paths,
+                        thash=thash,
+                        warned_paths=self._file_selection_unresolved_warnings,
+                    )
+                else:
+                    file_ids = [
+                        str(item.get("id"))
+                        for item in info.get("files", [])
+                        if isinstance(item, dict) and item.get("id") is not None
+                    ]
+                if file_ids:
+                    client.select_files(torrent_id, file_ids)
+                    selection_applied = True
+            if str(info.get("status") or "") == "downloaded":
+                files = self._reseed_files_from_info(
+                    info, selected_paths, thash
+                )
+                if files:
+                    self._persist_reseed_cache_entry(
+                        provider, torrent_id, info, magnet
+                    )
+                    return files
+            if time.monotonic() >= deadline:
+                raise ValueError(
+                    f"{provider} did not produce live links in time"
+                )
+            time.sleep(RESEED_POLL_INTERVAL_SECS)
+
+    def _persist_reseed_cache_entry(
+        self,
+        provider: str,
+        torrent_id: str,
+        info: TorrentInfo,
+        magnet: str,
+    ) -> None:
+        info["provider"] = provider
+        info["provider_torrent_id"] = torrent_id
+        cache_key = self._cache_key(provider, torrent_id)
+        with self.lock:
+            self.cache[cache_key] = {
+                "signature": {},
+                "info": info,
+                "magnet": magnet,
+            }
+            self._save_cache_entry(cache_key, self.cache[cache_key])
+        self._queue_sync_after_task("sync_after_reseed_restore")
+
+    def _stage_reseed_file(
+        self,
+        provider: str,
+        item: dict[str, Any],
+        staged: list[Path],
+        cancel_event: threading.Event,
+    ) -> None:
+        seeding = self.config.seeding
+        target = seed_staging.stage_target_path(
+            seeding.save_path, str(item["path"])
+        )
+        expected_bytes = int(item.get("bytes") or 0)
+        if target.exists() and (
+            expected_bytes <= 0 or target.stat().st_size == expected_bytes
+        ):
+            self.verbose_log(f"reseed stage skipped existing file: {target}")
+            return
+
+        capacity_error = seed_staging.check_fs_usage(
+            seeding.save_path, expected_bytes, seeding.max_fs_usage_percent
+        )
+        if capacity_error:
+            raise SeedUsageLimitError(capacity_error)
+
+        stream_ref = str(item["stream_ref"])
+        with self.lock:
+            self.stream_sources.setdefault(
+                stream_ref,
+                [{"provider": provider, "source_url": stream_ref}],
+            )
+        download_url = self.resolve_download_url(stream_ref)
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial = target.with_name(target.name + seed_staging.PARTIAL_SUFFIX)
+        bytes_since_check = 0
+        written = 0
+        try:
+            with open(partial, "wb") as handle:
+                for chunk in seed_staging.open_stage_stream(
+                    download_url,
+                    max(1, int(self.config.request_timeout_secs)),
+                ):
+                    raise_if_cancelled(cancel_event)
+                    handle.write(chunk)
+                    written += len(chunk)
+                    bytes_since_check += len(chunk)
+                    if (
+                        bytes_since_check
+                        >= seed_staging.USAGE_RECHECK_INTERVAL_BYTES
+                    ):
+                        bytes_since_check = 0
+                        mid_error = seed_staging.check_fs_usage(
+                            seeding.save_path,
+                            0,
+                            seeding.max_fs_usage_percent,
+                        )
+                        if mid_error:
+                            raise SeedUsageLimitError(mid_error)
+            os.replace(partial, target)
+            staged.append(target)
+        finally:
+            partial.unlink(missing_ok=True)
+        if expected_bytes > 0 and written != expected_bytes:
+            record_event(
+                f"reseed staged size mismatch for {item['path']}: "
+                f"{written} != {expected_bytes}",
+                level="warning",
+                event="reseed_size_mismatch",
+            )
+
+    def _hand_off_to_seed_client(
+        self,
+        thash: str,
+        name: str,
+        magnet: str,
+        staged: list[Path],
+        cancel_event: threading.Event,
+    ) -> None:
+        seeding = self.config.seeding
+        client = self.seed_client()
+        try:
+            client.add_torrent(magnet, seeding.save_path, seeding.category)
+        except SeedClientError as exc:
+            # Tolerate duplicates: proceed when the client already has it.
+            if thash not in client.statuses([thash]):
+                raise
+            self.verbose_log(f"seed client already has torrent {thash}: {exc}")
+        self._apply_seed_file_priorities(client, thash, staged, cancel_event)
+        client.recheck(thash)
+        client.resume(thash)
+        record_event(
+            f"seed client rechecking and resuming: {name}",
+            event="reseed_client_started",
+            hash=thash,
+        )
+
+    def _apply_seed_file_priorities(
+        self,
+        client: SeedClient,
+        thash: str,
+        staged: list[Path],
+        cancel_event: threading.Event,
+    ) -> None:
+        """Deprioritize torrent files that were not staged (partial seed).
+
+        Boundary pieces spanning missing files cannot be served; partial
+        selections seed partially by design.
+        """
+        save_root = Path(self.config.seeding.save_path).absolute()
+        staged_paths = {
+            normalize_posix_path(str(path.absolute().relative_to(save_root)))
+            for path in staged
+        }
+        deadline = time.monotonic() + RESEED_METADATA_TIMEOUT_SECS
+        while True:
+            raise_if_cancelled(cancel_event)
+            seed_files = client.torrent_files(thash)
+            if seed_files:
+                break
+            if time.monotonic() >= deadline:
+                record_event(
+                    "seed client metadata unavailable; file priorities "
+                    f"not set for {thash}",
+                    level="warning",
+                    event="reseed_priorities_skipped",
+                    hash=thash,
+                )
+                return
+            time.sleep(RESEED_POLL_INTERVAL_SECS)
+        skipped = [
+            seed_file.index
+            for seed_file in seed_files
+            if not self._seed_path_staged(seed_file.path, staged_paths)
+        ]
+        if skipped:
+            client.set_file_priorities(thash, skipped, 0)
+            record_event(
+                f"partial reseed: {len(skipped)} unstaged file(s) "
+                "deprioritized; boundary pieces will not be served",
+                level="warning",
+                event="reseed_partial_selection",
+                hash=thash,
+            )
+
+    @staticmethod
+    def _seed_path_staged(client_path: str, staged_paths: set[str]) -> bool:
+        normalized = normalize_posix_path(client_path)
+        if not normalized:
+            return False
+        if normalized in staged_paths:
+            return True
+        return any(
+            normalized.endswith("/" + staged_path)
+            or staged_path.endswith("/" + normalized)
+            for staged_path in staged_paths
+        )
+
+    def seeding_statuses(self) -> dict[str, dict[str, Any]]:
+        """Return cached per-hash seed statuses for archive entries."""
+        if not self.seeding_configured():
+            return {}
+        ttl = max(2.0, float(self.config.ui_poll_interval_secs))
+        now = time.monotonic()
+        with self.lock:
+            if now - self._seed_status_cached_at < ttl:
+                return dict(self._seed_status_cache)
+            hashes = [str(thash).strip().lower() for thash in self.archive]
+        statuses: dict[str, dict[str, Any]] = {}
+        if hashes:
+            try:
+                statuses = {
+                    thash: {
+                        "state": status.state,
+                        "label": status.label,
+                        "progress": status.progress,
+                    }
+                    for thash, status in self.seed_client()
+                    .statuses(hashes)
+                    .items()
+                }
+            except SeedClientError as exc:
+                self.verbose_log(f"seed status poll failed: {exc}")
+        with self.lock:
+            self._seed_status_cache = statuses
+            self._seed_status_cached_at = now
+        return dict(statuses)
+
+    def stop_seed(self, thash: str, delete_files: bool = False) -> OperationResult:
+        """Remove a seed from the client, optionally deleting staged files."""
+        clean_hash = thash.strip().lower()
+        if not self.seeding_configured():
+            raise ValueError("seeding is not configured")
+        self.seed_client().delete(clean_hash, delete_files=delete_files)
+        if delete_files:
+            with self.lock:
+                entry = dict(self.archive.get(clean_hash) or {})
+            save_path = self.config.seeding.save_path
+            targets = []
+            for item in entry.get("files", []):
+                if not isinstance(item, dict):
+                    continue
+                with contextlib.suppress(ValueError):
+                    targets.append(
+                        seed_staging.stage_target_path(
+                            save_path, str(item.get("path") or "")
+                        )
+                    )
+            seed_staging.remove_staged_files(save_path, targets)
+        with self.lock:
+            self._seed_status_cache.pop(clean_hash, None)
+            self._seed_status_cached_at = 0.0
+        record_event(
+            "seed stopped"
+            + (" and staged files deleted" if delete_files else "")
+            + f": {clean_hash}",
+            event="seed_stopped",
+            hash=clean_hash,
+            deleted_files=delete_files,
+        )
         self._notify_ui_change("archive")
         return {"status": "success"}
 
