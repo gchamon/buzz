@@ -89,6 +89,12 @@ UI_MANAGED_CONFIG_FIELDS = (
     "subtitles.search_delay_secs",
     "subtitles.download_delay_secs",
     "subtitles.root",
+    "seeding.qbittorrent.url",
+    "seeding.qbittorrent.username",
+    "seeding.qbittorrent.password",
+    "seeding.save_path",
+    "seeding.max_fs_usage_percent",
+    "seeding.category",
     "tls.cert_path",
     "tls.key_path",
 )
@@ -297,6 +303,7 @@ _SECRET_PATHS = [
     ("subtitles", "opensubtitles", "api_key"),
     ("subtitles", "opensubtitles", "username"),
     ("subtitles", "opensubtitles", "password"),
+    ("seeding", "qbittorrent", "password"),
 ]
 
 
@@ -342,6 +349,19 @@ def _strip_opensubtitles_secrets(d: dict) -> None:
         del d["subtitles"]
 
 
+def _strip_seeding_secrets(d: dict) -> None:
+    seeding = d.get("seeding")
+    if not isinstance(seeding, dict):
+        return
+    qbittorrent = seeding.get("qbittorrent")
+    if isinstance(qbittorrent, dict):
+        qbittorrent.pop("password", None)
+        if not qbittorrent:
+            seeding.pop("qbittorrent", None)
+    if not seeding:
+        del d["seeding"]
+
+
 def _strip_secrets(d: dict) -> dict:
     result = {}
     for key, value in d.items():
@@ -353,6 +373,7 @@ def _strip_secrets(d: dict) -> dict:
             result[key] = value
     _strip_provider_token(result)
     _strip_opensubtitles_secrets(result)
+    _strip_seeding_secrets(result)
     return result
 
 
@@ -426,6 +447,16 @@ _OVERRIDE_SCHEMA = {
         },
         "search_delay_secs": True,
         "download_delay_secs": True,
+    },
+    "seeding": {
+        "qbittorrent": {
+            "url": True,
+            "username": True,
+            "password": True,
+        },
+        "save_path": True,
+        "max_fs_usage_percent": True,
+        "category": True,
     },
     "tls": {
         "cert_path": True,
@@ -599,6 +630,16 @@ def to_nested_dict(config: DavConfig) -> dict:
             "search_delay_secs": config.subtitles.search_delay_secs,
             "download_delay_secs": config.subtitles.download_delay_secs,
         },
+        "seeding": {
+            "qbittorrent": {
+                "url": config.seeding.qbittorrent.url,
+                "username": config.seeding.qbittorrent.username,
+                "password": config.seeding.qbittorrent.password,
+            },
+            "save_path": config.seeding.save_path,
+            "max_fs_usage_percent": config.seeding.max_fs_usage_percent,
+            "category": config.seeding.category,
+        },
         "tls": {
             "cert_path": config.tls.cert_path,
             "key_path": config.tls.key_path,
@@ -660,6 +701,44 @@ class SubtitleConfig(BaseModel):
             search_delay_secs=float(raw.get("search_delay_secs", 0.5)),
             download_delay_secs=float(raw.get("download_delay_secs", 1.0)),
         )
+
+class QBittorrentSeedConfig(BaseModel):
+    """qBittorrent Web API connection settings for reseeding."""
+
+    url: str = ""
+    username: str = ""
+    password: str = ""
+
+
+class SeedingConfig(BaseModel):
+    """Reseed staging and external seed-client configuration."""
+
+    qbittorrent: QBittorrentSeedConfig = Field(
+        default_factory=QBittorrentSeedConfig
+    )
+    save_path: str = ""
+    max_fs_usage_percent: int = 80
+    category: str = ""
+
+    @classmethod
+    def from_raw(cls, raw: object) -> SeedingConfig:
+        """Build a SeedingConfig from a plain dict (e.g. parsed YAML)."""
+        if not isinstance(raw, dict):
+            return cls()
+        qbittorrent = raw.get("qbittorrent") or {}
+        return cls(
+            qbittorrent=QBittorrentSeedConfig(
+                url=str(qbittorrent.get("url", "")).strip().rstrip("/"),
+                username=str(qbittorrent.get("username", "")).strip(),
+                password=str(qbittorrent.get("password", "")),
+            ),
+            save_path=str(raw.get("save_path", "")).strip(),
+            max_fs_usage_percent=min(
+                100, max(1, int(raw.get("max_fs_usage_percent", 80)))
+            ),
+            category=str(raw.get("category", "")).strip(),
+        )
+
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").lower() in {"1", "true", "yes"}
@@ -748,6 +827,7 @@ class DavConfig(BaseModel):
     library_map: dict[str, str] = Field(default_factory=dict)
     scan_probe: ScanProbeConfig = Field(default_factory=ScanProbeConfig)
     subtitles: SubtitleConfig = Field(default_factory=SubtitleConfig)
+    seeding: SeedingConfig = Field(default_factory=SeedingConfig)
     subtitle_root: str = Field(
         default_factory=lambda: os.path.join(
             os.environ.get("BUZZ_MOUNT_ROOT", "/mnt/buzz"), "subs"
@@ -917,6 +997,7 @@ class DavConfig(BaseModel):
                 media_server_raw.get("scan_probe")
             ),
             subtitles=SubtitleConfig.from_raw(raw.get("subtitles")),
+            seeding=SeedingConfig.from_raw(raw.get("seeding")),
             subtitle_root=str(
                 (raw.get("subtitles") or {}).get(
                     "root",

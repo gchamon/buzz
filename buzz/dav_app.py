@@ -968,6 +968,7 @@ class DavApp:
         for field in (
             "provider.real_debrid.token",
             "provider.torbox.token",
+            "seeding.qbittorrent.password",
         ):
             value = get_nested_value(overrides, field)
             if not isinstance(value, str):
