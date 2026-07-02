@@ -43,6 +43,9 @@ UI_MANAGED_CONFIG_FIELDS = (
     "provider.real_debrid.token",
     "provider.torbox.enabled",
     "provider.torbox.token",
+    "provider.local.enabled",
+    "provider.local.path",
+    "provider.local.max_fs_usage_percent",
     "provider.poll_interval_secs",
     "ui.poll_interval_secs",
     "server.bind",
@@ -360,6 +363,11 @@ _OVERRIDE_SCHEMA = {
         "priority": True,
         "real_debrid": {"enabled": True, "token": True},
         "torbox": {"enabled": True, "token": True},
+        "local": {
+            "enabled": True,
+            "path": True,
+            "max_fs_usage_percent": True,
+        },
         "connection_concurrency": True,
         "poll_interval_secs": True,
     },
@@ -513,6 +521,11 @@ def to_nested_dict(config: DavConfig) -> dict:
             "torbox": {
                 "enabled": config.torbox_enabled,
                 "token": config.torbox_token,
+            },
+            "local": {
+                "enabled": config.local_enabled,
+                "path": config.local_path,
+                "max_fs_usage_percent": config.local_max_fs_usage_percent,
             },
             "connection_concurrency": config.connection_concurrency,
             "poll_interval_secs": config.provider_poll_interval_secs,
@@ -701,6 +714,9 @@ class DavConfig(BaseModel):
     real_debrid_token: str = ""
     torbox_enabled: bool = True
     torbox_token: str = ""
+    local_enabled: bool = False
+    local_path: str = ""
+    local_max_fs_usage_percent: int = 80
     provider_poll_interval_secs: int = 10
     bind: str = "0.0.0.0"
     port: int = 9999
@@ -764,6 +780,9 @@ class DavConfig(BaseModel):
         media_server_raw = raw.get("media_server", {})
         tls_raw = raw.get("tls", {})
 
+        local_enabled = False
+        local_path = ""
+        local_max_fs_usage_percent = 80
         if version == 1:
             # buzz.dist.yml brings in v2 fields during load_base_and_overrides merge.
             # We ignore them in v1 schema and enforce real_debrid via provider.token.
@@ -782,10 +801,24 @@ class DavConfig(BaseModel):
                 )
             real_debrid = provider.get("real_debrid") or {}
             torbox = provider.get("torbox") or {}
+            local = provider.get("local") or {}
             real_debrid_enabled = bool(real_debrid.get("enabled", True))
             real_debrid_token = str(real_debrid.get("token", "")).strip()
             torbox_enabled = bool(torbox.get("enabled", True))
             torbox_token = str(torbox.get("token", "")).strip()
+            local_enabled = bool(local.get("enabled", False))
+            local_path = str(local.get("path", "")).strip()
+            local_max_fs_usage_percent = int(
+                local.get("max_fs_usage_percent", 80)
+            )
+            if not 1 <= local_max_fs_usage_percent <= 100:
+                raise ValueError(
+                    "provider.local.max_fs_usage_percent must be between 1 and 100"
+                )
+            if local_enabled and not local_path:
+                raise ValueError(
+                    "provider.local.enabled requires provider.local.path"
+                )
 
             raw_priority = provider.get("priority")
             priority_items = (
@@ -799,7 +832,7 @@ class DavConfig(BaseModel):
                     str(value).strip().lower()
                     for value in priority_items
                 )
-                if item in {"real_debrid", "torbox"}
+                if item in {"real_debrid", "torbox", "local"}
             )
             if not priority:
                 priority = ("real_debrid", "torbox")
@@ -813,6 +846,9 @@ class DavConfig(BaseModel):
             real_debrid_token=real_debrid_token,
             torbox_enabled=torbox_enabled,
             torbox_token=torbox_token,
+            local_enabled=local_enabled,
+            local_path=local_path,
+            local_max_fs_usage_percent=local_max_fs_usage_percent,
             provider_poll_interval_secs=int(provider.get("poll_interval_secs", 10)),
             bind=str(server.get("bind", "0.0.0.0")),
             port=int(server.get("port", 9999)),

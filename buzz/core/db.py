@@ -232,6 +232,26 @@ _MIGRATIONS: list[tuple[int, str]] = [
             RENAME TO category_overrides;
         """,
     ),
+    (
+        13,
+        """
+        CREATE TABLE IF NOT EXISTS local_torrents (
+            hash TEXT PRIMARY KEY,
+            name TEXT,
+            bytes INTEGER NOT NULL DEFAULT 0,
+            added_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS local_files (
+            hash TEXT NOT NULL,
+            path TEXT NOT NULL,
+            bytes INTEGER NOT NULL DEFAULT 0,
+            stored_rel_path TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (hash, path)
+        );
+        """,
+    ),
 ]
 
 def connect(path: Path | str, timeout: float = 30.0) -> sqlite3.Connection:
@@ -1108,6 +1128,133 @@ def save_curator_title_override(
                 _now_iso(),
             ),
         )
+
+
+def save_local_torrent(
+    conn: sqlite3.Connection,
+    thash: str,
+    name: str | None,
+    total_bytes: int,
+    files: list[dict[str, Any]],
+) -> None:
+    """Persist a completed local copy: torrent row plus one row per file.
+
+    Each file dict must have: path, bytes, stored_rel_path.
+    """
+    thash = thash.strip().lower()
+    if not thash:
+        return
+    now = _now_iso()
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO local_torrents "
+            "(hash, name, bytes, added_at) VALUES (?, ?, ?, ?)",
+            (thash, name, int(total_bytes), now),
+        )
+        conn.execute("DELETE FROM local_files WHERE hash = ?", (thash,))
+        conn.executemany(
+            "INSERT INTO local_files "
+            "(hash, path, bytes, stored_rel_path, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                (
+                    thash,
+                    str(item["path"]),
+                    int(item.get("bytes") or 0),
+                    str(item["stored_rel_path"]),
+                    now,
+                )
+                for item in files
+            ],
+        )
+
+
+def load_local_torrents(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return all local copies with their file rows, ordered by hash."""
+    torrent_rows = conn.execute(
+        "SELECT hash, name, bytes, added_at FROM local_torrents ORDER BY hash"
+    ).fetchall()
+    file_rows = conn.execute(
+        "SELECT hash, path, bytes, stored_rel_path FROM local_files "
+        "ORDER BY hash, path"
+    ).fetchall()
+    files_by_hash: dict[str, list[dict[str, Any]]] = {}
+    for row in file_rows:
+        files_by_hash.setdefault(row["hash"], []).append(
+            {
+                "path": row["path"],
+                "bytes": row["bytes"],
+                "stored_rel_path": row["stored_rel_path"],
+            }
+        )
+    return [
+        {
+            "hash": row["hash"],
+            "name": row["name"],
+            "bytes": row["bytes"],
+            "added_at": row["added_at"],
+            "files": files_by_hash.get(row["hash"], []),
+        }
+        for row in torrent_rows
+    ]
+
+
+def load_local_torrent(
+    conn: sqlite3.Connection, thash: str
+) -> dict[str, Any] | None:
+    """Return one local copy with its files, or None when absent."""
+    thash = thash.strip().lower()
+    if not thash:
+        return None
+    row = conn.execute(
+        "SELECT hash, name, bytes, added_at FROM local_torrents WHERE hash = ?",
+        (thash,),
+    ).fetchone()
+    if row is None:
+        return None
+    file_rows = conn.execute(
+        "SELECT path, bytes, stored_rel_path FROM local_files "
+        "WHERE hash = ? ORDER BY path",
+        (thash,),
+    ).fetchall()
+    return {
+        "hash": row["hash"],
+        "name": row["name"],
+        "bytes": row["bytes"],
+        "added_at": row["added_at"],
+        "files": [
+            {
+                "path": item["path"],
+                "bytes": item["bytes"],
+                "stored_rel_path": item["stored_rel_path"],
+            }
+            for item in file_rows
+        ],
+    }
+
+
+def get_local_file_stored_path(
+    conn: sqlite3.Connection, thash: str, path: str
+) -> str | None:
+    """Return the store-relative path for one local file record, or None."""
+    thash = thash.strip().lower()
+    row = conn.execute(
+        "SELECT stored_rel_path FROM local_files WHERE hash = ? AND path = ?",
+        (thash, path),
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row["stored_rel_path"])
+
+
+def delete_local_torrent(conn: sqlite3.Connection, thash: str) -> None:
+    """Remove a local copy's torrent and file records."""
+    thash = thash.strip().lower()
+    if not thash:
+        return
+    with conn:
+        conn.execute("DELETE FROM local_files WHERE hash = ?", (thash,))
+        conn.execute("DELETE FROM local_torrents WHERE hash = ?", (thash,))
 
 
 def _now_iso() -> str:

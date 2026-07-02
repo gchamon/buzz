@@ -8,6 +8,7 @@ import os
 import posixpath
 import re
 import shlex
+import shutil
 import subprocess
 import threading
 import time
@@ -32,6 +33,7 @@ from .providers import (
     ProviderDeleteError,
     ProviderStreamError,
     ProviderTorrentDetail,
+    is_local_stream_ref,
     split_provider_torrent_id,
 )
 from .providers import (
@@ -161,6 +163,14 @@ RD_NON_TRANSIENT_ERRORS = frozenset({
 PROVIDER_TRANSIENT_STREAM_ERRORS = frozenset({
     "http_429",
 })
+
+# Local copy pipeline tuning: stream chunk size, how many bytes may be
+# written between disk-usage cap re-checks, and how long to wait for a
+# restored torrent to become streamable before giving up.
+LOCAL_COPY_CHUNK_BYTES = 1024 * 1024
+LOCAL_COPY_RECHECK_BYTES = 64 * 1024 * 1024
+LOCAL_COPY_RESTORE_WAIT_SECS = 120
+LOCAL_COPY_RESTORE_POLL_SECS = 5
 
 PROVIDER_NON_TRANSIENT_STREAM_ERRORS = frozenset({
     "http_422",
@@ -921,6 +931,14 @@ class BuzzState:
             if provider not in {item[0] for item in ordered}
         ]
         return ordered + extras
+
+    def _fallback_clients(self) -> list[tuple[str, Any]]:
+        """Ordered clients eligible as add/restore targets; never local."""
+        return [
+            (provider, client)
+            for provider, client in self._ordered_clients()
+            if provider != "local"
+        ]
 
     @staticmethod
     def _cache_key(provider: str, torrent_id: str) -> str:
@@ -3150,13 +3168,15 @@ class BuzzState:
         """Add a magnet link using provider priority and fallback."""
         errors: list[str] = []
         if provider and provider != "auto":
+            if provider == "local":
+                raise ValueError("local provider cannot receive magnet adds")
             if provider not in self.clients:
                 raise ValueError(f"provider '{provider}' is not enabled")
             _index = 0
             client = self.clients[provider]
             torrent_id = client.add_magnet(magnet)
         else:
-            for _index, (provider, client) in enumerate(self._ordered_clients()):
+            for _index, (provider, client) in enumerate(self._fallback_clients()):
                 try:
                     torrent_id = client.add_magnet(magnet)
                     break
@@ -3235,6 +3255,11 @@ class BuzzState:
         """Queue a provider-to-provider migration candidate scan."""
         source_provider = source_provider.strip().lower()
         destination_provider = destination_provider.strip().lower()
+        if destination_provider == "local":
+            raise ValueError(
+                "local provider is not a migration destination; "
+                "use the archive copy-to-local action"
+            )
         if source_provider == destination_provider:
             raise ValueError("source and destination providers must differ")
         if self._client_for_provider(source_provider) is None:
@@ -3402,6 +3427,8 @@ class BuzzState:
                 for item in entry.get("files", [])
                 if isinstance(item, dict) and str(item.get("path") or "").strip()
             ]
+        if destination_provider == "local":
+            return self._register_local_copy(clean_hash, name, magnet)
         links = db.load_provider_links_by_hash(self.conn, clean_hash)
         source_provider = next(
             (
@@ -3536,6 +3563,247 @@ class BuzzState:
             failed_torrents=failed,
         )
 
+    def _register_local_copy(self, thash: str, name: str, magnet: str) -> str:
+        """Register a manual copy-to-local task for an archived entry."""
+        if "local" not in self.clients:
+            raise ValueError("local provider is not configured")
+        if db.load_local_torrent(self.conn, thash) is not None:
+            raise ValueError("local copy already exists")
+
+        def run_copy(task_id: str, cancel_event: threading.Event) -> None:
+            self._execute_local_copy(thash, name, magnet, cancel_event)
+
+        return self._submit_background_task(
+            kind="maintenance",
+            label=f"copy_to_local: {name}",
+            run=run_copy,
+            manual=True,
+        )
+
+    def _execute_local_copy(
+        self,
+        thash: str,
+        name: str,
+        magnet: str,
+        cancel_event: threading.Event,
+    ) -> None:
+        """Copy an entry's selected files from a debrid provider onto disk."""
+        if "local" not in self.clients:
+            raise ValueError("local provider is not configured")
+        if db.load_local_torrent(self.conn, thash) is not None:
+            record_event(
+                f"local copy already exists: {name}",
+                event="local_copy_skipped",
+                hash=thash,
+            )
+            return
+        source = self._local_copy_source(thash)
+        if source is None:
+            source = self._restore_source_for_local_copy(
+                thash, magnet, cancel_event
+            )
+        provider, client, files = source
+        total_bytes = sum(size for _path, size, _ref in files)
+        self._ensure_local_capacity(total_bytes, name)
+
+        store = Path(self.config.local_path)
+        temp_dir = store / ".tmp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        copied: list[dict[str, Any]] = []
+        try:
+            for path, size, ref in files:
+                raise_if_cancelled(cancel_event)
+                download_url = client.resolve_stream(ref)
+                self._copy_stream_to_store(
+                    download_url,
+                    temp_dir,
+                    store / thash / path,
+                    cancel_event,
+                    name,
+                )
+                copied.append(
+                    {
+                        "path": path,
+                        "bytes": size,
+                        "stored_rel_path": f"{thash}/{path}",
+                    }
+                )
+            db.save_local_torrent(self.conn, thash, name, total_bytes, copied)
+        except BaseException:
+            shutil.rmtree(store / thash, ignore_errors=True)
+            raise
+        record_event(
+            f"local copy complete: {name}: {len(copied)} file(s) "
+            f"from {self._provider_label(provider)}",
+            event="local_copy_complete",
+            hash=thash,
+            provider=provider,
+            file_count=len(copied),
+            bytes=total_bytes,
+        )
+        self._queue_sync_after_task("sync local copy")
+
+    def _copy_stream_to_store(
+        self,
+        download_url: str,
+        temp_dir: Path,
+        final_path: Path,
+        cancel_event: threading.Event,
+        name: str,
+    ) -> None:
+        """Stream one file to a temp path and atomically move it into place."""
+        temp_path = temp_dir / f"{uuid.uuid4().hex}.part"
+        bytes_since_check = 0
+        timeout = max(1, int(self.config.request_timeout_secs))
+        try:
+            with (
+                httpx.Client(timeout=timeout, follow_redirects=True) as http_client,
+                http_client.stream("GET", download_url) as response,
+            ):
+                response.raise_for_status()
+                with open(temp_path, "wb") as handle:
+                    for chunk in response.iter_bytes(LOCAL_COPY_CHUNK_BYTES):
+                        raise_if_cancelled(cancel_event)
+                        handle.write(chunk)
+                        bytes_since_check += len(chunk)
+                        if bytes_since_check >= LOCAL_COPY_RECHECK_BYTES:
+                            bytes_since_check = 0
+                            self._ensure_local_capacity(0, name)
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(temp_path, final_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def _local_copy_source(
+        self, thash: str
+    ) -> tuple[str, Any, list[tuple[str, int, str]]] | None:
+        """Return the highest-priority provider with a live streamable copy."""
+        with self.lock:
+            cache_items = list(self._full_cache.items())
+        infos = self._cache_infos(cache_items)
+        for provider, client in self._fallback_clients():
+            for prov, _cache_key, info in infos:
+                if prov != provider:
+                    continue
+                if str(info.get("hash") or "").strip().lower() != thash:
+                    continue
+                if str(info.get("status") or "") != "downloaded":
+                    continue
+                files = self._streamable_files(info)
+                if files:
+                    return provider, client, files
+        return None
+
+    def _restore_source_for_local_copy(
+        self,
+        thash: str,
+        magnet: str,
+        cancel_event: threading.Event,
+    ) -> tuple[str, Any, list[tuple[str, int, str]]]:
+        """Restore via magnet, then wait until the entry is streamable."""
+        _ = magnet
+        record_event(
+            "no live provider link; restoring via magnet before local copy",
+            event="local_copy_restore",
+            hash=thash,
+        )
+        result = self.restore_archive(thash)
+        provider = str(result.get("provider") or "")
+        torrent_id = str(
+            result.get("provider_torrent_id") or result.get("id") or ""
+        )
+        client = self._client_for_provider(provider)
+        if client is None:
+            raise RuntimeError(f"no client configured for {provider}")
+        deadline = time.monotonic() + LOCAL_COPY_RESTORE_WAIT_SECS
+        while True:
+            raise_if_cancelled(cancel_event)
+            info = self._detail_to_info(client.get_torrent(torrent_id))
+            files = self._streamable_files(info)
+            if str(info.get("status") or "") == "downloaded" and files:
+                return provider, client, files
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"restored torrent is not streamable yet on "
+                    f"{self._provider_label(provider)}; retry the local copy later"
+                )
+            time.sleep(LOCAL_COPY_RESTORE_POLL_SECS)
+
+    def _streamable_files(
+        self, info: TorrentInfo
+    ) -> list[tuple[str, int, str]]:
+        """Return (normalized path, bytes, stream ref) for linked files."""
+        results: list[tuple[str, int, str]] = []
+        for item in self.builder._selected_files(info):
+            path = normalize_posix_path(str(item.get("path") or ""))
+            ref = str(item.get("url") or "")
+            if path and ref:
+                results.append((path, int(item.get("bytes") or 0), ref))
+        return results
+
+    def _local_disk_budget(self) -> tuple[int, int]:
+        """Return (used_bytes, cap_bytes) for the local store filesystem."""
+        store = Path(self.config.local_path)
+        store.mkdir(parents=True, exist_ok=True)
+        stats = os.statvfs(store)
+        capacity = stats.f_blocks * stats.f_frsize
+        used = (stats.f_blocks - stats.f_bavail) * stats.f_frsize
+        percent = max(
+            1, min(100, int(self.config.local_max_fs_usage_percent))
+        )
+        return used, capacity * percent // 100
+
+    def local_copy_budget_remaining(self) -> int | None:
+        """Return bytes available under the disk-usage cap, or None."""
+        if not self.config.local_path:
+            return None
+        try:
+            used, cap = self._local_disk_budget()
+        except OSError:
+            return None
+        return max(0, cap - used)
+
+    def _ensure_local_capacity(self, additional_bytes: int, name: str) -> None:
+        """Refuse or abort a copy that would breach the disk-usage cap."""
+        used, cap = self._local_disk_budget()
+        if used + max(0, additional_bytes) <= cap:
+            return
+        message = (
+            f"local copy aborted: {name}: projected disk usage exceeds "
+            f"{self.config.local_max_fs_usage_percent}% of the store filesystem"
+        )
+        record_event(message, level="warning", event="local_copy_limit")
+        raise RuntimeError(message)
+
+    def delete_local_copy(self, thash: str) -> OperationResult:
+        """Remove a local copy's files and records, keeping debrid links."""
+        clean_hash = thash.strip().lower()
+        client = self.clients.get("local")
+        if client is None:
+            raise ValueError("local provider is not configured")
+        client.delete_torrent(clean_hash)
+        cache_key = self._cache_key("local", clean_hash)
+        local_prefix = f"local://{clean_hash}/"
+        with self.lock:
+            removed = self.cache.pop(cache_key, None)
+            self._full_cache.pop(cache_key, None)
+            if removed is not None:
+                self._delete_cache_entry(cache_key)
+            for ref in [
+                ref
+                for ref in self.resolved_urls
+                if ref.startswith(local_prefix)
+            ]:
+                del self.resolved_urls[ref]
+        record_event(
+            f"local copy deleted: {clean_hash}",
+            event="local_copy_deleted",
+            hash=clean_hash,
+        )
+        self._queue_sync_after_task("sync local delete")
+        self._notify_ui_change("archive")
+        return {"status": "success"}
+
     def _client_for_provider(self, provider: str) -> Any | None:
         if provider == "real_debrid":
             return self.clients.get(provider) or self.client
@@ -3664,6 +3932,7 @@ class BuzzState:
         return {
             "real_debrid": "Real-Debrid",
             "torbox": "TorBox",
+            "local": "Local",
         }.get(provider, provider)
 
     def submit_infringing_scan(self) -> str:
@@ -4210,7 +4479,7 @@ class BuzzState:
 
         magnet = entry.get("magnet") or f"magnet:?xt=urn:btih:{thash}"
         errors: list[str] = []
-        for _index, (provider, client) in enumerate(self._ordered_clients()):
+        for _index, (provider, client) in enumerate(self._fallback_clients()):
             try:
                 torrent_id = client.add_magnet(magnet)
                 break
@@ -4556,6 +4825,10 @@ class BuzzState:
         sources = self.stream_sources.get(source_url)
         if sources:
             return sources
+        if is_local_stream_ref(source_url):
+            if "local" not in self.clients:
+                return []
+            return [{"provider": "local", "source_url": source_url}]
         if self._is_http_source(source_url):
             if "real_debrid" not in self.clients and (
                 self.clients or self.client is None
