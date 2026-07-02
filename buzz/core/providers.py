@@ -11,7 +11,7 @@ from typing import Any, Literal, Protocol
 
 import httpx
 
-ProviderKind = Literal["real_debrid", "torbox"]
+ProviderKind = Literal["real_debrid", "torbox", "local"]
 
 
 @dataclass(frozen=True)
@@ -241,6 +241,26 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+LOCAL_STREAM_PREFIX = "local://"
+
+
+def local_stream_ref(thash: str, path: str) -> str:
+    """Return the stream reference for a local file copy."""
+    return f"{LOCAL_STREAM_PREFIX}{thash.strip().lower()}/{path.lstrip('/')}"
+
+
+def split_local_stream_ref(stream_ref: str) -> tuple[str, str]:
+    """Split a ``local://<hash>/<path>`` reference into (hash, path)."""
+    rest = stream_ref.removeprefix(LOCAL_STREAM_PREFIX)
+    thash, _, path = rest.partition("/")
+    return thash.strip().lower(), path
+
+
+def is_local_stream_ref(stream_ref: str) -> bool:
+    """Return True for ``local://`` stream references."""
+    return stream_ref.startswith(LOCAL_STREAM_PREFIX)
 
 
 def split_provider_torrent_id(torrent_id: str) -> tuple[str, str]:

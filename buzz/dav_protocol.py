@@ -2,11 +2,14 @@
 
 import contextlib
 import errno
+import mimetypes
+import os
 import random
 import ssl
 import threading
 import time
 from email.message import Message
+from pathlib import Path
 from typing import Any
 from urllib import error, parse
 from xml.sax.saxutils import escape
@@ -124,6 +127,61 @@ class _HttpxStreamAdapter:
             self._response.close()
         finally:
             self._client.close()
+
+
+class _LocalFileStream:
+    """Serve bytes from a local store file with the urllib-style read API."""
+
+    def __init__(
+        self, path: Path, range_header: tuple[int, int] | None
+    ) -> None:
+        self._handle = open(path, "rb")
+        size = os.fstat(self._handle.fileno()).st_size
+        if range_header:
+            start, end = range_header
+            self._handle.seek(start)
+            self._remaining = max(0, min(end, size - 1) - start + 1)
+        else:
+            self._remaining = size
+        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        self.headers = {
+            "Content-Type": mime,
+            "Content-Length": str(self._remaining),
+        }
+
+    def read(self, amount: int = -1) -> bytes:
+        if self._remaining <= 0:
+            return b""
+        if amount is None or amount < 0:
+            amount = self._remaining
+        data = self._handle.read(min(amount, self._remaining))
+        self._remaining -= len(data)
+        return data
+
+    def close(self) -> None:
+        self._handle.close()
+
+
+def _open_local_media(
+    state: BuzzState,
+    source_url: str,
+    download_url: str,
+    range_header: tuple[int, int] | None,
+) -> tuple[Any, bytes]:
+    """Open a ``file://`` store path with range support and validation."""
+    path = Path(download_url.removeprefix("file://"))
+    try:
+        response = _LocalFileStream(path, range_header)
+    except OSError as exc:
+        state.invalidate_download_url(source_url)
+        raise ValueError(f"failed to open local media: {exc}") from exc
+    try:
+        first_chunk = validate_remote_media_response(response, range_header)
+    except Exception:
+        response.close()
+        state.invalidate_download_url(source_url)
+        raise
+    return response, first_chunk
 
 
 _upstream_lock = threading.Lock()
@@ -369,6 +427,10 @@ def open_remote_media(
             continue
 
         try:
+            if download_url.startswith("file://"):
+                return _open_local_media(
+                    state, source_url, download_url, range_header
+                )
             return _execute_stream_attempt(
                 state,
                 source_url,
