@@ -7,7 +7,7 @@ from buzz.core import db
 from buzz.core.state import canonical_snapshot
 from buzz.core.utils import stable_json
 
-EXPECTED_SCHEMA_VERSION = 12
+EXPECTED_SCHEMA_VERSION = 13
 
 
 class DatabaseTests(unittest.TestCase):

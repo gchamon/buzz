@@ -1,5 +1,5 @@
 include:
-  - component: gitlab.com/gabriel.chamon/ci-components/docker-build@v1
+  - component: gitlab.com/gabriel.chamon/ci-components/docker-build@v2
     inputs:
       job_name: build_buzz_docker_image
       tracked_major_tag: $BUZZ_VERSION
@@ -8,3 +8,27 @@ include:
       dockerfile_name: buzz/Dockerfile
       job_rules:
         - when: always
+  - component: gitlab.com/gabriel.chamon/ci-components/docker-push@v2
+    inputs:
+      job_name: push_buzz_docker_image
+      build_job_name: build_buzz_docker_image
+      job_rules:
+        - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/'
+        - if: '$CI_COMMIT_BRANCH == "main"'
+        - when: never
+
+container_image_smoke_test:
+  stage: security
+  image: quay.io/buildah/stable@sha256:ca4edbaabf71ca330ec9b2714bf8e06c726a6e85ae215cfb1474d2e2c832aacb
+  needs:
+    - job: build_buzz_docker_image
+      artifacts: true
+  script:
+    - |
+      set -euo pipefail
+      image_id="$(buildah pull docker-archive:container-image.tar)"
+      container="$(buildah from "$image_id")"
+      trap "buildah rm '$container' >/dev/null" EXIT
+      buildah run "$container" -- python3 -m buzz --help
+  rules:
+    - when: always

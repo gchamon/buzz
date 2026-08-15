@@ -1072,7 +1072,13 @@ class DavApp:
 
     def persist_overrides(self, overrides: dict) -> dict:
         """Save overrides, hot-apply live-safe fields, and report status."""
-        v2_prefixes = ("provider.real_debrid", "provider.torbox", "provider.local", "provider.active", "provider.priority")
+        v2_prefixes = (
+            "provider.real_debrid",
+            "provider.torbox",
+            "provider.local",
+            "provider.active",
+            "provider.priority",
+        )
         if any(any(k.startswith(p) for p in v2_prefixes) for k in overrides):
             overrides["version"] = 2
         save_overrides(overrides, self.config._overrides_path)

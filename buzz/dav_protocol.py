@@ -135,7 +135,8 @@ class _LocalFileStream:
     def __init__(
         self, path: Path, range_header: tuple[int, int] | None
     ) -> None:
-        self._handle = open(path, "rb")
+        # This stream owns the handle and releases it in close().
+        self._handle = open(path, "rb")  # noqa: SIM115
         size = os.fstat(self._handle.fileno()).st_size
         if range_header:
             start, end = range_header

@@ -2,6 +2,7 @@ stages:
   - test
   - build
   - security
+  - deploy
   - tag
 
 workflow:
@@ -36,9 +37,21 @@ include:
           - maint-scripts/update_dependency_refs.py
           - .gitlab-ci.yml
           - .gitlab/ci/*.gitlab-ci.yml
+      - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/'
+      - if: '$CI_COMMIT_BRANCH == "main"'
       - when: never
   - local: .gitlab/ci/image-publish.gitlab-ci.yml
     rules:
+      - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+        changes:
+          - buzz/**/*
+          - scripts/**/*
+          - pyproject.toml
+          - uv.lock
+          - buzz/Dockerfile
+          - .gitlab-ci.yml
+          - .gitlab/ci/image-publish.gitlab-ci.yml
+          - .gitlab/ci/security.gitlab-ci.yml
       - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/'
       - if: '$CI_COMMIT_BRANCH == "main"'
       - when: never
@@ -51,15 +64,10 @@ include:
           - pyproject.toml
           - uv.lock
           - buzz/Dockerfile
+          - .gitlab/ci/image-publish.gitlab-ci.yml
           - .gitlab/ci/security.gitlab-ci.yml
       - if: '$CI_COMMIT_BRANCH == "main"'
-        changes:
-          - buzz/**/*
-          - scripts/**/*
-          - pyproject.toml
-          - uv.lock
-          - buzz/Dockerfile
-          - .gitlab/ci/security.gitlab-ci.yml
+      - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/'
       - when: never
 
 default:

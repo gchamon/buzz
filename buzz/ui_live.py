@@ -21,6 +21,7 @@ from pyview import (
     is_connected,
 )
 from pyview.events import InfoEvent, info
+from pyview.meta import PyViewMeta
 from pyview.template import LiveRender, RenderedContent, template_file
 from pyview.vendor import ibis
 from pyview.vendor.ibis.loaders import FileReloader
@@ -514,6 +515,14 @@ _PROVIDER_SHORT_LABELS: dict[str, str] = {
 _PROVIDER_CSS_CLASSES: dict[str, str] = {
     "real_debrid": "label-blue",
     "torbox": "label-green",
+}
+
+_SEED_STATUS_CSS_CLASSES: dict[str, str] = {
+    "seeding": "label-green",
+    "checking": "label-blue",
+    "downloading": "label-blue",
+    "paused": "label-orange",
+    "error": "label-red",
 }
 
 
@@ -2772,25 +2781,26 @@ class BuzzLiveView(_BaseBuzzLiveView):
     def _render_page_body(
         self, page: PageName, context: ShellContext
     ) -> Markup:
+        meta = PyViewMeta()
         if page == "archive":
             rendered = _load_template("archive_live.html").render(
-                context["archive"], None
+                context["archive"], meta
             )
         elif page == "logs":
             rendered = _load_template("logs_live.html").render(
-                context["logs"], None
+                context["logs"], meta
             )
         elif page == "threads":
             rendered = _load_template("threads_live.html").render(
-                context["threads"], None
+                context["threads"], meta
             )
         elif page == "config":
             rendered = _load_template("config_live.html").render(
-                context["config"], None
+                context["config"], meta
             )
         else:
             rendered = _load_template("cache_live.html").render(
-                context["cache"], None
+                context["cache"], meta
             )
         return _extract_page_body(rendered)
 

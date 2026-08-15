@@ -17,6 +17,7 @@ TARGETS = (
     Path("buzz/Dockerfile"),
     Path("docker-compose.yml"),
     Path(".gitlab/ci/gitleaks.gitlab-ci.yml"),
+    Path(".gitlab/ci/image-publish.gitlab-ci.yml"),
     Path(".gitlab/ci/test.gitlab-ci.yml"),
     Path(".gitlab/ci/security.gitlab-ci.yml"),
 )

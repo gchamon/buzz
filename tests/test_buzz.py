@@ -18,6 +18,7 @@ import httpx
 from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
+from pyview.meta import PyViewMeta
 
 from buzz.core.state import (
     BackgroundTask,
@@ -6268,7 +6269,9 @@ class DavAppTests(unittest.TestCase):
 
         view = CacheLiveView(self.dav_app)
         context = view._context(expanded_id=cache_key)
-        rendered = _load_template("cache_live.html").render(context, None)
+        rendered = _load_template("cache_live.html").render(
+            context, PyViewMeta()
+        )
         return str(rendered)
 
     def test_expanded_detail_panel_has_labeled_sections(self):
@@ -7254,7 +7257,10 @@ class DavAppTests(unittest.TestCase):
     def test_dockerfile_copies_config_templates(self):
         dockerfile = Path("buzz/Dockerfile").read_text(encoding="utf-8")
 
-        self.assertIn("COPY pyproject.toml README.md buzz.dist.yml /app/", dockerfile)
+        self.assertIn(
+            "COPY pyproject.toml uv.lock README.md buzz.dist.yml /app/",
+            dockerfile,
+        )
 
     def test_minimal_config_exists_and_is_valid(self):
         min_config_path = Path("buzz.min.yml")

@@ -1,15 +1,5 @@
 include:
   - template: Security/Container-Scanning.gitlab-ci.yml
-  - component: gitlab.com/gabriel.chamon/ci-components/docker-build@v1
-    inputs:
-      job_name: build_security_scan_image
-      job_stage: build
-      image_name: buzz
-      image_path: .
-      dockerfile_name: buzz/Dockerfile
-      override_tag: security-scan-$CI_COMMIT_SHA
-      job_rules:
-        - when: always
 
 container_image_pin_check:
   stage: test
@@ -44,15 +34,13 @@ python_dependency_scan:
 container_scanning:
   stage: security
   needs:
-    - job: build_security_scan_image
-      optional: true
+    - job: build_buzz_docker_image
+      artifacts: true
   variables:
     GIT_STRATEGY: fetch
-    CS_IMAGE: "$CI_REGISTRY_IMAGE/buzz:security-scan-$CI_COMMIT_SHA"
+    CS_IMAGE: "archive://container-image.tar"
     CS_DOCKERFILE_PATH: buzz/Dockerfile
     CS_DISABLE_LANGUAGE_VULNERABILITY_SCAN: "false"
-    CS_REGISTRY_USER: "$CI_REGISTRY_USER"
-    CS_REGISTRY_PASSWORD: "$CI_REGISTRY_PASSWORD"
     CS_SEVERITY_THRESHOLD: HIGH
   rules:
     - when: always

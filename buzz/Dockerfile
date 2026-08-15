@@ -13,10 +13,11 @@ RUN apk add --no-cache \
   tzdata && \
   python -m pip install --no-cache-dir uv
 
-# Install dependencies first to improve Docker layer caching
-COPY pyproject.toml README.md buzz.dist.yml /app/
-RUN mkdir -p /app/buzz/core && touch /app/buzz/__init__.py /app/buzz/core/__init__.py && \
-  uv pip install --system .
+# Install the exact locked runtime dependencies first to improve layer caching.
+COPY pyproject.toml uv.lock README.md buzz.dist.yml /app/
+RUN uv export --frozen --no-dev --no-emit-project --output-file /tmp/requirements.txt && \
+  uv pip install --system --require-hashes --requirements /tmp/requirements.txt && \
+  rm /tmp/requirements.txt
 
 # Copy application code and scripts
 COPY buzz /app/buzz
