@@ -33,9 +33,8 @@ python_dependency_scan:
 
 container_scanning:
   stage: security
-  needs:
-    - job: build_buzz_docker_image
-      artifacts: true
+  dependencies:
+    - build_buzz_docker_image
   variables:
     GIT_STRATEGY: fetch
     CS_IMAGE: "archive://container-image.tar"
