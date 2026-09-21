@@ -15,7 +15,12 @@ Each work item should use:
 
 ## Naming
 
-While the full Orisun convention is `{epic-name}-{work-item-number}-{work-item-name}.md`, buzz currently uses the simplified `{work-item-name}.md` because epics are deferred ([ADR 0001](../architecture/decisions/0001-defer-genesis-and-epics.md)). 
+While the full Orisun convention is `{epic-name}-{work-item-number}-{work-item-name}.md`, buzz currently uses the simplified `{created-at}-{work-item-name}.md` because epics are deferred ([ADR 0001](../architecture/decisions/0001-defer-genesis-and-epics.md)).
+
+`{created-at}` is the file creation date in `YYYYMMDD` format. Derive it from
+the filesystem birth timestamp when it is available. Git does not preserve this
+timestamp, so a fresh checkout may reflect checkout time rather than the
+original file creation time.
 
 When epics are introduced, files should be renamed to adopt the full convention while preserving the stable `id` in metadata.
 
