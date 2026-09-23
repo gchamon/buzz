@@ -244,6 +244,7 @@ if (typeof window !== "undefined") {
   hooks.BuzzBulkMagnetDraft = {
     mounted() {
       this._textarea = this.el.querySelector(".bulk-magnet-input");
+      this._syncToken();
       this._onInput = () => {
         if (!this._textarea) return;
         window.buzzBulkMagnetDraft = this._textarea.value;
@@ -254,10 +255,18 @@ if (typeof window !== "undefined") {
       }
     },
     updated() {
+      this._syncToken();
       this._restore();
     },
     destroyed() {
       this._textarea?.removeEventListener("input", this._onInput);
+    },
+    _syncToken() {
+      const token = this.el.dataset.draftToken ?? "";
+      if (token !== (window.buzzBulkMagnetDraftToken ?? "")) {
+        window.buzzBulkMagnetDraft = "";
+        window.buzzBulkMagnetDraftToken = token;
+      }
     },
     _restore() {
       const consoleMsg = document.getElementById("meta-console-msg");

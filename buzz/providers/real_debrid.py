@@ -5,17 +5,26 @@ from __future__ import annotations
 import os
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 import httpx
+import requests
 from rdapi import RD
 
 from buzz.core.events import record_event
 from buzz.core.providers import (
+    DEFAULT_RESOLUTION_REFRESH_SECS,
+    FileSelection,
+    FileSelectionResult,
+    MagnetResolution,
+    MagnetSubmission,
     ProviderDeleteError,
+    ProviderErrorCode,
     ProviderFile,
     ProviderKind,
+    ProviderOperation,
+    ProviderOperationError,
     ProviderStreamError,
     ProviderTorrentDetail,
     ProviderTorrentSummary,
@@ -23,6 +32,12 @@ from buzz.core.providers import (
     _as_int,
     _status,
 )
+
+_RETRYABLE_CODES = frozenset({
+    ProviderErrorCode.RATE_LIMITED,
+    ProviderErrorCode.UPSTREAM_TIMEOUT,
+    ProviderErrorCode.UPSTREAM_UNAVAILABLE,
+})
 
 
 class RealDebridProviderClient:
@@ -44,6 +59,8 @@ class RealDebridProviderClient:
         while True:
             print('HTTP Request: GET https://api.real-debrid.com/rest/1.0/torrents "HTTP/1.1 200 OK"', flush=True)
             response = self.raw_client.torrents.get(offset=offset, limit=page_size)
+            if response.status_code == 204:
+                break
             data = response.json()
             if not isinstance(data, list):
                 error = data.get("error") if isinstance(data, dict) else response.text
@@ -102,43 +119,124 @@ class RealDebridProviderClient:
             results[torrent_id] = self.get_torrent(torrent_id)
         return results
 
-    def add_magnet(self, magnet: str) -> str:
+    def submit_magnet(self, magnet: str) -> MagnetSubmission:
+        """Submit a magnet and return the accepted torrent reference."""
         print(
             'HTTP Request: POST https://api.real-debrid.com/rest/1.0/torrents/addMagnet "HTTP/1.1 200 OK"',
             flush=True,
         )
-        data = self.raw_client.torrents.add_magnet(magnet).json()
-        torrent_id = str(data.get("id") or "").strip()
+        try:
+            # rd.post keeps the magnet URI intact; Torrents.add_magnet would
+            # prefix ``magnet:?xt=urn:btih:`` a second time.
+            response = self.raw_client.post("/torrents/addMagnet", magnet=magnet)
+        except Exception as exc:
+            raise self._transport_error("submit_magnet", exc) from exc
+        data = self._safe_json(response)
+        torrent_id = (
+            str(data.get("id") or "").strip() if isinstance(data, dict) else ""
+        )
         if not torrent_id:
-            raise ValueError(f"Failed to add magnet: {data}")
-        return torrent_id
+            raise self._response_error("submit_magnet", response, data)
+        return MagnetSubmission(torrent_id=torrent_id)
 
-    def select_files(self, torrent_id: str, file_ids: list[str]) -> None:
+    def resolve_magnet(self, torrent_id: str) -> MagnetResolution:
+        """Report metadata readiness for an accepted torrent."""
+        try:
+            detail = self.get_torrent(torrent_id)
+        except RuntimeError as exc:
+            raise ProviderOperationError(
+                "real_debrid",
+                "resolve_magnet",
+                ProviderErrorCode.UPSTREAM_UNAVAILABLE,
+                detail=str(exc),
+                retryable=True,
+            ) from exc
+        if detail.status == "error":
+            raise ProviderOperationError(
+                "real_debrid",
+                "resolve_magnet",
+                ProviderErrorCode.TORRENT_NOT_FOUND,
+                detail="provider reports the torrent as errored",
+            )
+        if detail.files:
+            return MagnetResolution(
+                status="files_ready",
+                name=detail.name,
+                bytes=detail.bytes,
+                files=detail.files,
+            )
+        return MagnetResolution(
+            status="metadata_pending",
+            name=detail.name or None,
+            next_refresh_secs=DEFAULT_RESOLUTION_REFRESH_SECS,
+        )
+
+    def apply_file_selections(
+        self, selections: Sequence[FileSelection]
+    ) -> list[FileSelectionResult]:
+        """Apply selections sequentially; RD has no native batch endpoint."""
+        results: list[FileSelectionResult] = []
+        for selection in selections:
+            try:
+                self._select_files_one(selection.torrent_id, list(selection.file_ids))
+                results.append(
+                    FileSelectionResult(selection.torrent_id, ok=True)
+                )
+            except ProviderOperationError as exc:
+                results.append(
+                    FileSelectionResult(
+                        selection.torrent_id, ok=False, error=exc
+                    )
+                )
+        return results
+
+    def _select_files_one(self, torrent_id: str, file_ids: list[str]) -> None:
         print(
             "HTTP Request: POST https://api.real-debrid.com/rest/1.0/torrents"
             f'/selectFiles/{torrent_id} "HTTP/1.1 200 OK"',
             flush=True,
         )
-        response = self.raw_client.torrents.select_files(
-            torrent_id, ",".join(str(item) for item in file_ids)
-        )
+        try:
+            response = self.raw_client.torrents.select_files(
+                torrent_id, ",".join(str(item) for item in file_ids)
+            )
+        except Exception as exc:
+            raise self._transport_error("apply_file_selections", exc) from exc
         # RD's selectFiles is idempotent: a repeated call (incl. RD's implicit
         # selection at add-time) returns HTTP 403 with an error body. Treat
         # ``action_already_done`` (error_code 31) as a successful no-op so the
         # caller can refresh from RD's authoritative selection; surface any other
         # error body as a real failure.
-        try:
-            data = response.json()
-        except Exception:
-            data = None
+        data = self._safe_json(response)
         if isinstance(data, dict) and (data.get("error") or data.get("error_code")):
-            if data.get("error") == "action_already_done" or data.get("error_code") == 31:
+            if (
+                data.get("error") == "action_already_done"
+                or data.get("error_code") == 31
+            ):
                 return
-            raise ValueError(
-                f"Failed to select files: {self._rd_error_detail(response, data)}"
+            raise ProviderOperationError(
+                "real_debrid",
+                "apply_file_selections",
+                ProviderErrorCode.FILE_SELECTION_REJECTED,
+                detail=self._rd_error_detail(response, data),
             )
-        if response.status_code not in (200, 204):
-            raise ValueError(f"Failed to select files: {response.text}")
+        status = getattr(response, "status_code", None)
+        if status not in (200, 204):
+            raise self._response_error(
+                "apply_file_selections", response, data, detail=getattr(response, "text", "") or ""
+            )
+
+    def add_magnet(self, magnet: str) -> str:
+        """Legacy wrapper around :meth:`submit_magnet`."""
+        return self.submit_magnet(magnet).torrent_id
+
+    def select_files(self, torrent_id: str, file_ids: list[str]) -> None:
+        """Legacy wrapper around :meth:`apply_file_selections`."""
+        error = self.apply_file_selections(
+            [FileSelection(torrent_id, tuple(str(item) for item in file_ids))]
+        )[0].error
+        if error is not None:
+            raise error
 
     def delete_torrent(self, torrent_id: str) -> None:
         print(
@@ -195,6 +293,78 @@ class RealDebridProviderClient:
             return f"HTTP {status}"
         except Exception:
             return "unknown error"
+
+    @staticmethod
+    def _safe_json(response: Any) -> Any:
+        try:
+            return response.json()
+        except Exception:
+            return None
+
+    def _transport_error(
+        self, operation: ProviderOperation, exc: BaseException
+    ) -> ProviderOperationError:
+        """Map a ``requests`` transport failure to a typed provider error."""
+        if isinstance(exc, requests.exceptions.Timeout):
+            return ProviderOperationError(
+                "real_debrid",
+                operation,
+                ProviderErrorCode.UPSTREAM_TIMEOUT,
+                detail=str(exc),
+                retryable=True,
+            )
+        if isinstance(exc, requests.exceptions.RequestException):
+            return ProviderOperationError(
+                "real_debrid",
+                operation,
+                ProviderErrorCode.UPSTREAM_UNAVAILABLE,
+                detail=str(exc),
+                retryable=True,
+            )
+        return ProviderOperationError(
+            "real_debrid",
+            operation,
+            ProviderErrorCode.UNKNOWN,
+            detail=str(exc),
+        )
+
+    def _response_error(
+        self,
+        operation: ProviderOperation,
+        response: Any,
+        data: Any,
+        detail: str = "",
+    ) -> ProviderOperationError:
+        """Map an RD error response to a typed provider error."""
+        status = getattr(response, "status_code", None)
+        error_text = str(data.get("error") or "") if isinstance(data, dict) else ""
+        lowered = error_text.lower()
+        if "infringing_file" in lowered or "magnet" in lowered:
+            code = ProviderErrorCode.MAGNET_REJECTED
+        elif status == 401:
+            code = ProviderErrorCode.AUTHENTICATION_FAILED
+        elif status == 404:
+            code = ProviderErrorCode.TORRENT_NOT_FOUND
+        elif status == 403:
+            code = ProviderErrorCode.PERMISSION_DENIED
+        elif status == 429:
+            code = ProviderErrorCode.RATE_LIMITED
+        elif isinstance(status, int) and status >= 500:
+            code = ProviderErrorCode.UPSTREAM_UNAVAILABLE
+        else:
+            code = ProviderErrorCode.UPSTREAM_PROTOCOL_ERROR
+        if not detail and not error_text:
+            detail = f"HTTP {status}" if status is not None else "provider error"
+        elif not detail:
+            detail = error_text
+        return ProviderOperationError(
+            "real_debrid",
+            operation,
+            code,
+            detail=detail,
+            retryable=code in _RETRYABLE_CODES,
+            diagnostic=error_text or None,
+        )
 
     def _summary(self, item: dict[str, Any]) -> ProviderTorrentSummary:
         links = tuple(str(link) for link in item.get("links") or [])

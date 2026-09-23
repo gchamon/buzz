@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import re
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -26,7 +26,8 @@ from pyview.template import LiveRender, RenderedContent, template_file
 from pyview.vendor import ibis
 from pyview.vendor.ibis.loaders import FileReloader
 
-from . import console, events
+from . import console
+from .core.ingest import IngestState
 from .core.utils import format_bytes
 from .models import (
     FIELD_ANIME_PATTERNS,
@@ -65,6 +66,13 @@ TOPIC_ARCHIVE = "buzz:archive"
 TOPIC_LOGS = "buzz:logs"
 TOPIC_CONFIG = "buzz:config"
 EVENT_NAVIGATE = "navigate"
+EXPANDABLE_INGEST_STATES = frozenset(
+    {
+        IngestState.FILES_READY,
+        IngestState.SELECTING,
+        IngestState.AWAITING_CONFIRMATION,
+    }
+)
 
 _TEMPLATE_DIR = Path(__file__).with_name("pyview_templates")
 ibis.loader = FileReloader(str(_TEMPLATE_DIR))
@@ -208,13 +216,30 @@ class CacheFolderItem(TypedDict):
     total_files: int
 
 
-class CacheAnalysisResult(TypedDict):
-    """The result of a cache analysis for a specific torrent."""
-    torrent_id: str
-    filename: str
-    files: list[CacheFileItem]
+class IngestFileItem(TypedDict):
+    """A selectable file on a ready ingest entry."""
+    id: str
+    path: str
+    bytes: int
+    size: str
+    is_video: bool
+    selected: bool
+
+
+class IngestEntryItem(TypedDict):
+    """A durable ingest entry rendered as a cache-table row."""
+    id: str
+    expand_id: str
+    name: str
+    state: str
+    state_label: str
     provider: str
-    provider_label: str
+    progress: str
+    size: str
+    files: str
+    error: str
+    expandable: bool
+    short_id: str
 
 
 class CacheTorrentItem(TypedDict):
@@ -284,16 +309,15 @@ class ArchiveTransferAction(TypedDict):
 
 class CacheContext(PageContext):
     """Context for the cache operator page."""
-    analysis_error: str
-    analysis_results: list[CacheAnalysisResult]
-    analyzing: bool
-    caching: bool
     confirm_delete_id: str | None
+    draft_token: str
     expanded_category: str
     expanded_category_override: str
     expanded_id: str | None
     expanded_files: list[CacheFileItem]
     expanded_folders: list[CacheFolderItem]
+    ingest_entries: list[IngestEntryItem]
+    ingest_files: list[IngestFileItem]
     title_override: dict[str, Any]
     title_override_kind: str
     title_override_active: bool
@@ -304,7 +328,6 @@ class CacheContext(PageContext):
     parse_regex_placeholder: str
     parse_regex_test_url: str
     has_torrents: bool
-    show_overlay: bool
     sort_col: int
     sort_dir: str
     subtitle_enabled: bool
@@ -643,10 +666,15 @@ class _BaseBuzzLiveView(LiveView[_TContext]):
             lambda t: t["ended"] or "",
             lambda t: t["short_id"].lower(),
         ]
-        if col < 0 or col >= len(key_funcs):
-            return torrents
-        reverse = dir == "desc"
-        return sorted(torrents, key=key_funcs[col], reverse=reverse)
+        if 0 <= col < len(key_funcs):
+            reverse = dir == "desc"
+            torrents = sorted(torrents, key=key_funcs[col], reverse=reverse)
+        # Downloaded cache rows always occupy the final contiguous portion
+        # of the visible list; the stable partition keeps the requested
+        # column order within both groups.
+        active = [t for t in torrents if t["status"].lower() != "downloaded"]
+        downloaded = [t for t in torrents if t["status"].lower() == "downloaded"]
+        return active + downloaded
 
     def __init__(self, owner: Any) -> None:
         self.owner = owner
@@ -833,53 +861,43 @@ class CacheLiveView(_BaseBuzzLiveView):
         if event == "resync":
             self._handle_resync(socket)
             return
-        if event == "analyze":
-            self._handle_analyze(socket, payload)
+        if event == "submit_magnets":
+            self._handle_submit_magnets(socket, payload)
             return
-        if event == "select_files":
-            for result in socket.context["analysis_results"]:
-                for file in result["files"]:
-                    if mode == "all":
-                        file["selected"] = True
-                    elif mode == "none":
-                        file["selected"] = False
-                    elif mode == "video":
-                        file["selected"] = file["is_video"]
+        if event == "toggle_ingest_file":
+            for file in socket.context["ingest_files"]:
+                if file["id"] == file_id:
+                    file["selected"] = not file["selected"]
+                    break
             return
-        if event == "toggle_file":
-            for result in socket.context["analysis_results"]:
-                if result["torrent_id"] == torrent_id:
-                    for file in result["files"]:
-                        if file["id"] == file_id:
-                            file["selected"] = not file["selected"]
-                            break
+        if event == "select_ingest_files":
+            for file in socket.context["ingest_files"]:
+                if mode == "all":
+                    file["selected"] = True
+                elif mode == "none":
+                    file["selected"] = False
+                elif mode == "video":
+                    file["selected"] = file["is_video"]
             return
-        if event == "confirm_cache":
-            self._handle_confirm_cache(socket)
+        if event == "confirm_ingest":
+            self._handle_confirm_ingest(socket, id)
             return
-        if event == "cancel_cache":
-            for result in socket.context["analysis_results"]:
-                with contextlib.suppress(Exception):
-                    self.owner.state.delete_torrent(result["torrent_id"])
-            socket.context = self._context(
-                console_msg=socket.context["console_msg"],
-                console_class=socket.context["console_class"],
-                confirm_delete_id=socket.context["confirm_delete_id"],
-                sort_col=socket.context["sort_col"],
-                sort_dir=socket.context["sort_dir"],
-                add_provider=socket.context["add_provider"],
-            )
+        if event == "remove_ingest":
+            self._handle_remove_ingest(socket, id)
+            return
+        if event == "retry_ingest":
+            self._handle_retry_ingest(socket, id)
             return
         if event == "toggle_expand":
+            if (
+                id.startswith("ingest:")
+                and not self._ingest_is_expandable(id.removeprefix("ingest:"))
+            ):
+                return
             current = socket.context["expanded_id"]
-            socket.context = self._context(
-                console_msg=socket.context["console_msg"],
-                console_class=socket.context["console_class"],
-                confirm_delete_id=socket.context["confirm_delete_id"],
-                sort_col=socket.context["sort_col"],
-                sort_dir=socket.context["sort_dir"],
+            socket.context = self._preserve(
+                socket,
                 expanded_id=None if current == id else id,
-                add_provider=socket.context["add_provider"],
             )
             return
         if event == "toggle_selected_file":
@@ -918,6 +936,23 @@ class CacheLiveView(_BaseBuzzLiveView):
         if event == "sort":
             self._handle_sort(socket, col)
 
+    def _preserve(
+        self, socket: ConnectedLiveViewSocket[CacheContext], **overrides: Any
+    ) -> CacheContext:
+        context = socket.context
+        preserved: dict[str, Any] = {
+            "console_msg": context["console_msg"],
+            "console_class": context["console_class"],
+            "confirm_delete_id": context["confirm_delete_id"],
+            "draft_token": context["draft_token"],
+            "sort_col": context["sort_col"],
+            "sort_dir": context["sort_dir"],
+            "expanded_id": context["expanded_id"],
+            "add_provider": context["add_provider"],
+        }
+        preserved.update(overrides)
+        return self._context(**preserved)
+
     def _handle_apply_selection(
         self, socket: ConnectedLiveViewSocket[CacheContext], cache_id: str
     ) -> None:
@@ -933,14 +968,11 @@ class CacheLiveView(_BaseBuzzLiveView):
         except Exception as exc:  # noqa: BLE001
             console_msg = f"file selection failed: {exc}"
             console_class = console.Level.ERROR
-        socket.context = self._context(
+        socket.context = self._preserve(
+            socket,
             console_msg=console_msg,
             console_class=console_class,
-            confirm_delete_id=socket.context["confirm_delete_id"],
-            sort_col=socket.context["sort_col"],
-            sort_dir=socket.context["sort_dir"],
             expanded_id=cache_id,
-            add_provider=socket.context["add_provider"],
         )
 
     def _handle_set_category(
@@ -956,14 +988,11 @@ class CacheLiveView(_BaseBuzzLiveView):
         except Exception as exc:  # noqa: BLE001
             console_msg = f"category update failed: {exc}"
             console_class = console.Level.ERROR
-        socket.context = self._context(
+        socket.context = self._preserve(
+            socket,
             console_msg=console_msg,
             console_class=console_class,
-            confirm_delete_id=socket.context["confirm_delete_id"],
-            sort_col=socket.context["sort_col"],
-            sort_dir=socket.context["sort_dir"],
             expanded_id=cache_id,
-            add_provider=socket.context["add_provider"],
         )
 
     def _handle_set_subtitle_query(
@@ -982,14 +1011,11 @@ class CacheLiveView(_BaseBuzzLiveView):
         except Exception as exc:  # noqa: BLE001
             console_msg = f"subtitle query update failed: {exc}"
             console_class = console.Level.ERROR
-        socket.context = self._context(
+        socket.context = self._preserve(
+            socket,
             console_msg=console_msg,
             console_class=console_class,
-            confirm_delete_id=socket.context["confirm_delete_id"],
-            sort_col=socket.context["sort_col"],
-            sort_dir=socket.context["sort_dir"],
             expanded_id=cache_id or socket.context["expanded_id"],
-            add_provider=socket.context["add_provider"],
         )
 
     def _handle_set_curator_title(
@@ -1020,14 +1046,11 @@ class CacheLiveView(_BaseBuzzLiveView):
         except Exception as exc:  # noqa: BLE001
             console_msg = f"curator title override failed: {exc}"
             console_class = console.Level.ERROR
-        socket.context = self._context(
+        socket.context = self._preserve(
+            socket,
             console_msg=console_msg,
             console_class=console_class,
-            confirm_delete_id=socket.context["confirm_delete_id"],
-            sort_col=socket.context["sort_col"],
-            sort_dir=socket.context["sort_dir"],
             expanded_id=cache_id or socket.context["expanded_id"],
-            add_provider=socket.context["add_provider"],
         )
 
     def _handle_delete(
@@ -1035,30 +1058,18 @@ class CacheLiveView(_BaseBuzzLiveView):
     ) -> None:
         try:
             self.owner.state.delete_torrent(hash)
-            socket.context = self._context(
+            socket.context = self._preserve(
+                socket,
                 console_msg="removing from cache...",
                 console_class=console.Level.PENDING,
                 confirm_delete_id=None,
-                analysis_results=socket.context["analysis_results"],
-                analysis_error=socket.context["analysis_error"],
-                analyzing=socket.context["analyzing"],
-                caching=socket.context["caching"],
-                sort_col=socket.context["sort_col"],
-                sort_dir=socket.context["sort_dir"],
-                add_provider=socket.context["add_provider"],
             )
         except Exception as exc:
-            socket.context = self._context(
+            socket.context = self._preserve(
+                socket,
                 console_msg=f"delete failed: {exc}",
                 console_class=console.Level.ERROR,
                 confirm_delete_id=None,
-                analysis_results=socket.context["analysis_results"],
-                analysis_error=socket.context["analysis_error"],
-                analyzing=socket.context["analyzing"],
-                caching=socket.context["caching"],
-                sort_col=socket.context["sort_col"],
-                sort_dir=socket.context["sort_dir"],
-                add_provider=socket.context["add_provider"],
             )
 
     def _handle_fetch_subs(
@@ -1078,12 +1089,13 @@ class CacheLiveView(_BaseBuzzLiveView):
         socket.context["console_msg"] = msg
         socket.context["console_class"] = css_class
 
-    def _handle_analyze(  # noqa: C901
+    def _handle_submit_magnets(
         self,
         socket: ConnectedLiveViewSocket[CacheContext],
         payload: dict[str, Any] | None,
     ) -> None:
-        raw = (payload or {}).get("magnet", [])
+        data = payload or {}
+        raw = data.get("magnet", [])
         if isinstance(raw, str):
             raw = raw.splitlines()
         lines: list[str] = []
@@ -1092,134 +1104,111 @@ class CacheLiveView(_BaseBuzzLiveView):
         magnets = [m.strip() for m in lines if m.strip()]
         if not magnets:
             return
-        chosen_provider = (payload or {}).get("provider", "auto")
+        chosen_provider = data.get("provider", "auto")
         if isinstance(chosen_provider, list):
             chosen_provider = chosen_provider[0] if chosen_provider else "auto"
         chosen_provider = str(chosen_provider).strip() or "auto"
-        if chosen_provider == "auto":
-            chosen_provider = "auto"
-        socket.context["add_provider"] = chosen_provider
-        socket.context["analyzing"] = True
-        socket.context["analysis_error"] = ""
-        results: list[CacheAnalysisResult] = []
-        errors: list[str] = []
-        import re
-
-        for magnet in magnets:
-            try:
-                info = self.owner.state.add_magnet(
-                    magnet,
-                    None if chosen_provider == "auto" else chosen_provider,
-                )
-                files: list[CacheFileItem] = []
-                for f in info.get("files", []):
-                    path = str(f.get("path", ""))
-                    is_video = bool(
-                        re.search(r"\.(mkv|mp4|avi|m4v|mov)$", path, re.I)
-                    )
-                    b = int(f.get("bytes", 0))
-                    files.append(
-                        {
-                            "id": str(f.get("id", "")),
-                            "path": path,
-                            "bytes": b,
-                            "size": format_bytes(b),
-                            "is_video": is_video,
-                            "selected": is_video,
-                            "subtitle_query": "",
-                            "subtitle_default_query": Path(path).stem,
-                        }
-                    )
-                p = str(info.get("provider", "unknown"))
-                torrent_id = str(info.get("cache_key") or info["id"])
-                results.append(
-                    {
-                        "torrent_id": torrent_id,
-                        "filename": str(
-                            info.get("filename") or "Torrent Files"
-                        ),
-                        "files": files,
-                        "provider": p,
-                        "provider_label": p.replace("_", " ").upper(),
-                    }
-                )
-            except Exception as exc:
-                import traceback
-                events.log(
-                    f"magnet analyze traceback: {traceback.format_exc()}",
-                    level=events.Level.ERROR,
-                )
-                errors.append(str(exc))
-        socket.context["analyzing"] = False
-        socket.context["analysis_results"] = results
-        n_ok = len(results)
-        n_err = len(errors)
-        is_single = len(magnets) == 1
-        if errors:
-            for err_msg in errors:
-                events.log(
-                    f"magnet add failed: {err_msg}",
-                    level=events.Level.ERROR,
-                    event=events.Event.MAGNET_ADD_FAILED,
-                )
-            for res in results:
-                events.log(
-                    f"magnet resolved: {res['filename']} via {res['provider']}",
-                    level=events.Level.INFO,
-                    event=events.Event.MAGNET_ADD_OK,
-                )
-            if is_single:
-                socket.context["analysis_error"] = f"Failed: {errors[0]}"
-                console.log(
-                    socket.context,
-                    f"failed to resolve magnet: {errors[0]}",
-                    console.Level.ERROR,
-                )
-            else:
-                socket.context["analysis_error"] = f"Failed: {'; '.join(errors)}"
-                console.log(
-                    socket.context,
-                    f"Resolved {n_ok} magnets, {n_err} failed. See logs for detail.",
-                    console.Level.ERROR if n_ok == 0 else console.Level.WARNING,
-                )
-        else:
-            if len(magnets) > 1:
-                for res in results:
-                    events.log(
-                        (
-                            "magnet resolved: "
-                            f"{res['filename']} via {res['provider']}"
-                        ),
-                        level=events.Level.INFO,
-                        event=events.Event.MAGNET_ADD_OK,
-                    )
+        try:
+            entry_ids = self.owner.state.submit_magnets(
+                magnets,
+                chosen_provider,
+            )
             console.log(
                 socket.context,
-                f"Resolved {n_ok} magnet{'s' if n_ok != 1 else ''}.",
+                f"queued {len(entry_ids)} magnet{'s' if len(entry_ids) != 1 else ''} for cache",
                 console.Level.SUCCESS,
             )
+            socket.context = self._preserve(
+                socket,
+                expanded_id=None,
+                add_provider=chosen_provider,
+                draft_token=uuid.uuid4().hex,
+            )
+        except Exception as exc:  # noqa: BLE001
+            console.log(
+                socket.context,
+                f"magnet add failed: {exc}",
+                console.Level.ERROR,
+            )
+            socket.context = self._preserve(
+                socket,
+                expanded_id="add",
+                add_provider=chosen_provider,
+            )
 
-    def _handle_confirm_cache(
-        self, socket: ConnectedLiveViewSocket[CacheContext]
+    def _handle_confirm_ingest(
+        self, socket: ConnectedLiveViewSocket[CacheContext], entry_id: str
+    ) -> None:
+        selected_ids = [
+            file["id"] for file in socket.context["ingest_files"] if file["selected"]
+        ]
+        if not selected_ids:
+            console.log(
+                socket.context,
+                "select at least one file before confirming",
+                console.Level.WARNING,
+            )
+            socket.context = self._preserve(socket)
+            return
+        try:
+            task_id = self.owner.state.confirm_ingest_selections(
+                {entry_id: selected_ids}
+            )
+            socket.context = self._preserve(
+                socket,
+                console_msg=f"selection queued: {task_id}",
+                console_class=console.Level.SUCCESS,
+            )
+        except Exception as exc:  # noqa: BLE001
+            socket.context = self._preserve(
+                socket,
+                console_msg=f"selection failed: {exc}",
+                console_class=console.Level.ERROR,
+            )
+
+    def _handle_remove_ingest(
+        self, socket: ConnectedLiveViewSocket[CacheContext], entry_id: str
     ) -> None:
         try:
-            selections: dict[str, list[str]] = {}
-            for result in socket.context["analysis_results"]:
-                selected = [f["id"] for f in result["files"] if f["selected"]]
-                if selected:
-                    selections[result["torrent_id"]] = selected
-            task_id = self.owner.state.submit_cache_selection(selections)
-            socket.context = self._context(
-                console_msg=f"cache job queued: {task_id}",
-                console_class=console.Level.SUCCESS,
-                confirm_delete_id=socket.context["confirm_delete_id"],
-                sort_col=socket.context["sort_col"],
-                sort_dir=socket.context["sort_dir"],
-                add_provider=socket.context["add_provider"],
+            self.owner.state.remove_ingest(entry_id)
+        except Exception as exc:  # noqa: BLE001
+            socket.context = self._preserve(
+                socket,
+                console_msg=f"ingest removal failed: {exc}",
+                console_class=console.Level.ERROR,
             )
-        except Exception as exc:
-            socket.context["caching"] = False
-            console.log(socket.context, f"Error: {exc}", console.Level.ERROR)
+            return
+        if socket.context["expanded_id"] == f"ingest:{entry_id}":
+            expanded_id = self._default_ingest_expand_id()
+        else:
+            expanded_id = socket.context["expanded_id"]
+        socket.context = self._preserve(
+            socket,
+            expanded_id=expanded_id,
+            console_msg="ingest removed",
+            console_class=console.Level.SUCCESS,
+        )
+
+    def _handle_retry_ingest(
+        self, socket: ConnectedLiveViewSocket[CacheContext], entry_id: str
+    ) -> None:
+        try:
+            task_id = self.owner.state.retry_ingest(entry_id)
+        except Exception as exc:  # noqa: BLE001
+            socket.context = self._preserve(
+                socket,
+                console_msg=f"ingest retry failed: {exc}",
+                console_class=console.Level.ERROR,
+            )
+            return
+        socket.context = self._preserve(
+            socket,
+            expanded_id=None,
+            console_msg=f"ingest retry queued: {task_id}",
+            console_class=console.Level.SUCCESS,
+        )
+
+
 
     def _handle_sort(
         self, socket: ConnectedLiveViewSocket[CacheContext], col: str
@@ -1234,18 +1223,7 @@ class CacheLiveView(_BaseBuzzLiveView):
         else:
             sort_col = new_col
             sort_dir = "asc"
-        socket.context = self._context(
-            console_msg=socket.context["console_msg"],
-            console_class=socket.context["console_class"],
-            confirm_delete_id=socket.context["confirm_delete_id"],
-            analysis_results=socket.context["analysis_results"],
-            analysis_error=socket.context["analysis_error"],
-            analyzing=socket.context["analyzing"],
-            caching=socket.context["caching"],
-            sort_col=sort_col,
-            sort_dir=sort_dir,
-            add_provider=socket.context["add_provider"],
-        )
+        socket.context = self._preserve(socket, sort_col=sort_col, sort_dir=sort_dir)
 
     async def handle_info(
         self,
@@ -1254,18 +1232,19 @@ class CacheLiveView(_BaseBuzzLiveView):
     ) -> None:
         if event.name not in {TOPIC_STATUS, TOPIC_ARCHIVE}:
             return
-        socket.context = self._context(
-            console_msg=socket.context["console_msg"],
-            console_class=socket.context["console_class"],
-            confirm_delete_id=socket.context["confirm_delete_id"],
-            analysis_results=socket.context["analysis_results"],
-            analysis_error=socket.context["analysis_error"],
-            analyzing=socket.context["analyzing"],
-            caching=socket.context["caching"],
-            sort_col=socket.context["sort_col"],
-            sort_dir=socket.context["sort_dir"],
-            add_provider=socket.context["add_provider"],
-        )
+        payload = event.payload
+        if (
+            event.name == TOPIC_STATUS
+            and isinstance(payload, dict)
+            and payload.get("topic") == "ingest"
+            and payload.get("state") == IngestState.FILES_READY
+            and str(payload.get("entry_id") or "").strip()
+        ):
+            socket.context = self._preserve(
+                socket, expanded_id=f"ingest:{payload['entry_id']}"
+            )
+            return
+        socket.context = self._preserve(socket)
 
     async def render(
         self,
@@ -1279,15 +1258,18 @@ class CacheLiveView(_BaseBuzzLiveView):
         console_msg: str = "",
         console_class: str = "",
         confirm_delete_id: str | None = None,
-        analysis_results: list[CacheAnalysisResult] | None = None,
-        analysis_error: str = "",
-        analyzing: bool = False,
-        caching: bool = False,
+        draft_token: str = "",
         sort_col: int = 0,
         sort_dir: str = "asc",
         expanded_id: str | None = None,
         add_provider: str = "auto",
     ) -> CacheContext:
+        if (
+            expanded_id
+            and expanded_id.startswith("ingest:")
+            and not self._ingest_is_expandable(expanded_id.removeprefix("ingest:"))
+        ):
+            expanded_id = None
         torrents = []
         for torrent in self.owner.state.torrents():
             category_override = torrent["category_override"] or ""
@@ -1317,7 +1299,6 @@ class CacheLiveView(_BaseBuzzLiveView):
             )
         torrents = self._sort_torrents(torrents, sort_col, sort_dir)
         base = self._base_context(console_msg, console_class)
-        analysis_results = analysis_results or []
         expanded_files = self._expanded_files(expanded_id)
         expanded_category = self.owner.state.torrent_category(expanded_id)
         expanded_folders = self._expanded_folders(expanded_files)
@@ -1342,16 +1323,15 @@ class CacheLiveView(_BaseBuzzLiveView):
             CacheContext,
             {
                 **base,
-                "analysis_error": analysis_error,
-                "analysis_results": analysis_results,
-                "analyzing": analyzing,
-                "caching": caching,
                 "confirm_delete_id": confirm_delete_id,
+                "draft_token": draft_token,
                 "expanded_category": expanded_category["effective"],
                 "expanded_category_override": expanded_category["override"],
                 "expanded_id": expanded_id,
                 "expanded_files": expanded_files,
                 "expanded_folders": expanded_folders,
+                "ingest_entries": self._ingest_rows(),
+                "ingest_files": self._ingest_files(expanded_id),
                 **title_override_context,
                 "parse_regex_placeholder": self._parse_regex_placeholder(
                     expanded_id
@@ -1360,7 +1340,6 @@ class CacheLiveView(_BaseBuzzLiveView):
                     expanded_id, expanded_files, expanded_identity
                 ),
                 "has_torrents": bool(torrents),
-                "show_overlay": analyzing or caching,
                 "sort_col": sort_col,
                 "sort_dir": sort_dir,
                 "subtitle_enabled": self.owner.config.subtitles.enabled,
@@ -1371,6 +1350,91 @@ class CacheLiveView(_BaseBuzzLiveView):
                 "single_provider": len(enabled_providers) == 1,
             },
         )
+
+    def _default_ingest_expand_id(self) -> str | None:
+        """Return the expand id of the oldest files-ready ingest entry."""
+        for entry in self.owner.state.ingest_entries():
+            if entry.state == IngestState.FILES_READY:
+                return f"ingest:{entry.id}"
+        return None
+
+    def _ingest_is_expandable(self, entry_id: str) -> bool:
+        """Return whether an ingest entry row renders an expand control."""
+        for entry in self.owner.state.ingest_entries():
+            if entry.id == entry_id:
+                return entry.state in EXPANDABLE_INGEST_STATES
+        return False
+
+
+    def _ingest_rows(self) -> list[IngestEntryItem]:
+        """Project durable ingest entries into cache-table rows."""
+        rows: list[IngestEntryItem] = []
+        for entry in self.owner.state.ingest_entries():
+            total_files = len(entry.files)
+            selected_files = sum(
+                1 for file in entry.files if file.get("selected")
+            )
+            if entry.state == IngestState.METADATA_PENDING:
+                progress = "waiting"
+            elif entry.state in EXPANDABLE_INGEST_STATES:
+                progress = "ready"
+            else:
+                progress = "-"
+            rows.append(
+                {
+                    "id": entry.id,
+                    "expand_id": f"ingest:{entry.id}",
+                    "name": entry.name
+                    or entry.display_name
+                    or entry.thash
+                    or entry.id,
+                    "state": entry.state,
+                    "state_label": IngestState.label(entry.state),
+                    "provider": entry.accepted_provider or "-",
+                    "progress": progress,
+                    "size": format_bytes(entry.total_bytes)
+                    if entry.total_bytes
+                    else "-",
+                    "files": (
+                        f"{selected_files}/{total_files}"
+                        if total_files
+                        else "-"
+                    ),
+                    "error": entry.error_detail or "",
+                    "short_id": entry.thash[:8] if entry.thash else "-",
+                    "expandable": entry.state in EXPANDABLE_INGEST_STATES,
+                }
+            )
+        return rows
+
+    def _ingest_files(self, expanded_id: str | None) -> list[IngestFileItem]:
+        """Return selectable files for an expanded ingest entry."""
+        if not expanded_id or not expanded_id.startswith("ingest:"):
+            return []
+        entry_id = expanded_id.removeprefix("ingest:")
+        for entry in self.owner.state.ingest_entries():
+            if entry.id != entry_id:
+                continue
+            files: list[IngestFileItem] = []
+            for file in entry.files:
+                path = str(file.get("path") or "")
+                if not path:
+                    continue
+                byte_count = int(file.get("bytes") or 0)
+                files.append(
+                    {
+                        "id": str(file.get("id") or ""),
+                        "path": path,
+                        "bytes": byte_count,
+                        "size": format_bytes(byte_count),
+                        "is_video": bool(
+                            re.search(r"\.(mkv|mp4|avi|m4v|mov)$", path, re.I)
+                        ),
+                        "selected": bool(file.get("selected")),
+                    }
+                )
+            return files
+        return []
 
     def _parse_regex_placeholder(self, expanded_id: str | None) -> str:
         kind = self._title_override_kind(expanded_id)
@@ -2804,8 +2868,18 @@ class BuzzLiveView(_BaseBuzzLiveView):
             )
         return _extract_page_body(rendered)
 
-    def _context(self, active_page: PageName = "cache", task_id: str = "") -> ShellContext:
-        cache = self.cache_view._context()
+    def _context(
+        self,
+        active_page: PageName = "cache",
+        task_id: str = "",
+        default_ingest_expanded: bool = False,
+    ) -> ShellContext:
+        if default_ingest_expanded:
+            cache = self.cache_view._context(
+                expanded_id=self.cache_view._default_ingest_expand_id()
+            )
+        else:
+            cache = self.cache_view._context()
         archive = self.archive_view._context()
         logs = self.logs_view._context()
         threads = self.threads_view._context(selected_thread_id=task_id)
@@ -2846,7 +2920,7 @@ class BuzzLiveView(_BaseBuzzLiveView):
         session: dict[str, Any],
     ) -> None:
         socket.live_title = self.page_title
-        socket.context = self._context()
+        socket.context = self._context(default_ingest_expanded=True)
         if is_connected(socket):
             await socket.subscribe(TOPIC_STATUS)
             await socket.subscribe(TOPIC_ARCHIVE)
@@ -2981,13 +3055,11 @@ class BuzzLiveView(_BaseBuzzLiveView):
             console_msg=context["cache"]["console_msg"],
             console_class=context["cache"]["console_class"],
             confirm_delete_id=context["cache"]["confirm_delete_id"],
-            analysis_results=context["cache"]["analysis_results"],
-            analysis_error=context["cache"]["analysis_error"],
-            analyzing=context["cache"]["analyzing"],
-            caching=context["cache"]["caching"],
+            draft_token=context["cache"]["draft_token"],
             sort_col=context["cache"]["sort_col"],
             sort_dir=context["cache"]["sort_dir"],
             expanded_id=context["cache"]["expanded_id"],
+            add_provider=context["cache"]["add_provider"],
         )
         context["archive"] = self.archive_view._context(
             console_msg=context["archive"]["console_msg"],

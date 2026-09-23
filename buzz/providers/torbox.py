@@ -4,16 +4,24 @@ from __future__ import annotations
 
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import httpx
 
 from buzz.core.events import record_event
 from buzz.core.providers import (
+    DEFAULT_RESOLUTION_REFRESH_SECS,
+    FileSelection,
+    FileSelectionResult,
+    MagnetResolution,
+    MagnetSubmission,
     ProviderDeleteError,
+    ProviderErrorCode,
     ProviderFile,
     ProviderKind,
+    ProviderOperation,
+    ProviderOperationError,
     ProviderRequestLimiter,
     ProviderRequestPolicy,
     ProviderStreamError,
@@ -22,7 +30,14 @@ from buzz.core.providers import (
     _as_float,
     _as_int,
     _status,
+    httpx_exception_error,
 )
+
+_RETRYABLE_CODES = frozenset({
+    ProviderErrorCode.RATE_LIMITED,
+    ProviderErrorCode.UPSTREAM_TIMEOUT,
+    ProviderErrorCode.UPSTREAM_UNAVAILABLE,
+})
 
 
 class TorBoxProviderClient:
@@ -65,7 +80,7 @@ class TorBoxProviderClient:
             overrides,
         )
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+    def _send(self, method: str, path: str, **kwargs: Any) -> Any:
         operation = str(kwargs.pop("_operation", "request"))
         if method != "GET":
             self._list_cache = None
@@ -82,12 +97,29 @@ class TorBoxProviderClient:
                 response.raise_for_status()
                 return response.json()
 
-        data = self._limiter.run(operation, send)
+        return self._limiter.run(operation, send)
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        data = self._send(method, path, **kwargs)
         if isinstance(data, dict) and data.get("success") is False:
             message = str(data.get("error") or data)
             if data.get("detail"):
                 message = f"{message} ({data['detail']})"
             raise RuntimeError(message)
+        return data.get("data") if isinstance(data, dict) and "data" in data else data
+
+    def _typed_request(
+        self, method: str, path: str, operation: ProviderOperation, **kwargs: Any
+    ) -> Any:
+        """Like :meth:`_request` but raises ProviderOperationError."""
+        try:
+            data = self._send(method, path, _operation=operation, **kwargs)
+        except httpx.HTTPStatusError as exc:
+            raise self._http_error(operation, exc) from exc
+        except httpx.HTTPError as exc:
+            raise httpx_exception_error("torbox", operation, exc) from exc
+        if isinstance(data, dict) and data.get("success") is False:
+            raise self._payload_error(operation, data)
         return data.get("data") if isinstance(data, dict) and "data" in data else data
 
     def list_torrents(self) -> list[ProviderTorrentSummary]:
@@ -159,11 +191,12 @@ class TorBoxProviderClient:
             results[torrent_id] = self.get_torrent(torrent_id)
         return results
 
-    def add_magnet(self, magnet: str) -> str:
-        data = self._request(
+    def submit_magnet(self, magnet: str) -> MagnetSubmission:
+        """Submit a magnet and return the accepted torrent reference."""
+        data = self._typed_request(
             "POST",
             "/v1/api/torrents/createtorrent",
-            _operation="add_magnet",
+            "submit_magnet",
             data={"magnet": magnet},
         )
         torrent_id = str(
@@ -172,11 +205,98 @@ class TorBoxProviderClient:
             or ""
         ).strip()
         if not torrent_id:
-            raise ValueError(f"Failed to add TorBox magnet: {data}")
-        return torrent_id
+            raise ProviderOperationError(
+                "torbox",
+                "submit_magnet",
+                ProviderErrorCode.UPSTREAM_PROTOCOL_ERROR,
+                detail="no torrent id in response",
+                diagnostic=str(data),
+            )
+        return MagnetSubmission(torrent_id=torrent_id)
+
+    def resolve_magnet(self, torrent_id: str) -> MagnetResolution:
+        """Report metadata readiness for an accepted torrent.
+
+        A torrent that is accepted but not yet listed is treated as
+        pending rather than an error: indexing can lag acceptance.
+        """
+        detail = self._typed_detail(torrent_id)
+        if detail.files:
+            return MagnetResolution(
+                status="files_ready",
+                name=detail.name,
+                bytes=detail.bytes,
+                files=detail.files,
+            )
+        return MagnetResolution(
+            status="metadata_pending",
+            name=detail.name or None,
+            next_refresh_secs=DEFAULT_RESOLUTION_REFRESH_SECS,
+        )
+
+    def _typed_detail(self, torrent_id: str) -> ProviderTorrentDetail:
+        if self._list_cache:
+            for item in self._list_cache:
+                item_id = str(item.get("torrent_id") or item.get("id") or "")
+                if item_id == torrent_id:
+                    detail = self._detail(item)
+                    if detail.files:
+                        return detail
+
+        for bypass_cache in (None, True):
+            params = {"id": torrent_id}
+            if bypass_cache is not None:
+                params["bypass_cache"] = str(bypass_cache).lower()
+            data = self._typed_request(
+                "GET",
+                "/v1/api/torrents/mylist",
+                "resolve_magnet",
+                params=params,
+            )
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get("torrent_id") or item.get("id") or "")
+                if item_id != torrent_id:
+                    continue
+                detail = self._detail(item)
+                if bypass_cache or detail.files:
+                    return detail
+        return ProviderTorrentDetail(
+            id=torrent_id,
+            hash="",
+            name="",
+            original_name="",
+            bytes=0,
+            progress=0.0,
+            status="unknown",
+        )
+
+    def apply_file_selections(
+        self, selections: Sequence[FileSelection]
+    ) -> list[FileSelectionResult]:
+        """Report success per torrent; TorBox has no per-file selection API.
+
+        Selection is emulated locally by buzz and reconciled on the next
+        provider sync, matching the legacy no-op behavior.
+        """
+        return [
+            FileSelectionResult(selection.torrent_id, ok=True)
+            for selection in selections
+        ]
+
+    def add_magnet(self, magnet: str) -> str:
+        """Legacy wrapper around :meth:`submit_magnet`."""
+        return self.submit_magnet(magnet).torrent_id
 
     def select_files(self, torrent_id: str, file_ids: list[str]) -> None:
-        _ = torrent_id, file_ids
+        """Legacy wrapper around :meth:`apply_file_selections`."""
+        error = self.apply_file_selections(
+            [FileSelection(torrent_id, tuple(str(item) for item in file_ids))]
+        )[0].error
+        if error is not None:
+            raise error
 
     def delete_torrent(self, torrent_id: str) -> None:
         max_attempts = 3
@@ -280,6 +400,72 @@ class TorBoxProviderClient:
             torrent_id, file_id = stream_ref.split(":", 1)
             return torrent_id, file_id
         return stream_ref, ""
+
+    def _http_error(
+        self, operation: ProviderOperation, exc: httpx.HTTPStatusError
+    ) -> ProviderOperationError:
+        """Map an HTTP failure to a typed error, enriching from the payload."""
+        error = httpx_exception_error("torbox", operation, exc)
+        try:
+            body = exc.response.json()
+        except ValueError:
+            body = None
+        if isinstance(body, dict) and body.get("success") is False:
+            return self._payload_error(operation, body, base=error)
+        return error
+
+    @staticmethod
+    def _payload_code(lowered: str, status_like: int | None) -> str | None:
+        """Pick the stable code for a TorBox error payload, or None."""
+        if status_like == 401:
+            return ProviderErrorCode.AUTHENTICATION_FAILED
+        if status_like == 403:
+            return ProviderErrorCode.PERMISSION_DENIED
+        if status_like == 404:
+            return ProviderErrorCode.TORRENT_NOT_FOUND
+        if status_like == 429:
+            return ProviderErrorCode.RATE_LIMITED
+        if status_like is not None and status_like >= 500:
+            return ProviderErrorCode.UPSTREAM_UNAVAILABLE
+        if "magnet" in lowered:
+            return ProviderErrorCode.MAGNET_REJECTED
+        if "rate" in lowered or "too many" in lowered:
+            return ProviderErrorCode.RATE_LIMITED
+        if "limit" in lowered or "quota" in lowered:
+            return ProviderErrorCode.ACCOUNT_LIMIT_REACHED
+        return None
+
+    def _payload_error(
+        self,
+        operation: ProviderOperation,
+        data: dict[str, Any],
+        base: ProviderOperationError | None = None,
+    ) -> ProviderOperationError:
+        """Map a TorBox ``success: false`` payload to a typed error."""
+        message = str(data.get("error") or "")
+        detail = str(data.get("detail") or "")
+        if detail:
+            message = f"{message} ({detail})" if message else detail
+        lowered = message.lower()
+        raw_code = data.get("error_code")
+        try:
+            status_like = int(str(raw_code).strip())
+        except ValueError:
+            status_like = None
+        code = self._payload_code(lowered, status_like)
+        if code is None:
+            if base is not None:
+                return base
+            code = ProviderErrorCode.UPSTREAM_PROTOCOL_ERROR
+        return ProviderOperationError(
+            "torbox",
+            operation,
+            code,
+            detail=message or "provider error",
+            retryable=code in _RETRYABLE_CODES,
+            retry_after=base.retry_after if base is not None else None,
+            diagnostic=message or None,
+        )
 
     @staticmethod
     def _http_stream_error_code(exc: httpx.HTTPStatusError) -> str:

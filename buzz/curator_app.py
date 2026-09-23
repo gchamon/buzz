@@ -26,6 +26,7 @@ from .core.subtitles import (
     state as subtitle_state,
 )
 from .core.tls import httpx_verify
+from .deployment import DeploymentInfo
 from .models import BUILTIN_CATEGORY_KINDS, CuratorConfig
 
 logger = logging.getLogger(__name__)
@@ -135,7 +136,7 @@ class CuratorApp:
             os.environ.get("BUZZ_CONFIG", "/app/buzz.yml"),
         )
         self.curator = Curator(config)
-        self._source_watcher: SourceRootWatcher | None = None
+        self.deployment = DeploymentInfo()
         self._subtitle_cancel_events: dict[str, threading.Event] = {}
         self._subtitle_cancel_lock = threading.Lock()
         self._event_listener = self._notify_dav_ui
@@ -205,7 +206,10 @@ class CuratorApp:
 
         @self.app.get("/healthz")
         def healthz():
-            return {"status": "ok"}
+            return {
+                "status": "ok",
+                "deployment": self.deployment.payload(),
+            }
 
         @self.app.get("/api/logs")
         def get_logs(limit: int = 100):

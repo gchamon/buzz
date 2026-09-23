@@ -1,7 +1,8 @@
 
-import httpx
 import unittest
 from unittest.mock import MagicMock, patch
+
+import httpx
 
 from buzz.core.events import registry as event_registry
 from buzz.core.providers import ProviderRequestLimiter, ProviderRequestPolicy
@@ -96,7 +97,7 @@ class TestTorBoxRetry(unittest.TestCase):
     def test_delete_torrent_retries_on_database_error(self, mock_client_class, mock_sleep):
         mock_client = MagicMock()
         mock_client_class.return_value.__enter__.return_value = mock_client
-        
+
         # Mock response sequence: 2 failures then 1 success
         failure_response = MagicMock()
         failure_response.status_code = 200
@@ -105,16 +106,16 @@ class TestTorBoxRetry(unittest.TestCase):
             "error": "error message",
             "detail": "DATABASE_ERROR"
         }
-        
+
         success_response = MagicMock()
         success_response.status_code = 200
         success_response.json.return_value = {
             "success": True,
             "data": {"ok": True}
         }
-        
+
         mock_client.request.side_effect = [failure_response, failure_response, success_response]
-        
+
         client = TorBoxProviderClient(
             "fake_token",
             request_policy=ProviderRequestPolicy(
@@ -123,10 +124,10 @@ class TestTorBoxRetry(unittest.TestCase):
             ),
         )
         client.delete_torrent("123")
-        
+
         self.assertEqual(mock_client.request.call_count, 3)
         self.assertEqual(mock_sleep.call_count, 2)
-        
+
         events = event_registry.get_recent()
         retry_events = [e for e in events if "retrying TorBox delete" in e["message"]]
         self.assertEqual(len(retry_events), 2)
@@ -136,7 +137,7 @@ class TestTorBoxRetry(unittest.TestCase):
     def test_delete_torrent_raises_after_max_retries(self, mock_client_class, mock_sleep):
         mock_client = MagicMock()
         mock_client_class.return_value.__enter__.return_value = mock_client
-        
+
         failure_response = MagicMock()
         failure_response.status_code = 200
         failure_response.json.return_value = {
@@ -144,9 +145,9 @@ class TestTorBoxRetry(unittest.TestCase):
             "error": "error message",
             "detail": "DATABASE_ERROR"
         }
-        
+
         mock_client.request.return_value = failure_response
-        
+
         client = TorBoxProviderClient(
             "fake_token",
             request_policy=ProviderRequestPolicy(
@@ -156,7 +157,7 @@ class TestTorBoxRetry(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "DATABASE_ERROR"):
             client.delete_torrent("123")
-        
+
         self.assertEqual(mock_client.request.call_count, 3)
         self.assertEqual(mock_sleep.call_count, 2)
 
@@ -165,7 +166,7 @@ class TestTorBoxRetry(unittest.TestCase):
     def test_delete_torrent_retries_on_http_500_database_error(self, mock_client_class, mock_sleep):
         mock_client = MagicMock()
         mock_client_class.return_value.__enter__.return_value = mock_client
-        
+
         # Mock response: 500 error with DATABASE_ERROR
         response = MagicMock()
         response.status_code = 500
@@ -175,16 +176,16 @@ class TestTorBoxRetry(unittest.TestCase):
             "error": "error message",
             "detail": "DATABASE_ERROR"
         }
-        
+
         # Raise HTTPStatusError
         error = httpx.HTTPStatusError("500 error", request=MagicMock(), response=response)
-        
+
         success_response = MagicMock()
         success_response.status_code = 200
         success_response.json.return_value = {"success": True}
-        
+
         mock_client.request.side_effect = [error, success_response]
-        
+
         client = TorBoxProviderClient(
             "fake_token",
             request_policy=ProviderRequestPolicy(
@@ -193,7 +194,7 @@ class TestTorBoxRetry(unittest.TestCase):
             ),
         )
         client.delete_torrent("123")
-        
+
         self.assertEqual(mock_client.request.call_count, 2)
         self.assertEqual(mock_sleep.call_count, 1)
 
@@ -202,7 +203,7 @@ class TestTorBoxRetry(unittest.TestCase):
     def test_delete_torrent_no_retry_on_other_error(self, mock_client_class, mock_sleep):
         mock_client = MagicMock()
         mock_client_class.return_value.__enter__.return_value = mock_client
-        
+
         failure_response = MagicMock()
         failure_response.status_code = 200
         failure_response.json.return_value = {
@@ -210,9 +211,9 @@ class TestTorBoxRetry(unittest.TestCase):
             "error": "some other error",
             "detail": "SOME_OTHER_ERROR"
         }
-        
+
         mock_client.request.return_value = failure_response
-        
+
         client = TorBoxProviderClient(
             "fake_token",
             request_policy=ProviderRequestPolicy(
@@ -222,7 +223,7 @@ class TestTorBoxRetry(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "SOME_OTHER_ERROR"):
             client.delete_torrent("123")
-        
+
         self.assertEqual(mock_client.request.call_count, 1)
         self.assertEqual(mock_sleep.call_count, 0)
 
@@ -255,7 +256,8 @@ class TestTorBoxRetry(unittest.TestCase):
         ]
 
         self.assertEqual(client.list_torrents(), [])
-        self.assertEqual(client.add_magnet("magnet:?xt=urn:btih:abc"), "123")
+        submission = client.submit_magnet("magnet:?xt=urn:btih:abc")
+        self.assertEqual(submission.torrent_id, "123")
         client.delete_torrent("123")
         self.assertEqual(
             client.resolve_stream("123:1"), "https://cdn.example.invalid/file"
@@ -263,7 +265,12 @@ class TestTorBoxRetry(unittest.TestCase):
 
         self.assertEqual(
             limiter.operations,
-            ["list_torrents", "add_magnet", "delete_torrent", "resolve_stream"],
+            [
+                "list_torrents",
+                "submit_magnet",
+                "delete_torrent",
+                "resolve_stream",
+            ],
         )
 
     @patch("buzz.core.providers.time.sleep")

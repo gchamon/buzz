@@ -357,7 +357,12 @@ class CuratorAppTests(unittest.TestCase):
             rebuild = client.post("/rebuild")
 
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json(), {"status": "ok"})
+            health_body = health.json()
+            self.assertEqual(health_body["status"], "ok")
+            self.assertEqual(
+                set(health_body["deployment"]),
+                {"version", "git_hash", "started_at", "uptime_seconds"},
+            )
             self.assertEqual(rebuild.status_code, 200)
             self.assertEqual(rebuild.json(), {"status": "rebuilding"})
 
@@ -370,9 +375,8 @@ class CuratorAppTests(unittest.TestCase):
 
             app = CuratorApp(self._config(root, build_on_start=True))
             stdout = io.StringIO()
-            with patch("sys.stdout", stdout):
-                with TestClient(app.app) as client:
-                    response = client.get("/healthz")
+            with patch("sys.stdout", stdout), TestClient(app.app) as client:
+                response = client.get("/healthz")
 
             self.assertEqual(response.status_code, 200)
             conn = db.connect(root / "state" / "buzz.sqlite")
@@ -401,9 +405,8 @@ class CuratorAppTests(unittest.TestCase):
 
             with patch(
                 "urllib.request.urlopen", return_value=response
-            ) as mock_urlopen:
-                with TestClient(CuratorApp(config).app) as client:
-                    self.assertEqual(client.get("/healthz").status_code, 200)
+            ) as mock_urlopen, TestClient(CuratorApp(config).app) as client:
+                self.assertEqual(client.get("/healthz").status_code, 200)
 
             payloads = []
             for call in mock_urlopen.call_args_list:
@@ -459,10 +462,8 @@ class CuratorAppTests(unittest.TestCase):
             with patch(
                 "buzz.curator_app.validate_media_server_startup_auth",
                 side_effect=MediaServerAuthError("bad auth"),
-            ):
-                with patch("sys.stdout", stdout):
-                    with TestClient(app.app) as client:
-                        response = client.get("/healthz")
+            ), patch("sys.stdout", stdout), TestClient(app.app) as client:
+                response = client.get("/healthz")
 
             self.assertEqual(response.status_code, 200)
             self.assertIn("Curator startup failed: bad auth", stdout.getvalue())
@@ -485,10 +486,8 @@ class CuratorAppTests(unittest.TestCase):
             stdout = io.StringIO()
             with patch(
                 "buzz.curator_app.validate_media_server_startup_auth"
-            ) as validate:
-                with patch("sys.stdout", stdout):
-                    with TestClient(app.app) as client:
-                        response = client.get("/healthz")
+            ) as validate, patch("sys.stdout", stdout), TestClient(app.app) as client:
+                response = client.get("/healthz")
 
             self.assertEqual(response.status_code, 200)
             validate.assert_called_once_with(config)
@@ -532,11 +531,10 @@ class CuratorAppTests(unittest.TestCase):
                     invalid_token=True,
                     error="unauthorized",
                 ),
-            ) as probe:
-                with self.assertRaisesRegex(
-                    MediaServerAuthError, "invalid or unauthorized"
-                ):
-                    validate_media_server_startup_auth(config)
+            ) as probe, self.assertRaisesRegex(
+                MediaServerAuthError, "invalid or unauthorized"
+            ):
+                validate_media_server_startup_auth(config)
 
             probe.assert_called_once_with(config)
 
@@ -597,17 +595,16 @@ class CuratorAppTests(unittest.TestCase):
                     unreachable=True,
                     error="connection refused",
                 ),
+            ), self.assertRaisesRegex(
+                MediaServerAuthError, "jellyfin is unreachable"
             ):
-                with self.assertRaisesRegex(
-                    MediaServerAuthError, "jellyfin is unreachable"
-                ):
-                    validate_media_server_startup_auth(
-                        config,
-                        timeout_secs=10,
-                        retry_interval_secs=5,
-                        sleep=sleep,
-                        monotonic=monotonic,
-                    )
+                validate_media_server_startup_auth(
+                    config,
+                    timeout_secs=10,
+                    retry_interval_secs=5,
+                    sleep=sleep,
+                    monotonic=monotonic,
+                )
 
     def test_curator_subtitle_fetch_uses_consistent_torrent_name(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -830,9 +827,8 @@ class CuratorAppTests(unittest.TestCase):
                         "jellyfin_scan_triggered": False,
                     },
                 ),
-            ):
-                with patch("sys.stdout", io.StringIO()) as stdout:
-                    app._run_rebuild([])
+            ), patch("sys.stdout", io.StringIO()) as stdout:
+                app._run_rebuild([])
 
             logged = stdout.getvalue()
             self.assertIn("curator rebuild failed: scan failed", logged)
@@ -1956,9 +1952,8 @@ class CuratorAppTests(unittest.TestCase):
             stdout = io.StringIO()
             with patch.object(
                 app.curator, "handle_rebuild", side_effect=RuntimeError("boom")
-            ):
-                with patch("sys.stdout", stdout):
-                    response = client.post("/rebuild")
+            ), patch("sys.stdout", stdout):
+                response = client.post("/rebuild")
 
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json(), {"status": "rebuilding"})

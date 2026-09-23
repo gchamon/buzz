@@ -1,14 +1,15 @@
 
+import tempfile
 import time
 import unittest
-import tempfile
-from typing import cast, Any
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock
-from buzz.core.state import BuzzState
-from buzz.core.providers import ProviderDeleteError
-from buzz.models import DavConfig as Config
+
 from buzz.core.events import registry as event_registry
+from buzz.core.providers import ProviderDeleteError
+from buzz.core.state import BuzzState
+from buzz.models import DavConfig as Config
 from buzz.ui_live import CacheLiveView
 
 
@@ -131,7 +132,7 @@ class TestDeleteVisibility(unittest.TestCase):
 
         view = CacheLiveView(owner)
         context = view._context(
-            analysis_results=[{"torrent_id": "T1", "files": [], "filename": "test", "provider": "rd", "provider_label": "RD"}],
+            draft_token="tok123",
             confirm_delete_id="HASH1",
             sort_col=1,
             sort_dir="desc",
@@ -143,7 +144,7 @@ class TestDeleteVisibility(unittest.TestCase):
         self.assertEqual(socket.context["console_msg"], "removing from cache...")
         self.assertEqual(socket.context["console_class"], "service-status-orange")
         self.assertIsNone(socket.context["confirm_delete_id"])
-        self.assertEqual(socket.context["analysis_results"], [{"torrent_id": "T1", "files": [], "filename": "test", "provider": "rd", "provider_label": "RD"}])
+        self.assertEqual(socket.context["draft_token"], "tok123")
         self.assertEqual(socket.context["sort_col"], 1)
         self.assertEqual(socket.context["sort_dir"], "desc")
 
@@ -156,7 +157,7 @@ class TestDeleteVisibility(unittest.TestCase):
 
         view = CacheLiveView(owner)
         context = view._context(
-            analysis_results=[{"torrent_id": "T1", "files": [], "filename": "test", "provider": "rd", "provider_label": "RD"}],
+            draft_token="tok123",
             confirm_delete_id="HASH1",
             sort_col=1,
             sort_dir="desc",
@@ -171,6 +172,7 @@ class TestDeleteVisibility(unittest.TestCase):
 
     def test_api_cache_delete_queued(self):
         from fastapi.testclient import TestClient
+
         from buzz.dav_app import DavApp
 
         with tempfile.TemporaryDirectory() as tmpdir:

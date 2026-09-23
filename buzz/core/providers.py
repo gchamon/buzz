@@ -5,13 +5,26 @@ from __future__ import annotations
 import random
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 import httpx
 
 ProviderKind = Literal["real_debrid", "torbox", "local"]
+
+ProviderOperation = Literal[
+    "list_torrents",
+    "get_torrent",
+    "submit_magnet",
+    "resolve_magnet",
+    "apply_file_selections",
+    "delete_torrent",
+    "resolve_stream",
+]
+
+# How often a pending magnet resolution is re-checked by default.
+DEFAULT_RESOLUTION_REFRESH_SECS = 30.0
 
 
 @dataclass(frozen=True)
@@ -53,6 +66,186 @@ class ProviderTorrentDetail:
     ended: str | None = None
     files: tuple[ProviderFile, ...] = ()
     stream_refs: tuple[str, ...] = ()
+
+
+class ProviderErrorCode:
+    """Stable error codes for provider ingest operations."""
+
+    INVALID_MAGNET = "invalid_magnet"
+    UNSUPPORTED_OPERATION = "unsupported_operation"
+    AUTHENTICATION_FAILED = "authentication_failed"
+    PERMISSION_DENIED = "permission_denied"
+    ACCOUNT_LIMIT_REACHED = "account_limit_reached"
+    MAGNET_REJECTED = "magnet_rejected"
+    RATE_LIMITED = "rate_limited"
+    UPSTREAM_TIMEOUT = "upstream_timeout"
+    UPSTREAM_UNAVAILABLE = "upstream_unavailable"
+    UPSTREAM_PROTOCOL_ERROR = "upstream_protocol_error"
+    TORRENT_NOT_FOUND = "torrent_not_found"
+    FILE_SELECTION_REJECTED = "file_selection_rejected"
+    UNKNOWN = "unknown"
+
+
+# Codes for which buzz may try the next provider in priority order.
+# Everything else (invalid local input, authentication, permission,
+# protocol) stops the entry without fallback.
+FALLBACK_ELIGIBLE_ERROR_CODES = frozenset({
+    ProviderErrorCode.UNSUPPORTED_OPERATION,
+    ProviderErrorCode.ACCOUNT_LIMIT_REACHED,
+    ProviderErrorCode.MAGNET_REJECTED,
+    ProviderErrorCode.RATE_LIMITED,
+    ProviderErrorCode.UPSTREAM_TIMEOUT,
+    ProviderErrorCode.UPSTREAM_UNAVAILABLE,
+})
+
+_RETRYABLE_ERROR_CODES = frozenset({
+    ProviderErrorCode.RATE_LIMITED,
+    ProviderErrorCode.UPSTREAM_TIMEOUT,
+    ProviderErrorCode.UPSTREAM_UNAVAILABLE,
+})
+
+
+class ProviderOperationError(ValueError):
+    """Typed provider failure with a stable code and safe UI detail.
+
+    ``detail`` is safe to surface in the UI. ``diagnostic`` carries the
+    raw provider-native message for structured logs only; orchestration
+    must branch exclusively on ``code``, ``retryable`` and
+    ``fallback_eligible``.
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        operation: ProviderOperation,
+        code: str,
+        detail: str = "",
+        *,
+        retryable: bool = False,
+        retry_after: float | None = None,
+        diagnostic: str | None = None,
+    ) -> None:
+        message = f"{provider} {operation} failed: {code}"
+        if detail:
+            message = f"{message} ({detail})"
+        super().__init__(message)
+        self.provider = provider
+        self.operation = operation
+        self.code = code
+        self.detail = detail
+        self.retryable = retryable
+        self.retry_after = retry_after
+        self.diagnostic = diagnostic
+
+    @property
+    def fallback_eligible(self) -> bool:
+        """Return True when the next provider may be tried for this failure."""
+        return self.code in FALLBACK_ELIGIBLE_ERROR_CODES
+
+
+@dataclass(frozen=True)
+class MagnetSubmission:
+    """Provider torrent reference returned when a magnet is accepted.
+
+    Acceptance only establishes the torrent reference; it does not imply
+    metadata readiness (see :class:`MagnetResolution`).
+    """
+
+    torrent_id: str
+    reused: bool = False
+
+
+@dataclass(frozen=True)
+class MagnetResolution:
+    """Metadata readiness for an accepted provider torrent.
+
+    ``files_ready`` carries normalized metadata and files for selection.
+    ``metadata_pending`` is a successful state: the provider accepted the
+    torrent but has not resolved its file list yet.
+    """
+
+    status: Literal["files_ready", "metadata_pending"]
+    name: str | None = None
+    bytes: int | None = None
+    files: tuple[ProviderFile, ...] = ()
+    next_refresh_secs: float | None = None
+
+
+@dataclass(frozen=True)
+class FileSelection:
+    """A requested file selection for one provider torrent."""
+
+    torrent_id: str
+    file_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class FileSelectionResult:
+    """Outcome of a file selection for one provider torrent."""
+
+    torrent_id: str
+    ok: bool
+    error: ProviderOperationError | None = None
+
+
+def retry_after_value(raw: str | None) -> float | None:
+    """Parse a Retry-After header value into seconds, or None."""
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return None
+
+
+def httpx_exception_error(
+    provider: str, operation: ProviderOperation, exc: BaseException
+) -> ProviderOperationError:
+    """Map a transport or HTTP exception to a typed provider error."""
+    code = ProviderErrorCode.UNKNOWN
+    detail = str(exc)
+    retryable = False
+    retry_after: float | None = None
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        retry_after = retry_after_value(
+            exc.response.headers.get("Retry-After")
+        )
+        if status == 401:
+            code = ProviderErrorCode.AUTHENTICATION_FAILED
+        elif status == 403:
+            code = ProviderErrorCode.PERMISSION_DENIED
+        elif status == 404:
+            code = ProviderErrorCode.TORRENT_NOT_FOUND
+        elif status == 408:
+            code = ProviderErrorCode.UPSTREAM_TIMEOUT
+            retryable = True
+        elif status == 429:
+            code = ProviderErrorCode.RATE_LIMITED
+            retryable = True
+        elif status >= 500:
+            code = ProviderErrorCode.UPSTREAM_UNAVAILABLE
+            retryable = True
+        else:
+            code = ProviderErrorCode.UPSTREAM_PROTOCOL_ERROR
+        detail = f"HTTP {status}"
+    elif isinstance(exc, httpx.TimeoutException):
+        code = ProviderErrorCode.UPSTREAM_TIMEOUT
+        retryable = True
+        detail = "request timed out"
+    elif isinstance(exc, (httpx.ConnectError, httpx.RemoteProtocolError)):
+        code = ProviderErrorCode.UPSTREAM_UNAVAILABLE
+    elif isinstance(exc, Exception):
+        code = ProviderErrorCode.UPSTREAM_UNAVAILABLE
+        retryable = True
+    return ProviderOperationError(
+        provider,
+        operation,
+        code,
+        detail=detail or code,
+        retryable=retryable,
+        retry_after=retry_after,
+    )
 
 
 @dataclass(frozen=True)
@@ -189,12 +382,49 @@ class ProviderClient(Protocol):
         """Return normalized torrent details."""
         ...
 
+    def submit_magnet(self, magnet: str) -> MagnetSubmission:
+        """Submit a magnet and return the accepted torrent reference.
+
+        Acceptance only establishes the provider torrent reference; it
+        does not imply metadata readiness. Raises
+        :class:`ProviderOperationError` with a stable code on failure.
+        """
+        ...
+
+    def resolve_magnet(self, torrent_id: str) -> MagnetResolution:
+        """Report metadata readiness for an accepted provider torrent.
+
+        Returns ``files_ready`` with normalized metadata and files, or
+        ``metadata_pending`` when the provider has not resolved the file
+        list yet. Pending is a success state, not an error.
+        """
+        ...
+
+    def apply_file_selections(
+        self, selections: Sequence[FileSelection]
+    ) -> list[FileSelectionResult]:
+        """Apply file selections grouped for one provider.
+
+        Adapters use a native batch API where available and perform their
+        own sequential requests otherwise; outcomes are reported per
+        torrent so partial failures stay visible.
+        """
+        ...
+
     def add_magnet(self, magnet: str) -> str:
-        """Add a magnet and return the provider torrent id."""
+        """Deprecated: add a magnet and return the provider torrent id.
+
+        Superseded by :meth:`submit_magnet`; no longer called by buzz and
+        slated for removal.
+        """
         ...
 
     def select_files(self, torrent_id: str, file_ids: list[str]) -> None:
-        """Select files for download when the provider supports it."""
+        """Deprecated: select files for download when the provider supports it.
+
+        Superseded by :meth:`apply_file_selections`; no longer called by
+        buzz and slated for removal.
+        """
         ...
 
     def delete_torrent(self, torrent_id: str) -> None:

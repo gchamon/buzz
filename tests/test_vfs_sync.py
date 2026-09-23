@@ -44,7 +44,7 @@ class VFSSyncTests(unittest.TestCase):
 
         self.state._run_hook = MagicMock(side_effect=track_run_hook)
         self.state._trigger_curator = MagicMock(side_effect=track_trigger_curator)
-        
+
         mock_time.side_effect = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
         mock_isdir.return_value = True
         mock_exists.return_value = True
@@ -56,10 +56,10 @@ class VFSSyncTests(unittest.TestCase):
         mock_exists.assert_called()
         self.state._trigger_curator.assert_called_once()
         self.state._run_hook.assert_called_once()
-        
+
         # Verify order: hook then curator
         self.assertEqual(call_order, ["_run_hook", "_trigger_curator"])
-        
+
         events = [call.kwargs.get("event") for call in mock_record.call_args_list]
         self.assertIn("hook_waiting_vfs", events)
         self.assertIn("hook_vfs_visible", events)
@@ -70,7 +70,15 @@ class VFSSyncTests(unittest.TestCase):
     @patch("time.time")
     @patch("buzz.core.state.BuzzState._trigger_curator")
     @patch("buzz.core.state.BuzzState._run_hook")
-    def test_wait_for_vfs_visibility_delay(self, mock_run_hook, mock_trigger_curator, mock_time, mock_sleep, mock_exists, mock_isdir):
+    def test_wait_for_vfs_visibility_delay(
+        self,
+        mock_run_hook,
+        mock_trigger_curator,
+        mock_time,
+        mock_sleep,
+        mock_exists,
+        mock_isdir,
+    ):
         # Mock time to advance each call
         mock_time.side_effect = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0, 109.0, 110.0]
         mock_isdir.return_value = True
@@ -94,7 +102,15 @@ class VFSSyncTests(unittest.TestCase):
     @patch("time.time")
     @patch("buzz.core.state.BuzzState._trigger_curator")
     @patch("buzz.core.state.BuzzState._run_hook")
-    def test_wait_for_vfs_visibility_timeout(self, mock_run_hook, mock_trigger_curator, mock_time, mock_sleep, mock_exists, mock_isdir):
+    def test_wait_for_vfs_visibility_timeout(
+        self,
+        mock_run_hook,
+        mock_trigger_curator,
+        mock_time,
+        mock_sleep,
+        mock_exists,
+        mock_isdir,
+    ):
         mock_time.side_effect = [
             100.0, # start_time
             101.0, # first loop check
@@ -124,7 +140,15 @@ class VFSSyncTests(unittest.TestCase):
     @patch("time.time")
     @patch("buzz.core.state.BuzzState._trigger_curator")
     @patch("buzz.core.state.BuzzState._run_hook")
-    def test_wait_for_vfs_visibility_removed_root(self, mock_run_hook, mock_trigger_curator, mock_time, mock_sleep, mock_exists, mock_isdir):
+    def test_wait_for_vfs_visibility_removed_root(
+        self,
+        mock_run_hook,
+        mock_trigger_curator,
+        mock_time,
+        mock_sleep,
+        mock_exists,
+        mock_isdir,
+    ):
         self.state.snapshot = {"files": {}}
         mock_time.side_effect = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0]
         mock_isdir.return_value = True

@@ -47,6 +47,7 @@ from .dav_protocol import (
     open_remote_media,
     propfind_body,
 )
+from .deployment import DeploymentInfo
 from .models import (
     DEFAULT_DAV_CONFIG_PATH,
     FIELD_ANIME_PATTERNS,
@@ -321,13 +322,14 @@ class DavApp:
             record_event(f"unknown config key: {key}", level="warning")
         self.clients = self._build_provider_clients(config)
         self.client = next(iter(self.clients.values()), None)
-        self.ui_loop: asyncio.AbstractEventLoop | None = None
+        self.deployment = DeploymentInfo()
         self.state = BuzzState(config, self.clients, on_ui_change=self._notify_ui_change)
         self.curator_ready = not bool(config.curator_url)
         self.opensubtitles_languages: list[tuple[str, str]] = []
         self.languages_refreshing = False
         self._language_refresh_lock = threading.Lock()
         self._language_refresh_running = False
+        self.ui_loop: asyncio.AbstractEventLoop | None = None
         self.ui = build_ui(self)
         self._curator_log_level: str = "info"
         self._nav_log_level_override: str = ""
@@ -588,8 +590,12 @@ class DavApp:
         )
         def add_torrent(payload: AddTorrentRequest):
             try:
-                result = self.state.add_magnet(payload.magnet, payload.provider)
-                return result
+                entry_ids = self.state.submit_magnets(
+                    [payload.magnet], payload.provider or "auto"
+                )
+                entry_id = entry_ids[0]
+                entry = self.state.ingest[entry_id]
+                return {"entry_id": entry_id, "state": entry.state}
             except Exception as exc:
                 return JSONResponse(status_code=500, content={"error": str(exc)})
 
@@ -1238,6 +1244,7 @@ class DavApp:
             "status": "ok",
             "log_count": self.log_count(),
             "archive_count": len(self.state.archive),
+            "deployment": self.deployment.payload(),
             **self.state.status(),
         }
 
@@ -1253,6 +1260,7 @@ class DavApp:
                 "log_count": self.log_count(),
                 "curator_ready": self.curator_ready,
                 "ui_status": "ready" if self.is_ready() else "starting",
+                "deployment": self.deployment.payload(),
                 **self.state.status(),
             },
         )

@@ -1,11 +1,10 @@
 import contextlib
-import io
 import importlib.util
+import io
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[1]
@@ -19,6 +18,7 @@ VALID_DIGEST = (
 
 
 def load_script_module():
+    """Load maintain-scripts/update_dependency_refs.py as a module."""
     spec = importlib.util.spec_from_file_location(
         "update_dependency_refs", SCRIPT_PATH
     )

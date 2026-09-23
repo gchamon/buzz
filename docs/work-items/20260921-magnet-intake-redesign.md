@@ -1,18 +1,18 @@
-# Redesign Magnet Intake
+# Redesign Magnet Ingest
 
 ## Status
 
-backlog
+doing
 
 ## Outcome
 
 Replace the synchronous magnet analysis dialog with a durable, reactive magnet
-intake flow. Slow, incomplete, or failing upstream responses must not block the
+ingest flow. Slow, incomplete, or failing upstream responses must not block the
 cache page, silently discard a magnet, or require the operator to resubmit it.
 
 The cache table starts with an expandable synthetic row named **ADD NEW MAGNET
 LINKS TO THE CACHE**. Expanding it shows the multi-magnet input. Submitted
-magnets become independent, persistent intake entries, while the add row
+magnets become independent, persistent ingest entries, while the add row
 collapses and resets immediately for the next submission.
 
 Each magnet is submitted and analyzed sequentially through enabled debrid
@@ -22,23 +22,23 @@ the entry: delayed metadata or file lists are shown as pending and reconciled
 from that provider rather than creating duplicate torrents at fallback
 providers.
 
-Every valid magnet enters the archive when intake begins, before the provider
+Every valid magnet enters the archive when ingest begins, before the provider
 accepts it and before file selection. Its archive metadata is enriched as the
 provider resolves the entry. A valid submission must contain a locally parseable
 BTIH info hash; malformed or hashless input fails before provider work starts.
 
 ## Decision Changes
 
-- **Replace transient dialog state with durable intake state.** Persist an
-  intake record per submitted valid magnet, including its normalized hash,
+- **Replace transient dialog state with durable ingest state.** Persist an
+  ingest record per submitted valid magnet, including its normalized hash,
   original URI, provider attempts, accepted provider link, resolution state,
-  metadata, file-selection draft, timestamps, and terminal error. Intake state
+  metadata, file-selection draft, timestamps, and terminal error. Ingest state
   survives browser reconnects and process restarts.
 
-- **Use a table-native intake control.** Render the add form in the first,
+- **Use a table-native ingest control.** Render the add form in the first,
   expandable cache-table row instead of above the table. Once a batch is
   submitted, collapse and clear the synthetic row. Render each submitted magnet
-  as an independent intake row until it becomes a confirmed cache entry or a
+  as an independent ingest row until it becomes a confirmed cache entry or a
   terminal failure.
 
 - **Run analysis asynchronously and sequentially.** Queue magnets in input
@@ -58,13 +58,13 @@ BTIH info hash; malformed or hashless input fails before provider work starts.
   unsupported operation, or explicit magnet rejection. Invalid local input and
   authentication/configuration failures stop the entry without fallback.
 
-- **Persist archive history at intake start.** Normalize the BTIH hash locally,
+- **Persist archive history at ingest start.** Normalize the BTIH hash locally,
   then immediately create or update its archive record with the original magnet
   and available display name. Merge provider name, size, and selected-file
   metadata into this entry as it arrives. Archive persistence must be idempotent
   and independent of provider inventory sync.
 
-- **Represent every analysis outcome in the UI.** An intake row explicitly
+- **Represent every analysis outcome in the UI.** An ingest row explicitly
   displays files ready for selection, metadata pending at its accepted provider,
   or a terminal error after no provider accepts it or after metadata resolution
   reaches its bounded failure policy. Errors show a stable buzz code and safe
@@ -76,9 +76,9 @@ BTIH info hash; malformed or hashless input fails before provider work starts.
   or performs its own sequential requests otherwise, returning a per-torrent
   result. Entries remain visible while awaiting upstream confirmation.
 
-- **Replace provider mechanics with semantic intake primitives.** The provider
+- **Replace provider mechanics with semantic ingest primitives.** The provider
   contract must expose submission, resolution, and multi-selection operations
-  that correspond to the intake workflow rather than forcing `BuzzState` to
+  that correspond to the ingest workflow rather than forcing `BuzzState` to
   infer meaning from `add_magnet()` followed by an immediate detail request.
   Inventory, deletion, and stream-resolution primitives remain for sync and
   WebDAV and share the same error contract.
@@ -92,8 +92,8 @@ BTIH info hash; malformed or hashless input fails before provider work starts.
 
 ## Main Quests
 
-- **Define intake persistence and state transitions.**
-  - Add typed domain models and SQLite migrations for intake batches, intake
+- **Define ingest persistence and state transitions.**
+  - Add typed domain models and SQLite migrations for ingest batches, ingest
     entries, provider attempts, resolution state, and file-selection drafts.
   - Define queued, submitting, metadata-pending, files-ready, selecting,
     awaiting-confirmation, confirmed, and failed states with valid transitions.
@@ -125,7 +125,7 @@ BTIH info hash; malformed or hashless input fails before provider work starts.
     in structured logs, alongside the normalized error and safe detail.
   - Make retry and fallback decisions exclusively from typed error attributes.
 
-- **Implement intake orchestration and reconciliation.**
+- **Implement ingest orchestration and reconciliation.**
   - Process entries sequentially without blocking the live-view event handler.
   - Record every provider submission attempt and its outcome.
   - Refresh accepted entries until metadata becomes ready or reaches a defined,
@@ -133,11 +133,11 @@ BTIH info hash; malformed or hashless input fails before provider work starts.
   - Reconcile pending resolution and selection-confirmation entries during
     provider sync, enriching cache/archive metadata as upstream state changes.
   - Ensure cancellation stops future work cooperatively without silently
-    removing accepted provider torrents or durable intake history.
+    removing accepted provider torrents or durable ingest history.
 
 - **Redesign the cache page.**
   - Move the multi-magnet form into the first expandable table row.
-  - Render independent intake rows with provider, state, progress, safe error
+  - Render independent ingest rows with provider, state, progress, safe error
     information, pending-metadata messaging, and file-selection controls.
   - Preserve current cache-entry expansion and selection editing behavior.
   - Remove the global `analysis_results` dialog state and its cancellation path
@@ -145,7 +145,7 @@ BTIH info hash; malformed or hashless input fails before provider work starts.
 
 - **Confirm selections and project provider state.**
   - Submit ready selections grouped by provider through the new batch primitive.
-  - Retain partial success and failure results per intake entry.
+  - Retain partial success and failure results per ingest entry.
   - Keep entries pending until sync confirms upstream selection and cache state.
   - Update cache, archive metadata, the WebDAV snapshot, hooks, and live views
     only when their corresponding upstream transition is confirmed.
@@ -157,36 +157,36 @@ BTIH info hash; malformed or hashless input fails before provider work starts.
   - Cover native batch selection and adapter-level sequential fallback.
   - Verify raw provider failures map to the stable error vocabulary, safe UI
     detail, retryability, and fallback eligibility.
-  - Verify live cache views remain responsive and receive intake transitions.
+  - Verify live cache views remain responsive and receive ingest transitions.
 
 ## Acceptance Criteria
 
 - The first cache-table row is **ADD NEW MAGNET LINKS TO THE CACHE** and
   expands to accept multiple magnet links.
 - Submission clears and collapses that row immediately, while every valid
-  magnet appears as an independent persistent intake entry.
+  magnet appears as an independent persistent ingest entry.
 - A slow or incomplete provider response does not block the cache UI, cache
-  mutations, or later intake entries.
+  mutations, or later ingest entries.
 - Providers are tried in priority order until one accepts the magnet, and every
   failed submission attempt is visible in entry history and structured logs.
 - A provider that accepted a magnet remains authoritative while metadata is
   pending; buzz does not create fallback duplicates merely because files are
   delayed.
-- A ready intake entry renders selectable files. A pending entry clearly states
+- A ready ingest entry renders selectable files. A pending entry clearly states
   that its provider must resolve metadata before file selection is available.
 - A magnet that no provider accepts retains a visible terminal error with a
   normalized code and safe detail.
 - Invalid or hashless magnets are rejected locally before provider work. Valid
-  BTIH magnets enter the archive as soon as intake begins, before acceptance or
+  BTIH magnets enter the archive as soon as ingest begins, before acceptance or
   file confirmation.
 - Archive name, size, and selected-file metadata are enriched as provider
   resolution and confirmation complete.
 - All providers implement semantic magnet submission, resolution, and
-  multi-selection primitives, and no intake flow branches on exception text,
+  multi-selection primitives, and no ingest flow branches on exception text,
   HTTP status, or provider-native payload shape.
 - Selection uses provider-native batching when available and sequential adapter
   work otherwise, preserving a per-entry outcome for partial failures.
-- Intake entries survive restart and live-view reconnection, and transition in
+- Ingest entries survive restart and live-view reconnection, and transition in
   response to provider sync without browser polling.
 - New tests cover the state machine, persistence migration, adapter error
   mapping, fallback policy, partial selection outcomes, and live-view behavior.
@@ -196,7 +196,7 @@ BTIH info hash; malformed or hashless input fails before provider work starts.
 
 ### id
 
-magnet-intake-redesign
+magnet-ingest-redesign
 
 ### type
 

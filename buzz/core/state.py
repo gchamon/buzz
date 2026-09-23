@@ -31,10 +31,25 @@ from . import db
 from .constants import SHOW_PATTERNS
 from .events import record_event
 from .events import registry as event_registry
+from .ingest import (
+    IngestEntry,
+    IngestState,
+    can_transition,
+    confirm_selections,
+    finalize_confirmations,
+    new_batch_id,
+    new_entry_id,
+    parse_btih,
+    reconcile_due,
+    run_batch,
+)
 from .media import is_video_file, parse_movie, parse_show
 from .providers import (
+    FileSelection,
+    MagnetResolution,
     ProviderClient,
     ProviderDeleteError,
+    ProviderErrorCode,
     ProviderStreamError,
     ProviderTorrentDetail,
     is_local_stream_ref,
@@ -803,7 +818,7 @@ class BuzzState:
         self,
         config: DavConfig,
         client: Any,
-        on_ui_change: Callable[[str], None] | None = None,
+        on_ui_change: Callable[..., None] | None = None,
     ) -> None:
         """Initialize state storage and load persisted data from disk."""
         self.config = config
@@ -867,6 +882,14 @@ class BuzzState:
         self.file_selections: dict[str, set[str]] = db.load_file_selections(
             self.conn
         )
+        # Durable magnet ingest entries, keyed by entry id. Entries survive
+        # restarts; confirmed ones are pruned by the next provider sync.
+        self.ingest: dict[str, IngestEntry] = {
+            entry.id: entry
+            for entry in (
+                IngestEntry.from_row(row) for row in db.load_ingest_entries(self.conn)
+            )
+        }
         self.category_overrides: dict[str, str] = {
             thash: category
             for thash, category in db.load_category_overrides(self.conn).items()
@@ -1398,6 +1421,9 @@ class BuzzState:
             all_infos, all_caches = self._fetch_all_provider_infos(
                 ordered_clients, resync=resync
             )
+            # Advance pending ingest resolutions before the commit so their
+            # provider I/O runs outside the sync commit lock.
+            reconcile_due(self)
             self._apply_display_names(all_infos)
             new_cache, infos = self._effective_provider_cache(
                 all_infos, all_caches
@@ -1522,6 +1548,11 @@ class BuzzState:
             # table so the next in-process sync sees every provider's
             # signature (not just the deduplicated winners in self.cache).
             self._full_cache = full_provider_cache
+
+            # Confirm awaiting ingest entries whose torrent now appears in
+            # the synced cache, and prune previously confirmed ones.
+            if finalize_confirmations(self):
+                should_notify = True
 
             db.replace_provider_library(self.conn, provider_library_entries)
 
@@ -3183,69 +3214,6 @@ class BuzzState:
             self._enqueue_hook([changed_root])
         return {"status": "success"}
 
-    def add_magnet(self, magnet: str, provider: str | None = None) -> TorrentInfo:
-        """Add a magnet link using provider priority and fallback."""
-        errors: list[str] = []
-        if provider and provider != "auto":
-            if provider == "local":
-                raise ValueError("local provider cannot receive magnet adds")
-            if provider not in self.clients:
-                raise ValueError(f"provider '{provider}' is not enabled")
-            _index = 0
-            client = self.clients[provider]
-            torrent_id = client.add_magnet(magnet)
-        else:
-            for _index, (provider, client) in enumerate(self._fallback_clients()):
-                try:
-                    torrent_id = client.add_magnet(magnet)
-                    break
-                except Exception as exc:
-                    errors.append(f"{provider}: {exc}")
-            else:
-                raise ValueError(f"Failed to add magnet: {'; '.join(errors)}")
-
-        info = self._detail_to_info(client.get_torrent(torrent_id))
-        info["provider"] = provider
-        info["provider_torrent_id"] = torrent_id
-        cache_key = self._cache_key(provider, torrent_id)
-        self._apply_display_names([(provider, cache_key, info)])
-        filename = self.builder._torrent_name(info)
-        warning = None
-        if _index > 0:
-            warning = f"magnet add fell back to {provider}: {'; '.join(errors)}"
-            record_event(warning, level="warning", event="provider_add_fallback")
-
-        already_exists = False
-        self._apply_cached_file_selection(provider, cache_key, info)
-        with self.lock:
-            for cached in self.cache.values():
-                cached_info = cached.get("info", {})
-                if (
-                    cached_info.get("filename") == filename
-                    or cached_info.get("original_filename") == filename
-                ):
-                    already_exists = True
-                    break
-
-            self.cache[cache_key] = {
-                "signature": {},
-                "info": info,
-                "magnet": magnet,
-            }
-            self._save_cache_entry(cache_key, self.cache[cache_key])
-
-        result = {
-            "id": torrent_id,
-            "cache_key": cache_key,
-            "filename": filename,
-            "already_exists": already_exists,
-            "files": info.get("files", []),
-            "provider": provider,
-        }
-        if warning:
-            result["warning"] = warning
-        return result
-
     def attach_poller(self, poller: Poller | None) -> None:
         """Attach a background poller to the state."""
         self._poller = poller
@@ -3502,9 +3470,14 @@ class BuzzState:
                 )
                 continue
             try:
-                torrent_id = client.add_magnet(str(item["magnet"]))
-                detail = client.get_torrent(torrent_id)
-                info = self._detail_to_info(detail)
+                submission = client.submit_magnet(str(item["magnet"]))
+                torrent_id = submission.torrent_id
+                resolution = client.resolve_magnet(torrent_id)
+                if resolution.status != "files_ready":
+                    raise RuntimeError("metadata not ready after acceptance")
+                info = self._detail_to_info(
+                    self._resolution_to_detail(torrent_id, thash, resolution)
+                )
                 info["provider"] = destination_provider
                 info["provider_torrent_id"] = torrent_id
                 source_paths = {
@@ -3534,11 +3507,37 @@ class BuzzState:
                             self.conn, thash, source_paths, all_paths
                         )
                     if selected_ids:
-                        client.select_files(torrent_id, selected_ids)
-                        detail = client.get_torrent(torrent_id)
-                        info = self._detail_to_info(detail)
-                        info["provider"] = destination_provider
-                        info["provider_torrent_id"] = torrent_id
+                        already_selected = {
+                            file.id
+                            for file in resolution.files
+                            if file.selected
+                        }
+                        results = client.apply_file_selections(
+                            [
+                                FileSelection(
+                                    torrent_id,
+                                    tuple(
+                                        sorted(set(selected_ids) | already_selected)
+                                    ),
+                                )
+                            ]
+                        )
+                        if results and not results[0].ok:
+                            error = results[0].error
+                            raise RuntimeError(
+                                error.detail
+                                if error
+                                else "file selection rejected"
+                            )
+                        fresh = client.resolve_magnet(torrent_id)
+                        if fresh.status == "files_ready":
+                            info = self._detail_to_info(
+                                self._resolution_to_detail(
+                                    torrent_id, thash, fresh
+                                )
+                            )
+                            info["provider"] = destination_provider
+                            info["provider_torrent_id"] = torrent_id
 
                 self._apply_cached_file_selection(
                     destination_provider, cache_key, info
@@ -4150,6 +4149,403 @@ class BuzzState:
     def _provider_error_code(code: str) -> str:
         return str(code).strip().split(None, 1)[0]
 
+    # ------------------------------------------------------------------
+    # Durable magnet ingest
+    # ------------------------------------------------------------------
+
+    def submit_magnets(
+        self, magnets: list[str], provider: str = "auto"
+    ) -> list[str]:
+        """Create durable ingest entries for submitted magnets and queue work.
+
+        Valid magnets enter the archive immediately, before any provider
+        work. Malformed or hashless lines become visible terminal failures
+        with ``invalid_magnet``. Returns the entry ids in input order.
+        """
+        provider_choice = (provider or "auto").strip().lower()
+        if provider_choice == "local":
+            raise ValueError("local provider cannot receive magnet adds")
+        if provider_choice != "auto" and provider_choice not in self.clients:
+            raise ValueError(f"provider '{provider_choice}' is not enabled")
+        batch_id = new_batch_id()
+        now = time.time()
+        entry_ids: list[str] = []
+        queued_ids: list[str] = []
+        seen_hashes: set[str] = set()
+        with self.lock:
+            db.save_ingest_batch(self.conn, batch_id, provider_choice, now)
+            for raw in magnets:
+                magnet = str(raw or "").strip()
+                if not magnet:
+                    continue
+                thash = parse_btih(magnet)
+                entry_id = new_entry_id()
+                display_name = magnet_display_name(magnet) or None
+                if thash is None:
+                    entry = IngestEntry(
+                        id=entry_id,
+                        batch_id=batch_id,
+                        thash="",
+                        magnet=magnet,
+                        state=IngestState.FAILED,
+                        created_at=now,
+                        updated_at=now,
+                        display_name=display_name,
+                        error_code=ProviderErrorCode.INVALID_MAGNET,
+                        error_detail="no parseable BTIH info hash in magnet",
+                    )
+                    self.ingest[entry_id] = entry
+                    db.save_ingest_entry(self.conn, entry.to_row())
+                    entry_ids.append(entry_id)
+                    continue
+                if thash in seen_hashes:
+                    continue
+                seen_hashes.add(thash)
+                existing = self._cache_entry_for_hash(thash)
+                if existing is not None:
+                    provider_name, torrent_id = existing
+                    entry = IngestEntry(
+                        id=entry_id,
+                        batch_id=batch_id,
+                        thash=thash,
+                        magnet=magnet,
+                        state=IngestState.CONFIRMED,
+                        created_at=now,
+                        updated_at=now,
+                        display_name=display_name,
+                        accepted_provider=provider_name,
+                        provider_torrent_id=torrent_id,
+                    )
+                else:
+                    entry = IngestEntry(
+                        id=entry_id,
+                        batch_id=batch_id,
+                        thash=thash,
+                        magnet=magnet,
+                        state=IngestState.QUEUED,
+                        created_at=now,
+                        updated_at=now,
+                        display_name=display_name,
+                    )
+                    self._archive_ingest_entry(entry)
+                    queued_ids.append(entry_id)
+                self.ingest[entry_id] = entry
+                db.save_ingest_entry(self.conn, entry.to_row())
+                entry_ids.append(entry_id)
+        self._notify_ui_change("ingest")
+        if queued_ids:
+            self._submit_background_task(
+                kind="ingest",
+                label=f"ingest: {len(queued_ids)} magnet(s)",
+                run=lambda task_id, cancel_event: run_batch(
+                    self, queued_ids, provider_choice, cancel_event
+                ),
+            )
+        return entry_ids
+
+    def confirm_ingest_selections(self, selections: dict[str, list[str]]) -> str:
+        """Queue ingest file selections grouped by provider."""
+        clean = {
+            str(entry_id): [str(file_id) for file_id in file_ids if str(file_id).strip()]
+            for entry_id, file_ids in selections.items()
+        }
+        clean = {entry_id: ids for entry_id, ids in clean.items() if ids}
+
+        def run_confirm(task_id: str, cancel_event: threading.Event) -> None:
+            confirm_selections(self, clean, cancel_event)
+
+        return self._submit_background_task(
+            kind="ingest",
+            label=f"ingest_file_selection_confirmation: {len(clean)} entry(ies)",
+            run=run_confirm,
+        )
+
+    def retry_ingest(self, entry_id: str) -> str:
+        """Requeue a failed ingest entry as a fresh provider attempt.
+
+        The same durable row is reset in place: history and identity are
+        kept, provider-derived transient state is cleared, and a new
+        background task submits the original magnet with the batch's
+        original provider choice (``auto`` when the batch row is gone).
+        Returns the background task id.
+        """
+        entry_id = str(entry_id or "").strip()
+        with self.lock:
+            entry = self.ingest.get(entry_id)
+            if entry is None:
+                raise ValueError(f"ingest entry not found: {entry_id}")
+            if entry.state != IngestState.FAILED:
+                raise ValueError(
+                    f"ingest entry {entry_id} is not failed "
+                    f"(state: {entry.state})"
+                )
+            provider_choice = (
+                db.load_ingest_batch_provider_choice(self.conn, entry.batch_id)
+                or "auto"
+            )
+            entry.state = IngestState.QUEUED
+            entry.name = None
+            entry.total_bytes = None
+            entry.accepted_provider = None
+            entry.provider_torrent_id = None
+            entry.resolution_attempts = 0
+            entry.resolution_errors = 0
+            entry.next_resolution_at = None
+            entry.error_code = None
+            entry.error_detail = None
+            entry.files = []
+            entry.updated_at = time.time()
+            self.ingest[entry.id] = entry
+            db.save_ingest_entry(self.conn, entry.to_row())
+        self._notify_ui_change(
+            "ingest", {"entry_id": entry.id, "state": entry.state}
+        )
+        return self._submit_background_task(
+            kind="ingest",
+            label=f"ingest_retry: {entry.display_name or entry.thash or entry.id}",
+            run=lambda task_id, cancel_event: run_batch(
+                self, [entry.id], provider_choice, cancel_event
+            ),
+        )
+
+    def remove_ingest(self, entry_id: str) -> None:
+        """Remove a durable ingest row and its attempt history.
+
+        Intentionally leaves upstream provider content and archive state
+        untouched: this cancels the local workflow presentation, not any
+        accepted torrent.
+        """
+        entry_id = str(entry_id or "").strip()
+        with self.lock:
+            if entry_id not in self.ingest:
+                raise ValueError(f"ingest entry not found: {entry_id}")
+            self._remove_ingest_entry_locked(entry_id)
+        self._notify_ui_change("ingest")
+
+    def ingest_entries(self) -> list[IngestEntry]:
+        """Return unconfirmed ingest entries, oldest first."""
+        with self.lock:
+            return sorted(
+                (
+                    entry
+                    for entry in self.ingest.values()
+                    if entry.state != IngestState.CONFIRMED
+                ),
+                key=lambda entry: (entry.created_at, entry.id),
+            )
+
+    def ingest_attempts(self, entry_id: str) -> list[dict[str, Any]]:
+        """Return the provider attempt history for one ingest entry."""
+        return db.load_ingest_attempts(self.conn, entry_id)
+
+    def _cache_entry_for_hash(
+        self, thash: str
+    ) -> tuple[str, str] | None:
+        """Return (provider, torrent_id) of a cached torrent with this hash.
+
+        Call with the state lock held.
+        """
+        for cache_key, cached in self.cache.items():
+            if not (isinstance(cached, dict) and isinstance(cached.get("info"), dict)):
+                continue
+            info = cast(dict[str, Any], cached["info"])
+            if str(info.get("hash") or "").strip().lower() != thash:
+                continue
+            provider = str(info.get("provider") or "")
+            if not provider:
+                provider, _torrent_id = split_provider_torrent_id(cache_key)
+            return provider, str(info.get("id") or "")
+        return None
+
+    def _archive_ingest_entry(self, entry: IngestEntry) -> None:
+        """Register an ingest entry's hash in the archive at ingest start.
+
+        Idempotent: an existing archive record is left untouched. Call with
+        the state lock held.
+        """
+        if not entry.thash:
+            return
+        if entry.thash in self.archive:
+            return
+        self.archive[entry.thash] = {
+            "hash": entry.thash,
+            "name": entry.display_name or entry.thash,
+            "bytes": 0,
+            "files": [],
+            "deleted_at": utc_now_iso(),
+            "magnet": entry.magnet,
+        }
+        self._save_archive_entry(entry.thash, self.archive[entry.thash])
+
+    def _enrich_archive_from_entry(self, entry: IngestEntry) -> None:
+        """Merge resolved name, size, and selected files into the archive.
+
+        Idempotent: only fills gaps, never clobbers a readable name. Call
+        with the state lock held or from ingest code that holds no lock.
+        """
+        with self.lock:
+            record = self.archive.get(entry.thash)
+            if record is None or not isinstance(record, dict):
+                return
+            changed = False
+            if entry.name and _is_hash_name(str(record.get("name") or "")):
+                record["name"] = entry.name
+                changed = True
+            if entry.total_bytes and not record.get("bytes"):
+                record["bytes"] = entry.total_bytes
+                changed = True
+            selected_files = [
+                {
+                    "id": f.get("id"),
+                    "path": f.get("path"),
+                    "bytes": f.get("bytes"),
+                }
+                for f in entry.files
+                if f.get("selected")
+            ]
+            if selected_files and not record.get("files"):
+                record["files"] = selected_files
+                changed = True
+            if entry.magnet and not record.get("magnet"):
+                record["magnet"] = entry.magnet
+                changed = True
+            if changed:
+                self._save_archive_entry(entry.thash, record)
+
+    def _seed_ingest_file_selection(self, entry: IngestEntry) -> None:
+        """Seed the portable selection from the provider's defaults.
+
+        Only when no selection is stored for the hash yet. Call with the
+        state lock held or from ingest code that holds no lock.
+        """
+        with self.lock:
+            if not entry.thash or entry.thash in self.file_selections:
+                return
+            selected = {
+                normalize_posix_path(str(f.get("path") or ""))
+                for f in entry.files
+                if f.get("selected") and str(f.get("path") or "").strip()
+            }
+            all_paths = {
+                normalize_posix_path(str(f.get("path") or ""))
+                for f in entry.files
+                if str(f.get("path") or "").strip()
+            }
+            if selected:
+                self.file_selections[entry.thash] = selected
+                db.save_file_selection(
+                    self.conn, entry.thash, selected, all_paths
+                )
+
+    def _persist_ingest_selection_draft(
+        self, entry: IngestEntry, requested_ids: set[str]
+    ) -> None:
+        """Store the operator's requested selection as the portable draft."""
+        files_by_id = {
+            str(f.get("id")): normalize_posix_path(str(f.get("path") or ""))
+            for f in entry.files
+            if f.get("id") and str(f.get("path") or "").strip()
+        }
+        for file_item in entry.files:
+            file_item["selected"] = (
+                1 if str(file_item.get("id")) in requested_ids else 0
+            )
+        selected_paths = {
+            files_by_id[file_id]
+            for file_id in requested_ids
+            if file_id in files_by_id
+        }
+        all_paths = set(files_by_id.values())
+        with self.lock:
+            if entry.thash:
+                self.file_selections[entry.thash] = selected_paths
+                db.save_file_selection(
+                    self.conn, entry.thash, selected_paths, all_paths
+                )
+
+    def _update_ingest_entry(
+        self,
+        entry: IngestEntry,
+        *,
+        state: str | None = None,
+        notify: bool = True,
+        **fields: Any,
+    ) -> bool:
+        """Apply validated ingest state fields, persist, and push views."""
+        with self.lock:
+            if state is not None and not can_transition(entry.state, state):
+                record_event(
+                    f"ignoring invalid ingest transition "
+                    f"{entry.state} -> {state} for {entry.thash or entry.id}",
+                    level="warning",
+                    event="ingest_invalid_transition",
+                    entry_id=entry.id,
+                )
+                return False
+            if state is not None:
+                entry.state = state
+            for key, value in fields.items():
+                setattr(entry, key, value)
+            entry.updated_at = time.time()
+            self.ingest[entry.id] = entry
+            db.save_ingest_entry(self.conn, entry.to_row())
+        if notify:
+            self._notify_ui_change(
+                "ingest", {"entry_id": entry.id, "state": entry.state}
+            )
+        return True
+
+    def _persist_ingest_entry_locked(
+        self, entry: IngestEntry, state: str | None = None
+    ) -> None:
+        """Persist an entry from code that already holds the state lock."""
+        if state is not None:
+            entry.state = state
+        entry.updated_at = time.time()
+        db.save_ingest_entry(self.conn, entry.to_row())
+
+    def _remove_ingest_entry_locked(self, entry_id: str) -> None:
+        """Drop an entry and its attempts from code holding the lock."""
+        self.ingest.pop(entry_id, None)
+        db.delete_ingest_entry(self.conn, entry_id)
+
+    def _record_ingest_attempt(
+        self,
+        entry_id: str,
+        provider: str,
+        operation: str,
+        outcome: str,
+        code: str | None,
+        detail: str | None,
+    ) -> None:
+        """Append one provider attempt to the entry's durable history."""
+        db.insert_ingest_attempt(
+            self.conn,
+            entry_id,
+            provider,
+            operation,
+            outcome,
+            code,
+            detail,
+            time.time(),
+        )
+
+    @staticmethod
+    def _resolution_to_detail(
+        torrent_id: str, thash: str, resolution: MagnetResolution
+    ) -> ProviderTorrentDetail:
+        """Wrap a semantic resolution as the detail shape state code expects."""
+        return ProviderTorrentDetail(
+            id=torrent_id,
+            hash=thash,
+            name=resolution.name or "",
+            original_name=resolution.name or "",
+            bytes=resolution.bytes or 0,
+            progress=100.0 if resolution.files else 0.0,
+            status="downloaded" if resolution.files else "unknown",
+            files=resolution.files,
+        )
+
     def submit_cache_selection(self, selections: CacheSelection) -> str:
         """Queue selected-file application and provider sync work."""
         clean_selections = {
@@ -4500,7 +4896,7 @@ class BuzzState:
         errors: list[str] = []
         for _index, (provider, client) in enumerate(self._fallback_clients()):
             try:
-                torrent_id = client.add_magnet(magnet)
+                torrent_id = client.submit_magnet(magnet).torrent_id
                 break
             except Exception as exc:
                 errors.append(f"{provider}: {exc}")
@@ -4510,8 +4906,9 @@ class BuzzState:
         file_ids = [str(f["id"]) for f in entry.get("files", []) if f.get("id")]
         total_files = 0
         with contextlib.suppress(Exception):
-            detail = client.get_torrent(torrent_id)
-            total_files = len(self._detail_to_info(detail).get("files", []))
+            resolution = client.resolve_magnet(torrent_id)
+            if resolution.status == "files_ready":
+                total_files = len(resolution.files)
         if file_ids:
             try:
                 self.select_files(self._cache_key(provider, torrent_id), file_ids)
@@ -4734,7 +5131,7 @@ class BuzzState:
         for provider, client in self._ordered_clients():
             raise_if_cancelled(cancel_event)
             try:
-                torrent_id = client.add_magnet(magnet)
+                torrent_id = client.submit_magnet(magnet).torrent_id
                 files = self._await_reseed_files(
                     provider,
                     client,
@@ -4812,8 +5209,17 @@ class BuzzState:
         deadline = time.monotonic() + RESEED_RESTORE_TIMEOUT_SECS
         while True:
             raise_if_cancelled(cancel_event)
-            detail = client.get_torrent(torrent_id)
-            info = self._detail_to_info(detail)
+            resolution = client.resolve_magnet(torrent_id)
+            if resolution.status != "files_ready":
+                if time.monotonic() >= deadline:
+                    raise ValueError(
+                        f"{provider} did not produce live links in time"
+                    )
+                time.sleep(RESEED_POLL_INTERVAL_SECS)
+                continue
+            info = self._detail_to_info(
+                self._resolution_to_detail(torrent_id, thash, resolution)
+            )
             if not selection_applied:
                 if selected_paths:
                     file_ids = self._matching_destination_file_ids(
@@ -4829,17 +5235,14 @@ class BuzzState:
                         if isinstance(item, dict) and item.get("id") is not None
                     ]
                 if file_ids:
-                    client.select_files(torrent_id, file_ids)
-                    selection_applied = True
-            if str(info.get("status") or "") == "downloaded":
-                files = self._reseed_files_from_info(
-                    info, selected_paths, thash
-                )
-                if files:
-                    self._persist_reseed_cache_entry(
-                        provider, torrent_id, info, magnet
+                    client.apply_file_selections(
+                        [FileSelection(torrent_id, tuple(file_ids))]
                     )
-                    return files
+                    selection_applied = True
+            files = self._reseed_files_from_info(info, selected_paths, thash)
+            if files:
+                self._persist_reseed_cache_entry(provider, torrent_id, info, magnet)
+                return files
             if time.monotonic() >= deadline:
                 raise ValueError(
                     f"{provider} did not produce live links in time"
@@ -5087,11 +5490,23 @@ class BuzzState:
         self._notify_ui_change("archive")
         return {"status": "success"}
 
-    def _notify_ui_change(self, topic: str) -> None:
+    def _notify_ui_change(self, topic: str, payload: dict | None = None) -> None:
         if self.on_ui_change is None:
             return
         with contextlib.suppress(Exception):
-            self.on_ui_change(topic)
+            self.on_ui_change(topic, payload)
+
+    @staticmethod
+    def _apply_provider_selection(
+        client: Any, provider_torrent_id: str, provider_file_ids: set[str]
+    ) -> None:
+        """Apply one selection through the provider batch primitive."""
+        results = client.apply_file_selections(
+            [FileSelection(provider_torrent_id, tuple(provider_file_ids))]
+        )
+        error = results[0].error if results else None
+        if error is not None:
+            raise error
 
     def select_files(
         self, torrent_id: str, file_ids: list[str]
@@ -5128,7 +5543,9 @@ class BuzzState:
             else:
                 provider_file_ids = requested_file_ids.union(already_selected_ids)
         if not skip_provider_call:
-            client.select_files(provider_torrent_id, list(provider_file_ids))
+            self._apply_provider_selection(
+                client, provider_torrent_id, provider_file_ids
+            )
 
             # For Real-Debrid, re-fetch the authoritative detail after selection so
             # per-file stream links are populated.

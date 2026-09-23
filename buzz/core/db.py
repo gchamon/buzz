@@ -252,6 +252,56 @@ _MIGRATIONS: list[tuple[int, str]] = [
         );
         """,
     ),
+    (
+        14,
+        """
+        CREATE TABLE IF NOT EXISTS ingest_batches (
+            id TEXT PRIMARY KEY,
+            provider_choice TEXT NOT NULL,
+            submitted_at REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS ingest_entries (
+            id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL REFERENCES ingest_batches(id) ON DELETE CASCADE,
+            thash TEXT NOT NULL,
+            magnet TEXT NOT NULL,
+            display_name TEXT,
+            name TEXT,
+            total_bytes INTEGER,
+            state TEXT NOT NULL,
+            accepted_provider TEXT,
+            provider_torrent_id TEXT,
+            resolution_attempts INTEGER NOT NULL DEFAULT 0,
+            resolution_errors INTEGER NOT NULL DEFAULT 0,
+            next_resolution_at REAL,
+            error_code TEXT,
+            error_detail TEXT,
+            files_json TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ingest_entries_state
+            ON ingest_entries(state);
+        CREATE INDEX IF NOT EXISTS idx_ingest_entries_thash
+            ON ingest_entries(thash);
+
+        CREATE TABLE IF NOT EXISTS ingest_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id TEXT NOT NULL REFERENCES ingest_entries(id) ON DELETE CASCADE,
+            provider TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            code TEXT,
+            detail TEXT,
+            created_at REAL NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ingest_attempts_entry
+            ON ingest_attempts(entry_id);
+        """,
+    ),
 ]
 
 def connect(path: Path | str, timeout: float = 30.0) -> sqlite3.Connection:
@@ -1267,3 +1317,118 @@ def _readable_name(value: object) -> str:
     if not name or _HASH_RE.fullmatch(name):
         return ""
     return name
+
+
+# ---------------------------------------------------------------------------
+# Durable magnet ingest
+# ---------------------------------------------------------------------------
+
+INGEST_ENTRY_COLUMNS = (
+    "id",
+    "batch_id",
+    "thash",
+    "magnet",
+    "display_name",
+    "name",
+    "total_bytes",
+    "state",
+    "accepted_provider",
+    "provider_torrent_id",
+    "resolution_attempts",
+    "resolution_errors",
+    "next_resolution_at",
+    "error_code",
+    "error_detail",
+    "files_json",
+    "created_at",
+    "updated_at",
+)
+
+
+def load_ingest_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return every durable ingest entry, oldest first."""
+    rows = conn.execute(
+        "SELECT * FROM ingest_entries ORDER BY created_at, id"
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def save_ingest_entry(conn: sqlite3.Connection, entry: dict[str, Any]) -> None:
+    """Insert or update one ingest entry row.
+
+    Uses an upsert rather than ``INSERT OR REPLACE`` so the primary-key
+    conflict resolves as an UPDATE. A REPLACE would delete the existing row
+    first, firing the ``ON DELETE CASCADE`` on ``ingest_attempts`` and
+    silently dropping the entry's attempt history on every state change.
+    """
+    columns = ", ".join(INGEST_ENTRY_COLUMNS)
+    placeholders = ", ".join("?" for _ in INGEST_ENTRY_COLUMNS)
+    updates = ", ".join(
+        f"{column}=excluded.{column}" for column in INGEST_ENTRY_COLUMNS if column != "id"
+    )
+    values = tuple(entry.get(column) for column in INGEST_ENTRY_COLUMNS)
+    with conn:
+        conn.execute(
+            f"INSERT INTO ingest_entries ({columns}) VALUES ({placeholders}) "
+            f"ON CONFLICT(id) DO UPDATE SET {updates}",
+            values,
+        )
+
+
+def save_ingest_batch(
+    conn: sqlite3.Connection, batch_id: str, provider_choice: str, submitted_at: float
+) -> None:
+    """Record one submitted magnet batch."""
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO ingest_batches "
+            "(id, provider_choice, submitted_at) VALUES (?, ?, ?)",
+            (batch_id, provider_choice, submitted_at),
+        )
+
+def load_ingest_batch_provider_choice(
+    conn: sqlite3.Connection, batch_id: str
+) -> str | None:
+    """Return the persisted provider choice for one ingest batch, if any."""
+    row = conn.execute(
+        "SELECT provider_choice FROM ingest_batches WHERE id = ?", (batch_id,)
+    ).fetchone()
+    return str(row["provider_choice"]) if row is not None else None
+
+def delete_ingest_entry(conn: sqlite3.Connection, entry_id: str) -> None:
+    """Remove an ingest entry and its attempt history."""
+    with conn:
+        conn.execute("DELETE FROM ingest_attempts WHERE entry_id = ?", (entry_id,))
+        conn.execute("DELETE FROM ingest_entries WHERE id = ?", (entry_id,))
+
+
+def insert_ingest_attempt(
+    conn: sqlite3.Connection,
+    entry_id: str,
+    provider: str,
+    operation: str,
+    outcome: str,
+    code: str | None,
+    detail: str | None,
+    created_at: float,
+) -> None:
+    """Append one provider attempt to the entry's history."""
+    with conn:
+        conn.execute(
+            "INSERT INTO ingest_attempts "
+            "(entry_id, provider, operation, outcome, code, detail, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (entry_id, provider, operation, outcome, code, detail, created_at),
+        )
+
+
+def load_ingest_attempts(
+    conn: sqlite3.Connection, entry_id: str
+) -> list[dict[str, Any]]:
+    """Return the attempt history for one entry, oldest first."""
+    rows = conn.execute(
+        "SELECT provider, operation, outcome, code, detail, created_at "
+        "FROM ingest_attempts WHERE entry_id = ? ORDER BY id",
+        (entry_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]

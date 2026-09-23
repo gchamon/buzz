@@ -5,13 +5,19 @@ from __future__ import annotations
 import shutil
 import sqlite3
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from buzz.core import db
 from buzz.core.providers import (
+    FileSelection,
+    FileSelectionResult,
+    MagnetResolution,
+    MagnetSubmission,
+    ProviderErrorCode,
     ProviderFile,
     ProviderKind,
+    ProviderOperationError,
     ProviderStreamError,
     ProviderTorrentDetail,
     ProviderTorrentSummary,
@@ -81,13 +87,67 @@ class LocalProviderClient:
             results[torrent_id] = self.get_torrent(torrent_id)
         return results
 
-    def add_magnet(self, magnet: str) -> str:
+    def submit_magnet(self, magnet: str) -> MagnetSubmission:
         """Reject magnet adds; the local store is populated by explicit copies."""
-        raise RuntimeError("local provider does not support magnet add")
+        raise ProviderOperationError(
+            "local",
+            "submit_magnet",
+            ProviderErrorCode.UNSUPPORTED_OPERATION,
+            detail="local provider does not support magnet add",
+        )
+
+    def resolve_magnet(self, torrent_id: str) -> MagnetResolution:
+        """Local copies are complete on creation, so metadata is ready."""
+        entry = db.load_local_torrent(self._connection(), torrent_id)
+        if entry is None:
+            raise ProviderOperationError(
+                "local",
+                "resolve_magnet",
+                ProviderErrorCode.TORRENT_NOT_FOUND,
+                detail=f"local copy not found: {torrent_id}",
+            )
+        detail = self._detail(entry)
+        return MagnetResolution(
+            status="files_ready",
+            name=detail.name,
+            bytes=detail.bytes,
+            files=detail.files,
+        )
+
+    def apply_file_selections(
+        self, selections: Sequence[FileSelection]
+    ) -> list[FileSelectionResult]:
+        """Reject file selection; local copies are immutable snapshots."""
+        return [
+            FileSelectionResult(
+                selection.torrent_id,
+                ok=False,
+                error=ProviderOperationError(
+                    "local",
+                    "apply_file_selections",
+                    ProviderErrorCode.UNSUPPORTED_OPERATION,
+                    detail="local provider does not support file selection",
+                ),
+            )
+            for selection in selections
+        ]
+
+    def add_magnet(self, magnet: str) -> str:
+        """Legacy: reject magnet adds."""
+        try:
+            self.submit_magnet(magnet)
+        except ProviderOperationError as exc:
+            raise RuntimeError(str(exc)) from exc
+        raise AssertionError("local provider rejected magnet add")
 
     def select_files(self, torrent_id: str, file_ids: list[str]) -> None:
-        """Reject file selection; local copies are immutable snapshots."""
-        raise RuntimeError("local provider does not support file selection")
+        """Legacy: reject file selection."""
+        error = self.apply_file_selections(
+            [FileSelection(torrent_id, tuple(file_ids))]
+        )[0].error
+        if error is not None:
+            raise RuntimeError(str(error))
+        raise AssertionError("unreachable: local selection always rejected")
 
     def delete_torrent(self, torrent_id: str) -> None:
         """Remove a local copy's files from disk and its records."""
