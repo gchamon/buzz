@@ -7,6 +7,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[1]
     / "maint-scripts"
@@ -354,6 +356,53 @@ class UiStateConfigTests:
         info = entries["torbox:anime-042"]["info"]
         assert info["files"][0]["selected"] is True
 
+
+    def test_configured_ingest_entries_preserve_selected_files(self):
+        props = {
+            "ui_views": {
+                "cache": {
+                    "ingest_entries": [
+                        {
+                            "id": "custom-ingest",
+                            "batch_id": "custom-batch",
+                            "thash": "a" * 40,
+                            "magnet": "magnet:?xt=urn:btih:" + "a" * 40,
+                            "state": "files_ready",
+                            "created_at": 1750000000,
+                            "files": [
+                                {"id": "1", "path": "/movie.mkv", "selected": True}
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+        entries = rup._seed_ingest_entries(props)
+        entry = entries["custom-ingest"]
+
+        assert isinstance(entry, rup.IngestEntry)
+        assert entry.files[0]["selected"] is True
+        assert rup._expanded_cache_id(props) == "ingest:custom-ingest"
+
+    def test_default_and_explicit_empty_ingest_fixtures(self):
+        assert list(rup._seed_ingest_entries({})) == ["ingest-ready-001"]
+        assert rup._expanded_cache_id({}) == "ingest:ingest-ready-001"
+
+        empty = {"ui_views": {"cache": {"ingest_entries": []}}}
+        assert rup._seed_ingest_entries(empty) == {}
+        assert rup._expanded_cache_id(empty) == "rd-pending-003"
+
+    def test_invalid_ingest_state_is_rejected(self):
+        props = {
+            "ui_views": {
+                "cache": {
+                    "ingest_entries": [{"id": "bad", "state": "impossible"}]
+                }
+            }
+        }
+
+        with pytest.raises(ValueError, match="impossible"):
+            rup._seed_ingest_entries(props)
     def test_archive_names_are_configurable(self):
         entries = rup._archive_entries(
             {"ui_views": {"archive": [{"name": "Custom Archive"}]}}

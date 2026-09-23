@@ -25,6 +25,7 @@ from PIL import Image, ImageFilter, ImageStat
 from playwright.sync_api import Page, ViewportSize, sync_playwright
 
 from buzz.core.events import registry
+from buzz.core.ingest import IngestEntry, IngestState
 from buzz.core.state import BackgroundTask
 from buzz.dav_app import DavApp
 from buzz.models import DavConfig, TaskStatus
@@ -384,6 +385,7 @@ def _seed_app(app: DavApp, props: dict[str, Any]) -> None:
     }
     app.state.cache = _cache_entries(props)
     _seed_cache_overrides(app, props)
+    app.state.ingest = _seed_ingest_entries(props)
     app.state.archive = _archive_entries(props)
     _seed_provider_links(app, props)
     _seed_tasks(app, props)
@@ -662,6 +664,98 @@ def _cache_entries(props: dict[str, Any]) -> dict[str, dict[str, Any]]:
         default = defaults[index] if index < len(defaults) else {}
         cache_key, entry = _cache_entry(default, item)
         entries[cache_key] = entry
+    return entries
+
+
+def _default_ingest_entries() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "ingest-ready-001",
+            "batch_id": "ingest-batch-001",
+            "thash": "0123456789abcdef0123456789abcdef01234567",
+            "magnet": (
+                "magnet:?xt=urn:btih:"
+                "0123456789abcdef0123456789abcdef01234567"
+            ),
+            "state": IngestState.FILES_READY,
+            "created_at": 1_750_000_000.0,
+            "display_name": "The Durable Cache Entry",
+            "name": "The Durable Cache Entry",
+            "total_bytes": 2_147_483_648,
+            "accepted_provider": "real_debrid",
+            "provider_torrent_id": "2INGESTREADY001",
+            "files": [
+                {
+                    "id": "1",
+                    "path": "/The Durable Cache Entry/movie.mkv",
+                    "bytes": 2_000_000_000,
+                    "selected": True,
+                },
+                {
+                    "id": "2",
+                    "path": "/The Durable Cache Entry/sample.mkv",
+                    "bytes": 147_483_648,
+                    "selected": False,
+                },
+            ],
+            "updated_at": 1_750_000_100.0,
+        }
+    ]
+
+
+def _ingest_fixture_items(props: dict[str, Any]) -> list[dict[str, Any]]:
+    cache_state = _ui_view_mapping(props, "cache")
+    if "ingest_entries" not in cache_state:
+        return _default_ingest_entries()
+    return [
+        item
+        for item in _as_list(cache_state["ingest_entries"])
+        if isinstance(item, dict)
+    ]
+
+
+def _seed_ingest_entries(props: dict[str, Any]) -> dict[str, IngestEntry]:
+    entries: dict[str, IngestEntry] = {}
+    valid_states = {
+        IngestState.QUEUED,
+        IngestState.SUBMITTING,
+        IngestState.METADATA_PENDING,
+        IngestState.FILES_READY,
+        IngestState.SELECTING,
+        IngestState.AWAITING_CONFIRMATION,
+        IngestState.CONFIRMED,
+        IngestState.FAILED,
+    }
+    for index, item in enumerate(_ingest_fixture_items(props), 1):
+        state = str(item.get("state", IngestState.FILES_READY))
+        if state not in valid_states:
+            raise ValueError(f"unsupported screenshot ingest state: {state}")
+        thash = str(item.get("thash", ""))
+        entry_id = str(item.get("id", f"ingest-{index:03d}"))
+        entry = IngestEntry(
+            id=entry_id,
+            batch_id=str(item.get("batch_id", f"ingest-batch-{index:03d}")),
+            thash=thash,
+            magnet=str(item.get("magnet", f"magnet:?xt=urn:btih:{thash}")),
+            state=state,
+            created_at=float(item.get("created_at", 0.0)),
+            **{
+                key: item[key]
+                for key in (
+                    "display_name",
+                    "name",
+                    "total_bytes",
+                    "accepted_provider",
+                    "provider_torrent_id",
+                    "error_code",
+                    "error_detail",
+                    "files",
+                    "updated_at",
+                )
+                if key in item
+            },
+        )
+        entries[entry.id] = entry
     return entries
 
 
@@ -1463,9 +1557,12 @@ def _selected_thread_id(props: dict[str, Any]) -> str:
 
 def _expanded_cache_id(props: dict[str, Any]) -> str:
     cache_state = _ui_view_mapping(props, "cache")
-    raw = cache_state.get("expanded_id", "")
+    raw = cache_state.get("expanded_id")
     if raw:
         return str(raw)
+    ingest_entries = _ingest_fixture_items(props)
+    if ingest_entries:
+        return f"ingest:{ingest_entries[0].get('id', '')}"
     item = _ui_view_item(props, "cache", 2, {"cache_key": "rd-pending-003"})
     return str(item.get("cache_key", ""))
 
@@ -1477,17 +1574,21 @@ def _capture_route(
     route: str,
     raw_path: Path,
 ) -> None:
-    LOGGER.info("capturing route: /%s", route)
-    page.goto(f"http://127.0.0.1:{port}/{route}", wait_until="domcontentloaded")
+    capture_route = "cache" if route == "cache-add" else route
+    LOGGER.info("capturing route: /%s", capture_route)
+    page.goto(
+        f"http://127.0.0.1:{port}/{capture_route}",
+        wait_until="domcontentloaded",
+    )
     page.wait_for_selector("main")
     page.wait_for_timeout(500)
-    if route == "cache":
-        expanded_id = _expanded_cache_id(props)
+    if route in {"cache", "cache-add"}:
+        expanded_id = "add" if route == "cache-add" else _expanded_cache_id(props)
         if expanded_id:
             page.locator(
                 f"[phx-click='toggle_expand'][phx-value-id='{expanded_id}']"
             ).first.click()
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(1500)
     if route == "threads":
         LOGGER.debug("capturing threads route with selected task")
         page.goto(

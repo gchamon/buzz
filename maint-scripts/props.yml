@@ -17,7 +17,7 @@ viewport:
 
 # Routes to capture and compose, in order. Each becomes <route>.png. [list of route names]
 routes:
-  - cache
+  - cache-add
   - archive
   - logs
   - threads
@@ -40,7 +40,29 @@ ui_views:
     hook_in_progress: false
 
   cache:
-    expanded_id: rd-pending-003
+    expanded_id: ingest:ingest-ready-001
+    ingest_entries:
+      - id: ingest-ready-001
+        batch_id: ingest-batch-001
+        thash: 0123456789abcdef0123456789abcdef01234567
+        magnet: magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567
+        state: files_ready
+        created_at: 1750000000
+        updated_at: 1750000100
+        display_name: The Durable Cache Entry
+        name: The Durable Cache Entry
+        total_bytes: 2147483648
+        accepted_provider: real_debrid
+        provider_torrent_id: 2INGESTREADY001
+        files:
+          - id: "1"
+            path: /The Durable Cache Entry/movie.mkv
+            bytes: 2000000000
+            selected: true
+          - id: "2"
+            path: /The Durable Cache Entry/sample.mkv
+            bytes: 147483648
+            selected: false
     global:
       curator_log_level: info
       nav_log_level: info
@@ -306,8 +328,8 @@ ui_views:
 background:
   # Pixel dimensions of the generated Gaussian background canvas. [pixels]
   size:
-    width: 1600
-    height: 1000
+    width: 1280
+    height: 800
 
   # Optional local image path or URL to sample center colors from. When empty,
   # each center's own `color` is used. When set, colors are sampled by center

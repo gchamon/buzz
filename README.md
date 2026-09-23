@@ -24,7 +24,7 @@ tree Jellyfin can scan directly.
 The canonical repo for Buzz is <https://gitlab.com/gabriel.chamon/buzz> and the
 mirror repo, <https://github.com/gchamon/buzz>. 
 
-![cache UI: torrent cache management with unified interface for adding new entries for all debrid providers](/docs/assets/ui/cache.png)
+![cache UI: expanded magnet-entry form](/docs/assets/ui/cache-add.png)
 
 **Cache:** Torrent cache management with unified interface for adding new
 entries for all debrid providers. Per entry category, identity and file
