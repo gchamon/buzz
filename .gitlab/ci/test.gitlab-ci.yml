@@ -1,6 +1,6 @@
 pytest:
   stage: test
-  image: ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:bebc7d6de6dd015a483903461eaedea12805728be6f9a044ca7106a2f7e11ddf
+  image: ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:00facf17b58b02b725155862c5cd637f688f906bf7eb5b5194647886d8805cf3
   script:
     - apt-get update && apt-get install -y libatomic1
     - uv sync --group dev
@@ -15,7 +15,7 @@ pytest:
 
 ruff:
   stage: test
-  image: ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:bebc7d6de6dd015a483903461eaedea12805728be6f9a044ca7106a2f7e11ddf
+  image: ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:00facf17b58b02b725155862c5cd637f688f906bf7eb5b5194647886d8805cf3
   script:
     - apt-get update && apt-get install -y libatomic1
     - uv sync --group dev
@@ -25,7 +25,7 @@ ruff:
 
 pyright:
   stage: test
-  image: ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:bebc7d6de6dd015a483903461eaedea12805728be6f9a044ca7106a2f7e11ddf
+  image: ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:00facf17b58b02b725155862c5cd637f688f906bf7eb5b5194647886d8805cf3
   script:
     - apt-get update && apt-get install -y libatomic1
     - uv sync --group dev
@@ -35,7 +35,7 @@ pyright:
 
 htmlhint:
   stage: test
-  image: node:alpine@sha256:a2dc166a387cc6ca1e62d0c8e265e49ca985d6e60abc9fe6e6c3d6ce8e63f606
+  image: node:alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80
   script:
     - npx --yes htmlhint "buzz/pyview_templates/*.html"
   rules:

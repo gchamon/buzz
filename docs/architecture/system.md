@@ -123,8 +123,8 @@ Important DAV routes:
 | Route | Role |
 | --- | --- |
 | `/`, `/cache`, `/archive`, `/logs`, `/config` | Operator UI pages. |
-| `/healthz` | Process liveness. |
-| `/readyz` | Readiness, including DAV state and curator readiness when configured. |
+| `/healthz` | Process liveness; includes the `deployment` identity (version, git hash, start time, uptime). |
+| `/readyz` | Readiness, including DAV state, curator readiness, and the same `deployment` object; preferred deployment query. |
 | `/sync` | Manual RD sync. |
 | `/api/config`, `/api/config/restore-defaults` | Config read/write and reset. |
 | `/api/ui/notify` | Curator-to-DAV event notification. |

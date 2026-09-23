@@ -13,13 +13,25 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, call, patch
 
-import yaml
 import httpx
+import yaml
 from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from pyview.meta import PyViewMeta
 
+from buzz.core import db
+from buzz.core.events import registry
+from buzz.core.providers import (
+    FileSelectionResult,
+    MagnetResolution,
+    MagnetSubmission,
+    ProviderDeleteError,
+    ProviderFile,
+    ProviderStreamError,
+    ProviderTorrentDetail,
+    ProviderTorrentSummary,
+)
 from buzz.core.state import (
     BackgroundTask,
     BackgroundTaskPool,
@@ -30,34 +42,23 @@ from buzz.core.state import (
     dav_rel_path,
     normalize_posix_path,
 )
-from buzz.core import db
-from buzz.core.events import registry
-from buzz.core.providers import (
-    ProviderDeleteError,
-    ProviderFile,
-    ProviderStreamError,
-    ProviderTorrentDetail,
-    ProviderTorrentSummary,
-)
-from buzz.providers import RealDebridProviderClient, TorBoxProviderClient
 from buzz.core.tls import ensure_tls_certificate
-from buzz.dav_app import DavApp
-from buzz.dav_app import UvicornReadyzAccessFilter
-from buzz.dav_app import install_uvicorn_readyz_access_filter
+from buzz.dav_app import DavApp, UvicornReadyzAccessFilter, install_uvicorn_readyz_access_filter
 from buzz.dav_protocol import open_remote_media, propfind_body
-from buzz.ui_live import ArchiveLiveView, CacheLiveView, ThreadsLiveView
 from buzz.models import (
-    DavConfig as Config,
-)
-from buzz.models import (
-    CuratorConfig,
     DEFAULT_TLS_CERT_PATH,
     DEFAULT_TLS_KEY_PATH,
+    CuratorConfig,
     SubtitleConfig,
     deep_merge,
     mask_secrets,
     to_nested_dict,
 )
+from buzz.models import (
+    DavConfig as Config,
+)
+from buzz.providers import RealDebridProviderClient, TorBoxProviderClient
+from buzz.ui_live import ArchiveLiveView, CacheLiveView, CacheTorrentItem, ThreadsLiveView
 
 
 class UvicornReadyzAccessFilterTests(unittest.TestCase):
@@ -359,6 +360,7 @@ def _wait_for_task(state: BuzzState, task_id: str, timeout: float = 2.0) -> dict
 
 class BuzzStateTests(unittest.TestCase):
     class FakeProvider:
+        """Configurable stand-in for the provider client API."""
         def __init__(
             self,
             torrents_list=None,
@@ -404,6 +406,32 @@ class BuzzStateTests(unittest.TestCase):
 
         def select_files(self, torrent_id, file_ids):
             self.selected_files_calls.append((torrent_id, ",".join(file_ids)))
+
+        def submit_magnet(self, magnet):
+            return MagnetSubmission(torrent_id=self.add_magnet(magnet))
+
+        def resolve_magnet(self, torrent_id):
+            detail = self.get_torrent(torrent_id)
+            if detail.files:
+                return MagnetResolution(
+                    status="files_ready",
+                    name=detail.name,
+                    bytes=detail.bytes,
+                    files=detail.files,
+                )
+            return MagnetResolution(
+                status="metadata_pending",
+                name=detail.name or None,
+            )
+
+        def apply_file_selections(self, selections):
+            results = []
+            for selection in selections:
+                self.select_files(selection.torrent_id, list(selection.file_ids))
+                results.append(
+                    FileSelectionResult(selection.torrent_id, ok=True)
+                )
+            return results
 
         def delete_torrent(self, torrent_id):
             self.deleted_ids.append(torrent_id)
@@ -780,39 +808,6 @@ class BuzzStateTests(unittest.TestCase):
             self.assertEqual(info["provider"], "real_debrid")
             node = state.snapshot["files"]["movies/Movie.mkv/Movie.mkv"]
             self.assertEqual(node["source_url"], "rd-link")
-
-    def test_add_magnet_falls_back_to_lower_priority_provider(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = Config(
-                token="token",
-                provider_priority=("real_debrid", "torbox"),
-                state_dir=tmpdir,
-                hook_command="",
-                curator_url="",
-            )
-            real_debrid = self.FakeProvider(add_error=RuntimeError("rd down"))
-            torbox = self.FakeProvider(
-                torrent_infos={
-                    "NEW_TORRENT": {
-                        "id": "NEW_TORRENT",
-                        "hash": "fallbackhash",
-                        "filename": "Fallback.mkv",
-                        "status": "downloaded",
-                        "files": [],
-                    }
-                }
-            )
-            state = BuzzState(
-                config,
-                client={"real_debrid": real_debrid, "torbox": torbox},
-            )
-
-            result = state.add_magnet("magnet:?xt=urn:btih:fallbackhash")
-
-            self.assertEqual(result["provider"], "torbox")
-            self.assertIn("warning", result)
-            self.assertEqual(real_debrid.added_magnets, ["magnet:?xt=urn:btih:fallbackhash"])
-            self.assertEqual(torbox.added_magnets, ["magnet:?xt=urn:btih:fallbackhash"])
 
     def test_resolve_download_url_falls_back_to_lower_priority_provider(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1348,7 +1343,7 @@ class BuzzStateTests(unittest.TestCase):
             def __init__(self):
                 self.calls = []
 
-            class torrents:
+            class Torrents:
                 @staticmethod
                 def info(torrent_id):
                     resp = SimpleNamespace()
@@ -1365,6 +1360,8 @@ class BuzzStateTests(unittest.TestCase):
                     }
                     resp.status_code = 200
                     return resp
+
+            torrents = Torrents()
 
         client = RealDebridProviderClient("token", raw_client=FakeRD())
         progress_calls = []
@@ -1422,13 +1419,15 @@ class BuzzStateTests(unittest.TestCase):
 
     def test_rd_get_torrent_raises_after_exhausting_retries(self):
         class FakeRD:
-            class torrents:
+            class Torrents:
                 @staticmethod
                 def info(torrent_id):
                     resp = SimpleNamespace()
                     resp.json = lambda: {"error": "SERVICE_UNAVAILABLE", "error_code": 503}
                     resp.status_code = 503
                     return resp
+
+            torrents = Torrents()
 
         with patch("buzz.providers.real_debrid.time.sleep"), patch("buzz.providers.real_debrid.record_event"):
             client = RealDebridProviderClient("token", raw_client=FakeRD())
@@ -1440,13 +1439,15 @@ class BuzzStateTests(unittest.TestCase):
     def test_rd_get_torrent_error_body_does_not_leak_none_strip(self):
         """Regression: a transient RD error body must never produce NoneType.strip() downstream."""
         class FakeRD:
-            class torrents:
+            class Torrents:
                 @staticmethod
                 def info(torrent_id):
                     resp = SimpleNamespace()
                     resp.json = lambda: {"error": "hoster_unavailable", "error_code": 8}
                     resp.status_code = 200
                     return resp
+
+            torrents = Torrents()
 
         with patch("buzz.providers.real_debrid.time.sleep"), patch("buzz.providers.real_debrid.record_event"):
             client = RealDebridProviderClient("token", raw_client=FakeRD())
@@ -1457,7 +1458,7 @@ class BuzzStateTests(unittest.TestCase):
         captured = {}
 
         class FakeRD:
-            class torrents:
+            class Torrents:
                 @staticmethod
                 def select_files(torrent_id, files):
                     captured["args"] = (torrent_id, files)
@@ -1466,6 +1467,8 @@ class BuzzStateTests(unittest.TestCase):
                     resp.text = json.dumps(body) if body is not None else ""
                     resp.json = lambda: body
                     return resp
+
+            torrents = Torrents()
 
         client = RealDebridProviderClient("token", raw_client=FakeRD())
         return client, captured
@@ -1532,7 +1535,6 @@ class BuzzStateTests(unittest.TestCase):
                 hook_command="",
                 curator_url="",
             )
-            progress_calls = []
 
             class TrackingProvider(self.FakeProvider):
                 def is_healthy(self):
@@ -1548,12 +1550,44 @@ class BuzzStateTests(unittest.TestCase):
 
             provider = TrackingProvider(
                 torrents_list=[
-                    {"id": "T1", "filename": "Movie.mkv", "status": "downloaded", "progress": 100, "links": ["http://link1"]},
-                    {"id": "T2", "filename": "Show.mkv", "status": "downloaded", "progress": 100, "links": ["http://link2"]},
+                    {
+                        "id": "T1",
+                        "filename": "Movie.mkv",
+                        "status": "downloaded",
+                        "progress": 100,
+                        "links": ["http://link1"],
+                    },
+                    {
+                        "id": "T2",
+                        "filename": "Show.mkv",
+                        "status": "downloaded",
+                        "progress": 100,
+                        "links": ["http://link2"],
+                    },
                 ],
                 torrent_infos={
-                    "T1": {"id": "T1", "hash": "h1", "filename": "Movie.mkv", "original_filename": "Movie.mkv", "bytes": 10, "progress": 100, "status": "downloaded", "links": ["http://link1"], "files": [{"id": "1", "path": "/Movie.mkv", "bytes": 10, "selected": 1}]},
-                    "T2": {"id": "T2", "hash": "h2", "filename": "Show.mkv", "original_filename": "Show.mkv", "bytes": 10, "progress": 100, "status": "downloaded", "links": ["http://link2"], "files": [{"id": "1", "path": "/Show.mkv", "bytes": 10, "selected": 1}]},
+                    "T1": {
+                        "id": "T1",
+                        "hash": "h1",
+                        "filename": "Movie.mkv",
+                        "original_filename": "Movie.mkv",
+                        "bytes": 10,
+                        "progress": 100,
+                        "status": "downloaded",
+                        "links": ["http://link1"],
+                        "files": [{"id": "1", "path": "/Movie.mkv", "bytes": 10, "selected": 1}],
+                    },
+                    "T2": {
+                        "id": "T2",
+                        "hash": "h2",
+                        "filename": "Show.mkv",
+                        "original_filename": "Show.mkv",
+                        "bytes": 10,
+                        "progress": 100,
+                        "status": "downloaded",
+                        "links": ["http://link2"],
+                        "files": [{"id": "1", "path": "/Show.mkv", "bytes": 10, "selected": 1}],
+                    },
                 },
             )
             state = BuzzState(config, client={"real_debrid": provider})
@@ -1783,48 +1817,6 @@ class BuzzStateTests(unittest.TestCase):
             )
             self.assertEqual(torrents[0]["selected_files"], 2)
             self.assertEqual(torrents[1]["status"], "downloading")
-
-    def test_add_magnet_persists_original_magnet_in_cache(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = Config(
-                token="token",
-                provider_poll_interval_secs=10,
-                bind="127.0.0.1",
-                port=9999,
-                state_dir=tmpdir,
-                hook_command="",
-                anime_patterns=(r"\b[a-fA-F0-9]{8}\b",),
-                enable_all_dir=True,
-                enable_unplayable_dir=True,
-                request_timeout_secs=30,
-                user_agent="buzz-tests",
-                version_label="buzz/test",
-                rd_update_delay_secs=0,
-                curator_url="",
-            )
-            client = self.FakeProvider(
-                torrent_infos={
-                    "NEW_TORRENT": {
-                        "id": "NEW_TORRENT",
-                        "hash": "ABC123HASH",
-                        "filename": "Movie.2026.1080p.mkv",
-                        "files": [],
-                    }
-                }
-            )
-            state = BuzzState(config, client=client)
-
-            state.add_magnet("magnet:?xt=urn:btih:ABC123HASH&dn=Movie")
-
-            self.assertEqual(
-                state.cache["NEW_TORRENT"]["magnet"],
-                "magnet:?xt=urn:btih:ABC123HASH&dn=Movie",
-            )
-            row = state.conn.execute(
-                "SELECT magnet FROM torrents WHERE id = ?",
-                ("NEW_TORRENT",),
-            ).fetchone()
-            self.assertEqual(row["magnet"], "magnet:?xt=urn:btih:ABC123HASH&dn=Movie")
 
     def test_restore_archive_prefers_stored_magnet(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2685,14 +2677,38 @@ class BuzzStateTests(unittest.TestCase):
 
             rd_provider = self.FakeProvider(
                 torrent_infos={
-                    "RD1": {"id": "RD1", "hash": "hash1", "filename": "Movie1.mkv", "status": "downloaded", "files": []},
-                    "RD2": {"id": "RD2", "hash": "hash2", "filename": "Movie2.mkv", "status": "downloaded", "files": []},
-                    "RD3": {"id": "RD3", "hash": "hash3", "filename": "Movie3.mkv", "status": "downloaded", "files": []},
+                    "RD1": {
+                        "id": "RD1",
+                        "hash": "hash1",
+                        "filename": "Movie1.mkv",
+                        "status": "downloaded",
+                        "files": [],
+                    },
+                    "RD2": {
+                        "id": "RD2",
+                        "hash": "hash2",
+                        "filename": "Movie2.mkv",
+                        "status": "downloaded",
+                        "files": [],
+                    },
+                    "RD3": {
+                        "id": "RD3",
+                        "hash": "hash3",
+                        "filename": "Movie3.mkv",
+                        "status": "downloaded",
+                        "files": [],
+                    },
                 }
             )
             tb_provider = FlakyProvider(
                 torrent_infos={
-                    "NEW_TORRENT": {"id": "NEW_TORRENT", "hash": "newhash", "filename": "New.mkv", "status": "downloaded", "files": []},
+                    "NEW_TORRENT": {
+                        "id": "NEW_TORRENT",
+                        "hash": "newhash",
+                        "filename": "New.mkv",
+                        "status": "downloaded",
+                        "files": [],
+                    },
                 }
             )
             state = BuzzState(
@@ -2700,16 +2716,52 @@ class BuzzStateTests(unittest.TestCase):
                 client={"real_debrid": rd_provider, "torbox": tb_provider},
             )
             state.cache = {
-                "RD1": {"signature": {}, "info": {"id": "RD1", "hash": "hash1", "filename": "Movie1.mkv", "status": "downloaded", "links": [], "files": []}, "magnet": "magnet:?xt=urn:btih:hash1"},
-                "RD2": {"signature": {}, "info": {"id": "RD2", "hash": "hash2", "filename": "Movie2.mkv", "status": "downloaded", "links": [], "files": []}, "magnet": "magnet:?xt=urn:btih:hash2"},
-                "RD3": {"signature": {}, "info": {"id": "RD3", "hash": "hash3", "filename": "Movie3.mkv", "status": "downloaded", "links": [], "files": []}, "magnet": "magnet:?xt=urn:btih:hash3"},
+                "RD1": {
+                    "signature": {},
+                    "info": {
+                        "id": "RD1",
+                        "hash": "hash1",
+                        "filename": "Movie1.mkv",
+                        "status": "downloaded",
+                        "links": [],
+                        "files": [],
+                    },
+                    "magnet": "magnet:?xt=urn:btih:hash1",
+                },
+                "RD2": {
+                    "signature": {},
+                    "info": {
+                        "id": "RD2",
+                        "hash": "hash2",
+                        "filename": "Movie2.mkv",
+                        "status": "downloaded",
+                        "links": [],
+                        "files": [],
+                    },
+                    "magnet": "magnet:?xt=urn:btih:hash2",
+                },
+                "RD3": {
+                    "signature": {},
+                    "info": {
+                        "id": "RD3",
+                        "hash": "hash3",
+                        "filename": "Movie3.mkv",
+                        "status": "downloaded",
+                        "links": [],
+                        "files": [],
+                    },
+                    "magnet": "magnet:?xt=urn:btih:hash3",
+                },
             }
 
             task_id = state.submit_provider_migration_scan("real_debrid", "torbox")
             scan_task = _wait_for_task(state, task_id)
             self.assertEqual(scan_task["status"], "complete", scan_task.get("error"))
 
-            pending = [t for t in state.background_tasks.snapshot() if t["kind"] == "maintenance" and t["status"] == "pending"]
+            pending = [
+                t for t in state.background_tasks.snapshot()
+                if t["kind"] == "maintenance" and t["status"] == "pending"
+            ]
             self.assertEqual(len(pending), 1)
             state.background_tasks.start(pending[0]["id"])
             commit_task = _wait_for_task(state, pending[0]["id"])
@@ -5225,8 +5277,14 @@ class BuzzStateTests(unittest.TestCase):
             info["provider"] = "torbox"
             snapshot, _ = state.builder.build([info])
 
-            self.assertIn("shows/Sitcom.2000.COMPLETE.MULTi.1080p.WEB.DDP.x264-TESTGROUP/Sitcom.S01E01.mkv", snapshot["files"])
-            self.assertNotIn("__unplayable__/Sitcom.2000.COMPLETE.MULTi.1080p.WEB.DDP.x264-TESTGROUP", snapshot.get("dirs", set()))
+            self.assertIn(
+                "shows/Sitcom.2000.COMPLETE.MULTi.1080p.WEB.DDP.x264-TESTGROUP/Sitcom.S01E01.mkv",
+                snapshot["files"],
+            )
+            self.assertNotIn(
+                "__unplayable__/Sitcom.2000.COMPLETE.MULTi.1080p.WEB.DDP.x264-TESTGROUP",
+                snapshot.get("dirs", set()),
+            )
 
     def test_cache_selection_task_wakes_poller_instead_of_syncing_inline(self):
         class FakeTaskPool:
@@ -5419,7 +5477,8 @@ class BuzzStateTests(unittest.TestCase):
         mock_record_event.assert_any_call(
             "\n".join(
                 [
-                    "configured media update command failed with exit code 2: ['sh', '/app/scripts/media_update.sh', 'movies/Starfall']",
+                    "configured media update command failed with exit code 2: "
+                    "['sh', '/app/scripts/media_update.sh', 'movies/Starfall']",
                     "    command: |",
                     "        sh /app/scripts/media_update.sh \\",
                     "            movies/Starfall",
@@ -5784,6 +5843,7 @@ class PollerTests(unittest.TestCase):
 
 class DavAppTests(unittest.TestCase):
     class FakeProvider:
+        """Provider client fake with canned stream refs."""
         def __init__(self, download_urls=None, stream_error=None):
             self.calls = []
             self.download_urls = download_urls or []
@@ -5895,6 +5955,33 @@ class DavAppTests(unittest.TestCase):
             "movies/Rocket Voyage [1986] + Extras",
         )
 
+    def test_healthz_reports_deployment_identity(self):
+        response = self.client.get("/healthz")
+
+        self.assertEqual(response.status_code, 200)
+        deployment = response.json()["deployment"]
+        self.assertEqual(
+            set(deployment), {"version", "git_hash", "started_at", "uptime_seconds"}
+        )
+        self.assertIsInstance(deployment["uptime_seconds"], int)
+        self.assertGreaterEqual(deployment["uptime_seconds"], 0)
+
+    def test_readyz_reports_deployment_identity(self):
+        health = self.client.get("/healthz").json()["deployment"]
+        ready = self.client.get("/readyz").json()["deployment"]
+
+        self.assertEqual(health["version"], ready["version"])
+        self.assertEqual(health["git_hash"], ready["git_hash"])
+        self.assertEqual(health["started_at"], ready["started_at"])
+        self.assertLessEqual(abs(health["uptime_seconds"] - ready["uptime_seconds"]), 1)
+
+    def test_deployment_identity_is_captured_at_startup_not_request_time(self):
+        self.dav_app.deployment._started_at = "2026-01-01T00:00:00Z"
+
+        deployment = self.client.get("/healthz").json()["deployment"]
+
+        self.assertEqual(deployment["started_at"], "2026-01-01T00:00:00Z")
+        self.assertGreaterEqual(deployment["uptime_seconds"], 0)
     def test_hook_status_is_merged_into_state_meta_item(self):
         self.dav_app.state.hook_phase = "waiting_vfs"
         self.dav_app.state.hook_active_paths = ["movies/A", "shows/B"]
@@ -6110,38 +6197,627 @@ class DavAppTests(unittest.TestCase):
             [False, True, False],
         )
 
-    def test_analyze_splits_multiline_magnet_textarea(self):
+    def test_submit_magnets_splits_multiline_magnet_textarea(self):
         view = CacheLiveView(self.dav_app)
         socket = SimpleNamespace(context=view._context())
 
-        self.state.add_magnet = MagicMock(
-            side_effect=[
-                {
-                    "id": "TORRENT1",
-                    "filename": "Movie One",
-                    "files": [],
-                },
-                {
-                    "id": "TORRENT2",
-                    "filename": "Movie Two",
-                    "files": [],
-                },
-            ]
-        )
+        self.state.submit_magnets = MagicMock(return_value=["e1", "e2"])
 
         asyncio.run(
             view.handle_event(
-                "analyze",
+                "submit_magnets",
                 cast(Any, socket),
-                payload={"magnet": " magnet-a \n\nmagnet-b\n "},
+                payload={"magnet": " magnet-a \n\nmagnet-b\n ", "provider": "auto"},
             )
         )
 
-        self.assertEqual(
-            self.state.add_magnet.call_args_list,
-            [call("magnet-a", None), call("magnet-b", None)],
+        self.state.submit_magnets.assert_called_once_with(
+            ["magnet-a", "magnet-b"], "auto"
         )
-        self.assertEqual(len(socket.context["analysis_results"]), 2)
+        self.assertIsNone(socket.context["expanded_id"])
+        self.assertNotEqual(socket.context["draft_token"], "")
+        self.assertEqual(socket.context["console_msg"], "queued 2 magnets for cache")
+
+    def test_ingest_rows_render_in_cache_context(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        entry = IngestEntry(
+            id="e1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.METADATA_PENDING,
+            created_at=1.0,
+            display_name="Movie One",
+            accepted_provider="real_debrid",
+            provider_torrent_id="T1",
+        )
+        self.state.ingest["e1"] = entry
+
+        context = CacheLiveView(self.dav_app)._context()
+
+        row = context["ingest_entries"][0]
+        self.assertEqual("e1", row["id"])
+        self.assertEqual("ingest:e1", row["expand_id"])
+        self.assertEqual("Movie One", row["name"])
+        self.assertEqual("metadata_pending", row["state"])
+        self.assertEqual("waiting", row["progress"])
+        self.assertEqual("real_debrid", row["provider"])
+        self.assertFalse(row["expandable"])
+
+    def test_ingest_files_render_for_expanded_ready_entry(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        entry = IngestEntry(
+            id="e1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.FILES_READY,
+            created_at=1.0,
+            display_name="Movie One",
+            total_bytes=300,
+            accepted_provider="real_debrid",
+            files=[
+                {"id": "1", "path": "Movie.mkv", "bytes": 200, "selected": 1},
+                {"id": "2", "path": "extras.srt", "bytes": 100, "selected": 0},
+            ],
+        )
+        self.state.ingest["e1"] = entry
+
+        context = CacheLiveView(self.dav_app)._context(expanded_id="ingest:e1")
+
+        self.assertEqual(
+            [("1", "Movie.mkv", True), ("2", "extras.srt", False)],
+            [(f["id"], f["path"], f["selected"]) for f in context["ingest_files"]],
+        )
+        row = context["ingest_entries"][0]
+        self.assertEqual("1/2", row["files"])
+        self.assertEqual("ready", row["progress"])
+        self.assertEqual("300 B", row["size"])
+
+    def test_confirm_ingest_queues_selections(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        entry = IngestEntry(
+            id="e1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.FILES_READY,
+            created_at=1.0,
+            accepted_provider="real_debrid",
+            files=[
+                {"id": "1", "path": "Movie.mkv", "bytes": 200, "selected": 1},
+                {"id": "2", "path": "extras.srt", "bytes": 100, "selected": 0},
+            ],
+        )
+        self.state.ingest["e1"] = entry
+
+        view = CacheLiveView(self.dav_app)
+        socket = SimpleNamespace(
+            context=view._context(expanded_id="ingest:e1")
+        )
+        self.state.confirm_ingest_selections = MagicMock(return_value="task1")
+
+        asyncio.run(view.handle_event("confirm_ingest", cast(Any, socket), id="e1"))
+
+        self.state.confirm_ingest_selections.assert_called_once_with({"e1": ["1"]})
+        self.assertEqual(
+            socket.context["console_msg"], "selection queued: task1"
+        )
+
+    def test_cache_template_renders_add_row_and_ingest_rows(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        self.state.ingest["e1"] = IngestEntry(
+            id="e1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.FILES_READY,
+            created_at=1.0,
+            display_name="Movie One",
+            accepted_provider="real_debrid",
+            files=[{"id": "1", "path": "Movie.mkv", "bytes": 200, "selected": 1}],
+        )
+
+        response = self.client.get("/cache")
+        body = response.text
+        self.assertIn("ADD NEW MAGNET LINKS TO THE CACHE", body)
+        self.assertIn("Movie One", body)
+        self.assertIn("[files ready]", body)
+        self.assertNotIn('phx-submit="submit_magnets"', body)
+
+    def test_cache_template_renders_add_form_when_expanded(self):
+        from pyview.meta import PyViewMeta
+
+        from buzz.core.ingest import IngestEntry, IngestState
+        from buzz.ui_live import _load_template
+
+        self.state.ingest["e1"] = IngestEntry(
+            id="e1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.FILES_READY,
+            created_at=1.0,
+            display_name="Movie One",
+            accepted_provider="real_debrid",
+            files=[{"id": "1", "path": "Movie.mkv", "bytes": 200, "selected": 1}],
+        )
+
+        view = CacheLiveView(self.dav_app)
+        context = view._context(expanded_id="add")
+        body = str(_load_template("cache_live.html").render(context, PyViewMeta()))
+
+        self.assertIn('phx-submit="submit_magnets"', body)
+        self.assertIn('name="magnet"', body)
+        self.assertIn('data-draft-token=""', body)
+        self.assertIn("Add to Cache", body)
+
+        import re
+
+        match = re.search(
+            r'<div class="detail-section ingest-add-form">(.*?)</div>\s*</div>',
+            body,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match, "expanded ingest-add-form section not found")
+        section = match.group(1) if match else ""
+        self.assertIn('name="provider"', section)
+        self.assertIn("Add to Cache", section)
+
+    def test_cache_template_renders_ingest_file_panel_when_expanded(self):
+        from pyview.meta import PyViewMeta
+
+        from buzz.core.ingest import IngestEntry, IngestState
+        from buzz.ui_live import _load_template
+
+        self.state.ingest["e1"] = IngestEntry(
+            id="e1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.FILES_READY,
+            created_at=1.0,
+            display_name="Movie One",
+            accepted_provider="real_debrid",
+            files=[
+                {"id": "1", "path": "Movie.mkv", "bytes": 200, "selected": 1},
+                {"id": "2", "path": "extras.srt", "bytes": 100, "selected": 0},
+            ],
+        )
+
+        view = CacheLiveView(self.dav_app)
+        context = view._context(expanded_id="ingest:e1")
+        body = str(_load_template("cache_live.html").render(context, PyViewMeta()))
+
+        self.assertIn("Movie.mkv", body)
+        self.assertIn("extras.srt", body)
+        self.assertIn('phx-click="confirm_ingest"', body)
+        self.assertIn('phx-value-id="e1"', body)
+        self.assertIn('phx-click="toggle_ingest_file"', body)
+        self.assertIn('phx-click="select_ingest_files"', body)
+
+    def test_status_info_expands_files_ready_ingest_entry(self):
+        from pyview.events import InfoEvent
+
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        self.state.ingest["e1"] = IngestEntry(
+            id="e1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.FILES_READY,
+            created_at=1.0,
+            display_name="Movie One",
+            accepted_provider="real_debrid",
+            files=[
+                {"id": "1", "path": "Movie.mkv", "bytes": 200, "selected": 1},
+                {"id": "2", "path": "extras.srt", "bytes": 100, "selected": 0},
+            ],
+        )
+
+        view = CacheLiveView(self.dav_app)
+        socket = SimpleNamespace(context=view._context())
+        event = InfoEvent(
+            name="buzz:status",
+            payload={
+                "topic": "ingest",
+                "entry_id": "e1",
+                "state": IngestState.FILES_READY,
+            },
+        )
+
+        asyncio.run(view.handle_info(event, cast(Any, socket)))
+
+        self.assertEqual("ingest:e1", socket.context["expanded_id"])
+        self.assertEqual(
+            [("1", "Movie.mkv", True), ("2", "extras.srt", False)],
+            [(f["id"], f["path"], f["selected"]) for f in socket.context["ingest_files"]],
+        )
+
+    def test_status_info_other_ingest_state_preserves_expansion(self):
+        from pyview.events import InfoEvent
+
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        self.state.ingest["e1"] = IngestEntry(
+            id="e1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.SELECTING,
+            created_at=1.0,
+            display_name="Movie One",
+            accepted_provider="real_debrid",
+            files=[{"id": "1", "path": "Movie.mkv", "bytes": 200, "selected": 1}],
+        )
+
+        view = CacheLiveView(self.dav_app)
+        socket = SimpleNamespace(
+            context=view._context(expanded_id="ingest:e1")
+        )
+        event = InfoEvent(
+            name="buzz:status",
+            payload={
+                "topic": "ingest",
+                "entry_id": "e1",
+                "state": IngestState.SELECTING,
+            },
+        )
+
+        asyncio.run(view.handle_info(event, cast(Any, socket)))
+
+        self.assertEqual("ingest:e1", socket.context["expanded_id"])
+
+    def test_default_ingest_expand_id_picks_oldest_ready_entry(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        view = CacheLiveView(self.dav_app)
+        self.assertIsNone(view._default_ingest_expand_id())
+
+        self.state.ingest["r1"] = IngestEntry(
+            id="r1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.FILES_READY,
+            created_at=1.0,
+            display_name="Ready One",
+        )
+        self.state.ingest["f1"] = IngestEntry(
+            id="f1",
+            batch_id="b1",
+            thash="b" * 40,
+            magnet="magnet:?xt=urn:btih:" + "b" * 40,
+            state=IngestState.FAILED,
+            created_at=0.5,
+            display_name="Failed One",
+        )
+        self.state.ingest["r2"] = IngestEntry(
+            id="r2",
+            batch_id="b1",
+            thash="c" * 40,
+            magnet="magnet:?xt=urn:btih:" + "c" * 40,
+            state=IngestState.FILES_READY,
+            created_at=2.0,
+            display_name="Ready Two",
+        )
+
+        self.assertEqual("ingest:r1", view._default_ingest_expand_id())
+
+    def test_cache_defaults_to_ready_ingest_panel_on_load(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        self.state.ingest["f1"] = IngestEntry(
+            id="f1",
+            batch_id="b1",
+            thash="b" * 40,
+            magnet="magnet:?xt=urn:btih:" + "b" * 40,
+            state=IngestState.FAILED,
+            created_at=1.0,
+            display_name="Failed A",
+            error_detail="no provider",
+        )
+        self.state.ingest["r1"] = IngestEntry(
+            id="r1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.FILES_READY,
+            created_at=2.0,
+            display_name="Ready One",
+            files=[{"id": "1", "path": "Movie.mkv", "bytes": 200, "selected": 1}],
+        )
+
+        body = self.client.get("/cache").text
+
+        # The oldest files-ready entry's panel is open by default while the
+        # failed entry stays collapsed.
+        self.assertIn('class="row-expanded ingest-entry-row ingest-state-files_ready"', body)
+        self.assertNotIn("row-expanded ingest-entry-row ingest-state-failed", body)
+        self.assertIn('class="cache-entry-metadata-row"', body)
+        self.assertNotIn("ingest-entry-metadata-row", body)
+        failed_row = body[
+            body.index("ingest-state-failed") : body.index("</tr>")
+        ]
+        self.assertNotIn('phx-click="toggle_expand"', failed_row)
+        self.assertIn('phx-click="select_ingest_files"', body)
+        self.assertIn("Movie.mkv", body)
+
+    def test_cache_no_ready_ingest_leaves_panel_closed(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        self.state.ingest["f1"] = IngestEntry(
+            id="f1",
+            batch_id="b1",
+            thash="b" * 40,
+            magnet="magnet:?xt=urn:btih:" + "b" * 40,
+            state=IngestState.FAILED,
+            created_at=1.0,
+            display_name="Failed A",
+            error_detail="no provider",
+        )
+
+        body = self.client.get("/cache").text
+
+        self.assertNotIn("cache-entry-metadata-row", body)
+        self.assertNotIn('phx-click="select_ingest_files"', body)
+
+    def test_failed_ingest_entry_row_is_not_expandable(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        self.state.ingest["f1"] = IngestEntry(
+            id="f1",
+            batch_id="b1",
+            thash="b" * 40,
+            magnet="magnet:?xt=urn:btih:" + "b" * 40,
+            state=IngestState.FAILED,
+            created_at=1.0,
+            display_name="Failed A",
+            error_detail="no provider",
+        )
+
+        body = str(self.client.get("/cache").text)
+
+        # A failed ingest entry has no metadata panel, so its row carries no
+        # expand control at all.
+        failed_row = body[
+            body.index("ingest-state-failed") : body.index("</tr>")
+        ]
+        self.assertNotIn("row-expanded", failed_row)
+        self.assertNotIn('phx-click="toggle_expand"', failed_row)
+        self.assertNotIn("cache-entry-metadata-row", body)
+
+    def test_toggle_expand_failed_ingest_entry_is_noop(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        self.state.ingest["f1"] = IngestEntry(
+            id="f1",
+            batch_id="b1",
+            thash="b" * 40,
+            magnet="magnet:?xt=urn:btih:" + "b" * 40,
+            state=IngestState.FAILED,
+            created_at=1.0,
+            display_name="Failed A",
+            error_detail="no provider",
+        )
+
+        view = CacheLiveView(self.dav_app)
+        socket = SimpleNamespace(context=view._context())
+        asyncio.run(
+            view.handle_event("toggle_expand", cast(Any, socket), id="ingest:f1")
+        )
+
+        self.assertIsNone(socket.context["expanded_id"])
+
+    def test_context_drops_stale_non_expandable_ingest_expansion(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        # An entry that becomes non-expandable while its panel is open must
+        # not render an uncollapsible metadata row.
+        self.state.ingest["f1"] = IngestEntry(
+            id="f1",
+            batch_id="b1",
+            thash="b" * 40,
+            magnet="magnet:?xt=urn:btih:" + "b" * 40,
+            state=IngestState.FAILED,
+            created_at=1.0,
+            display_name="Failed A",
+            error_detail="no provider",
+        )
+
+        view = CacheLiveView(self.dav_app)
+        context = view._context(expanded_id="ingest:f1")
+
+        self.assertIsNone(context["expanded_id"])
+        self.assertEqual(context["ingest_files"], [])
+
+    def test_cache_template_uses_single_metadata_row_class(self):
+        from buzz.ui_live import _TEMPLATE_DIR
+
+        template = (_TEMPLATE_DIR / "cache_live.html").read_text(encoding="utf-8")
+
+        self.assertIn('class="cache-entry-metadata-row"', template)
+        for obsolete in (
+            "cache-entry-metadata-panel",
+            "ingest-add-panel-row",
+            "ingest-entry-metadata-row",
+        ):
+            self.assertNotIn(obsolete, template)
+
+    def test_ingest_act_buttons_render_per_state(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+        from buzz.ui_live import _load_template
+
+        self.state.ingest["r1"] = IngestEntry(
+            id="r1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.FILES_READY,
+            created_at=1.0,
+            display_name="Ready One",
+            files=[{"id": "1", "path": "Movie.mkv", "bytes": 200, "selected": 1}],
+        )
+        self.state.ingest["f1"] = IngestEntry(
+            id="f1",
+            batch_id="b1",
+            thash="b" * 40,
+            magnet="magnet:?xt=urn:btih:" + "b" * 40,
+            state=IngestState.FAILED,
+            created_at=2.0,
+            display_name="Failed One",
+            error_detail="no provider accepted the magnet",
+        )
+
+        view = CacheLiveView(self.dav_app)
+        context = view._context()
+        body = str(_load_template("cache_live.html").render(context, PyViewMeta()))
+
+        # files ready: removal only, no old selection shortcut, and the
+        # panel is not open by default on this explicitly-built context.
+        self.assertNotIn(">[S]</button>", body)
+        self.assertNotIn("Select files to cache", body)
+        ready_section = body.split("ingest-entry-row ingest-state-files_ready")[1]
+        ready_section = ready_section.split("</tr>")[0]
+        self.assertIn('phx-click="remove_ingest"', ready_section)
+        self.assertIn('phx-value-id="r1"', ready_section)
+        self.assertNotIn("phx-click=\"retry_ingest\"", ready_section)
+
+        failed_section = body.split("ingest-entry-row ingest-state-failed")[1]
+        failed_section = failed_section.split("</tr>")[0]
+        self.assertIn('phx-click="retry_ingest"', failed_section)
+        self.assertIn('phx-click="remove_ingest"', failed_section)
+        self.assertIn('phx-value-id="f1"', failed_section)
+
+    def test_retry_ingest_event_collapses_and_reports_task(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        self.state.ingest["r1"] = IngestEntry(
+            id="r1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.FILES_READY,
+            created_at=1.0,
+            display_name="Ready One",
+        )
+
+        view = CacheLiveView(self.dav_app)
+        socket = SimpleNamespace(
+            context=view._context(expanded_id="ingest:r1")
+        )
+        self.state.retry_ingest = MagicMock(return_value="task-retry")
+
+        asyncio.run(view.handle_event("retry_ingest", cast(Any, socket), id="r1"))
+
+        self.state.retry_ingest.assert_called_once_with("r1")
+        self.assertIsNone(socket.context["expanded_id"])
+        self.assertEqual(socket.context["console_msg"], "ingest retry queued: task-retry")
+        self.assertEqual(socket.context["console_class"], "service-status-green")
+
+    def test_retry_ingest_event_failure_keeps_expansion(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        self.state.ingest["r1"] = IngestEntry(
+            id="r1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.FILES_READY,
+            created_at=1.0,
+            display_name="Ready One",
+        )
+
+        view = CacheLiveView(self.dav_app)
+        socket = SimpleNamespace(
+            context=view._context(expanded_id="ingest:r1")
+        )
+        self.state.retry_ingest = MagicMock(
+            side_effect=ValueError("ingest entry not found: r1")
+        )
+
+        asyncio.run(view.handle_event("retry_ingest", cast(Any, socket), id="r1"))
+
+        self.assertEqual("ingest:r1", socket.context["expanded_id"])
+        self.assertEqual(
+            socket.context["console_msg"],
+            "ingest retry failed: ingest entry not found: r1",
+        )
+        self.assertEqual(socket.context["console_class"], "service-status-red")
+
+    def test_remove_ingest_event_falls_back_to_next_ready_entry(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        self.state.ingest["r1"] = IngestEntry(
+            id="r1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.FILES_READY,
+            created_at=1.0,
+            display_name="Ready One",
+        )
+        self.state.ingest["r2"] = IngestEntry(
+            id="r2",
+            batch_id="b1",
+            thash="c" * 40,
+            magnet="magnet:?xt=urn:btih:" + "c" * 40,
+            state=IngestState.FILES_READY,
+            created_at=2.0,
+            display_name="Ready Two",
+        )
+
+        view = CacheLiveView(self.dav_app)
+        socket = SimpleNamespace(
+            context=view._context(expanded_id="ingest:r1")
+        )
+
+        def remove_ingest(entry_id):
+            del self.state.ingest[entry_id]
+
+        self.state.remove_ingest = remove_ingest
+
+        asyncio.run(view.handle_event("remove_ingest", cast(Any, socket), id="r1"))
+
+        self.assertEqual("ingest:r2", socket.context["expanded_id"])
+        self.assertEqual(socket.context["console_msg"], "ingest removed")
+        self.assertEqual(socket.context["console_class"], "service-status-green")
+
+    def test_remove_ingest_event_failure_preserves_expansion(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        self.state.ingest["r1"] = IngestEntry(
+            id="r1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.FILES_READY,
+            created_at=1.0,
+            display_name="Ready One",
+        )
+
+        view = CacheLiveView(self.dav_app)
+        socket = SimpleNamespace(
+            context=view._context(expanded_id="ingest:r1")
+        )
+        self.state.remove_ingest = MagicMock(
+            side_effect=ValueError("ingest entry not found: r1")
+        )
+
+        asyncio.run(view.handle_event("remove_ingest", cast(Any, socket), id="r1"))
+
+        self.assertEqual("ingest:r1", socket.context["expanded_id"])
+        self.assertEqual(
+            socket.context["console_msg"],
+            "ingest removal failed: ingest entry not found: r1",
+        )
+        self.assertEqual(socket.context["console_class"], "service-status-red")
+
 
     def test_cache_template_uses_local_textarea_for_bulk_magnets(self):
         cache_template = Path("buzz/pyview_templates/cache_live.html").read_text(
@@ -6263,6 +6939,80 @@ class DavAppTests(unittest.TestCase):
         selected_row = body[selected_row_start:selected_name_start]
         self.assertLess(pending_row_start, selected_name_start)
         self.assertNotIn("cache-entry-pending", selected_row)
+
+    def _cache_torrent_item(
+        self,
+        torrent_id: str,
+        name: str,
+        status: str,
+        torrent_bytes: int,
+        progress: int = 50,
+    ) -> dict[str, Any]:
+        return {
+            "id": torrent_id,
+            "provider_torrent_id": torrent_id,
+            "name": name,
+            "category": "",
+            "category_override": "",
+            "status": status,
+            "progress": progress,
+            "bytes": torrent_bytes,
+            "size": f"{torrent_bytes} B",
+            "selected_files": 1,
+            "file_selection_pending": False,
+            "links": 0,
+            "ended": "",
+            "short_id": torrent_id[:8],
+            "has_override": False,
+        }
+
+    def test_cache_sort_keeps_downloaded_rows_last_by_name_asc(self):
+        view = CacheLiveView(self.dav_app)
+        torrents = [
+            self._cache_torrent_item("t1", "alpha", "downloaded", 400),
+            self._cache_torrent_item("t2", "beta", "active", 100),
+            self._cache_torrent_item("t3", "gamma", "downloaded", 900),
+            self._cache_torrent_item("t4", "delta", "syncing", 300),
+        ]
+
+        result = view._sort_torrents(cast(list[CacheTorrentItem], torrents), 0, "asc")
+
+        self.assertEqual(
+            [t["id"] for t in result],
+            ["t2", "t4", "t1", "t3"],
+        )
+
+    def test_cache_sort_keeps_downloaded_rows_last_by_bytes_desc(self):
+        view = CacheLiveView(self.dav_app)
+        torrents = [
+            self._cache_torrent_item("t1", "alpha", "downloaded", 900),
+            self._cache_torrent_item("t2", "beta", "active", 100),
+            self._cache_torrent_item("t3", "gamma", "downloaded", 300),
+            self._cache_torrent_item("t4", "delta", "syncing", 500),
+        ]
+
+        result = view._sort_torrents(cast(list[CacheTorrentItem], torrents), 3, "desc")
+
+        self.assertEqual(
+            [t["id"] for t in result],
+            ["t4", "t2", "t1", "t3"],
+        )
+
+    def test_cache_sort_moves_downloaded_last_for_invalid_column(self):
+        view = CacheLiveView(self.dav_app)
+        torrents = [
+            self._cache_torrent_item("t1", "alpha", "downloaded", 400),
+            self._cache_torrent_item("t2", "beta", "active", 100),
+            self._cache_torrent_item("t3", "gamma", "downloaded", 900),
+            self._cache_torrent_item("t4", "delta", "syncing", 300),
+        ]
+
+        result = view._sort_torrents(cast(list[CacheTorrentItem], torrents), 9, "asc")
+
+        self.assertEqual(
+            [t["id"] for t in result],
+            ["t2", "t4", "t1", "t3"],
+        )
 
     def _render_expanded_cache_panel(self, cache_key: str) -> str:
         from buzz.ui_live import _load_template
@@ -7136,8 +7886,9 @@ class DavAppTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertIn("# Overriden via UI. Default: false", response.text)
-            from buzz.ui_live import ConfigLiveView, _load_template
             from pyview.meta import PyViewMeta
+
+            from buzz.ui_live import ConfigLiveView, _load_template
 
             view = ConfigLiveView(owner=app)
             context = view._context(is_editing=True)
@@ -7153,7 +7904,7 @@ class DavAppTests(unittest.TestCase):
             data_dir.mkdir()
             overrides_path = data_dir / "buzz.overrides.yml"
             dist_path.write_text(
-                f"version: 1\nprovider:\n  token: testtoken\n"
+                "version: 1\nprovider:\n  token: testtoken\n"
 
                 "hooks:\n"
                 "  curator_url: http://buzz-curator:8400/rebuild\n"
@@ -7534,8 +8285,9 @@ class DavAppTests(unittest.TestCase):
         self.assertFalse(app.trigger_language_refresh(force=True))
 
     def test_rendered_config_without_credentials_omits_subtitle_controls(self):
-        from buzz.ui_live import ConfigLiveView, _load_template
         from pyview.meta import PyViewMeta
+
+        from buzz.ui_live import ConfigLiveView, _load_template
 
         view = ConfigLiveView(owner=self.dav_app)
         context = view._context(is_editing=True)
@@ -7551,8 +8303,9 @@ class DavAppTests(unittest.TestCase):
         self.assertNotIn("reload_languages", html)
 
     def test_rendered_config_with_credentials_includes_subtitle_controls(self):
-        from buzz.ui_live import ConfigLiveView, _load_template
         from pyview.meta import PyViewMeta
+
+        from buzz.ui_live import ConfigLiveView, _load_template
 
         self.dav_app.saved_config.subtitles.api_key = "ak"
         self.dav_app.saved_config.subtitles.username = "u"
@@ -7570,8 +8323,9 @@ class DavAppTests(unittest.TestCase):
         self.assertIn("fa-arrows-rotate", html)
 
     def test_rendered_config_favorite_stars(self):
-        from buzz.ui_live import ConfigLiveView, _load_template
         from pyview.meta import PyViewMeta
+
+        from buzz.ui_live import ConfigLiveView, _load_template
 
         view = ConfigLiveView(owner=self.dav_app)
         context = view._context(is_editing=True)
@@ -7609,6 +8363,71 @@ class DavAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json(), {"error": "Value error, Missing magnet link"})
+
+    def test_api_cache_add_returns_ingest_entry(self):
+        from buzz.core.ingest import IngestState
+
+        class IngestFake:
+            def __init__(self):
+                self.submitted = []
+
+            def submit_magnet(self, magnet):
+                self.submitted.append(magnet)
+                return MagnetSubmission(torrent_id="T1")
+
+            def resolve_magnet(self, torrent_id):
+                return MagnetResolution(status="metadata_pending")
+
+            def is_healthy(self):
+                return True
+
+            def list_torrents(self):
+                return []
+
+        fake = IngestFake()
+        self.state.clients["real_debrid"] = fake
+        magnet = "magnet:?xt=urn:btih:" + "b" * 40
+
+        response = self.client.post("/api/cache/add", json={"magnet": magnet})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIn(body["entry_id"], self.state.ingest)
+        self.assertIn(
+            body["state"],
+            {
+                IngestState.QUEUED,
+                IngestState.SUBMITTING,
+                IngestState.METADATA_PENDING,
+                IngestState.FILES_READY,
+                IngestState.SELECTING,
+                IngestState.AWAITING_CONFIRMATION,
+                IngestState.CONFIRMED,
+                IngestState.FAILED,
+            },
+        )
+        self._drain_background_tasks(self.state)
+        self.assertEqual(fake.submitted, [magnet])
+
+    def _drain_background_tasks(self, state, timeout: float = 5.0) -> None:
+        """Wait for queued ingest/sync work so teardown never races the DB."""
+        terminal = {"complete", "failed", "cancelled"}
+        deadline = time.monotonic() + timeout
+        done = False
+        while time.monotonic() < deadline:
+            by_kind: dict[str, list[str]] = {}
+            for task in state.background_tasks.snapshot():
+                by_kind.setdefault(task["kind"], []).append(task["status"])
+            done = (
+                "ingest" in by_kind
+                and "sync" in by_kind
+                and all(s in terminal for s in by_kind["ingest"])
+                and all(s in terminal for s in by_kind["sync"])
+            )
+            if done:
+                return
+            time.sleep(0.02)
+        self.fail("background ingest/sync work did not finish before teardown")
 
     def test_memory_file_head_and_range_get_use_asgi_routes(self):
         head = self.client.head(
@@ -7804,9 +8623,8 @@ class DavAppTests(unittest.TestCase):
             side_effect=lambda *a, **kw: FakeResponse(
                 b"<!DOCTYPE html>bad", "application/force-download"
             ),
-        ), patch("buzz.dav_protocol.time.sleep"):
-            with self.assertRaisesRegex(ValueError, "markup instead of media bytes"):
-                open_remote_media(self.state, node, None)
+        ), patch("buzz.dav_protocol.time.sleep"), self.assertRaisesRegex(ValueError, "markup instead of media bytes"):
+            open_remote_media(self.state, node, None)
 
     def test_open_remote_media_does_not_invalidate_url_on_connection_error(self):
         self.state.client = self.FakeProvider(["https://example.invalid/cdn"])
@@ -7827,9 +8645,8 @@ class DavAppTests(unittest.TestCase):
             side_effect=OSError("Connection reset by peer"),
         ), patch("buzz.dav_protocol.time.sleep"), patch(
             "buzz.dav_protocol.record_event"
-        ) as mock_record_event:
-            with self.assertRaisesRegex(ValueError, "failed to connect to upstream"):
-                open_remote_media(self.state, node, None)
+        ) as mock_record_event, self.assertRaisesRegex(ValueError, "failed to connect to upstream"):
+            open_remote_media(self.state, node, None)
 
         self.assertEqual(mock_invalidate.call_count, 0)
         self.assertEqual(len(self.state.client.calls), 1)
@@ -7871,9 +8688,8 @@ class DavAppTests(unittest.TestCase):
             self.state, "invalidate_download_url"
         ) as mock_invalidate, patch(
             "buzz.dav_protocol._open_upstream_response", side_effect=http_error
-        ), patch("buzz.dav_protocol.time.sleep"):
-            with self.assertRaisesRegex(ValueError, "upstream returned HTTP 503"):
-                open_remote_media(self.state, node, None)
+        ), patch("buzz.dav_protocol.time.sleep"), self.assertRaisesRegex(ValueError, "upstream returned HTTP 503"):
+            open_remote_media(self.state, node, None)
 
         self.assertEqual(mock_invalidate.call_count, 6)
 
@@ -8104,9 +8920,8 @@ class DavAppTests(unittest.TestCase):
             "modified": "2026-01-01T00:00:00Z",
             "etag": "etag-hoster",
         }
-        with patch("buzz.dav_protocol.time.sleep") as mock_sleep:
-            with self.assertRaises(HosterUnavailableError):
-                open_remote_media(self.state, node, None)
+        with patch("buzz.dav_protocol.time.sleep") as mock_sleep, self.assertRaises(HosterUnavailableError):
+            open_remote_media(self.state, node, None)
         # No retry sleep, exactly one API hit.
         self.assertEqual(mock_sleep.call_count, 0)
         self.assertEqual(len(self.state.client.calls), 1)
@@ -8234,9 +9049,8 @@ class DavAppTests(unittest.TestCase):
         with patch(
             "buzz.dav_protocol._get_upstream_semaphore",
             return_value=BusySemaphore(),
-        ), patch("buzz.dav_protocol.time.sleep"):
-            with self.assertRaisesRegex(ValueError, "connection limit reached"):
-                open_remote_media(self.state, node, None)
+        ), patch("buzz.dav_protocol.time.sleep"), self.assertRaisesRegex(ValueError, "connection limit reached"):
+            open_remote_media(self.state, node, None)
 
     def test_dav_get_labels_torbox_setup_limit_failures(self):
         class BusySemaphore:
@@ -8988,7 +9802,9 @@ class ConfigUITests(unittest.TestCase):
             base_path = Path(tmpdir) / "buzz.yml"
             overrides_path = Path(tmpdir) / "buzz.overrides.yml"
             base_path.write_text(
-                f"version: 1\nprovider:\n  token: testtoken\nserver:\n  port: 9999\nstate_dir: {tmpdir}\n", encoding="utf-8"
+                f"version: 1\nprovider:\n  token: testtoken\nserver:\n  port: 9999\n"
+                f"state_dir: {tmpdir}\n",
+                encoding="utf-8"
             )
             overrides_path.write_text(
                 "server:\n  port: 8888\nprovider:\n  poll_interval_secs: 60\n", encoding="utf-8"
@@ -9032,7 +9848,9 @@ class ConfigUITests(unittest.TestCase):
             base_path = Path(tmpdir) / "buzz.yml"
             overrides_path = Path(tmpdir) / "buzz.overrides.yml"
             base_path.write_text(
-                f"version: 1\nprovider:\n  token: testtoken\nserver:\n  port: 9999\nstate_dir: {tmpdir}\n", encoding="utf-8"
+                f"version: 1\nprovider:\n  token: testtoken\nserver:\n  port: 9999\n"
+                f"state_dir: {tmpdir}\n",
+                encoding="utf-8"
             )
             config = Config.load(str(base_path))
             rd_patcher = patch("buzz.dav_app.DavApp._build_provider_client", return_value=DavAppTests.FakeProvider())
@@ -9488,8 +10306,9 @@ class TlsMaintenanceTests(unittest.TestCase):
         http_server = Server()
 
         async def run_check():
-            with patch("buzz.dav_app.asyncio.sleep", return_value=None):
-                with patch("buzz.dav_app.ensure_tls_certificate") as mock_ensure:
+            with patch(
+                "buzz.dav_app.asyncio.sleep", return_value=None
+            ), patch("buzz.dav_app.ensure_tls_certificate") as mock_ensure:
                     mock_ensure.return_value.generated = True
                     await _maintain_tls_certificate(
                         "cert.pem",

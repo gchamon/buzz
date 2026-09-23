@@ -7,7 +7,7 @@ from buzz.core import db
 from buzz.core.state import canonical_snapshot
 from buzz.core.utils import stable_json
 
-EXPECTED_SCHEMA_VERSION = 13
+EXPECTED_SCHEMA_VERSION = 14
 
 
 class DatabaseTests(unittest.TestCase):
@@ -19,9 +19,48 @@ class DatabaseTests(unittest.TestCase):
             version = conn.execute(
                 "SELECT MAX(version) AS version FROM schema_version"
             ).fetchone()["version"]
+            tables = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            indexes = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                )
+            }
+            entry_fks = {
+                row["table"]: row["from"]
+                for row in conn.execute(
+                    "PRAGMA foreign_key_list(ingest_entries)"
+                )
+            }
+            attempt_fks = {
+                row["table"]: row["from"]
+                for row in conn.execute(
+                    "PRAGMA foreign_key_list(ingest_attempts)"
+                )
+            }
         finally:
             conn.close()
         self.assertEqual(version, EXPECTED_SCHEMA_VERSION)
+        self.assertEqual(
+            {"ingest_batches", "ingest_entries", "ingest_attempts"},
+            {name for name in tables if name.startswith("ingest_")},
+        )
+        self.assertNotIn("intake_batches", tables)
+        self.assertNotIn("intake_entries", tables)
+        self.assertNotIn("intake_attempts", tables)
+        self.assertEqual(
+            {"idx_ingest_entries_state", "idx_ingest_entries_thash",
+             "idx_ingest_attempts_entry"},
+            {name for name in indexes if name.startswith("idx_ingest_")},
+        )
+        self.assertFalse(any("intake" in name for name in tables | indexes))
+        self.assertEqual(entry_fks.get("ingest_batches"), "batch_id")
+        self.assertEqual(attempt_fks.get("ingest_entries"), "entry_id")
 
     def test_curator_title_override_accepts_anime_kind(self):
         conn = db.connect(":memory:")

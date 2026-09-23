@@ -51,119 +51,7 @@
   {% endif %}
 
   <!-- page-body -->
-  <section class="add-torrent-section">
-    {% if not analysis_results %}
-    <form phx-submit="analyze">
-      <div class="add-torrent-header">
-        {% if single_provider %}
-        <span>ADD NEW MAGNET TO THE CACHE ({{ enabled_providers.0.1 }}):</span>
-        <input type="hidden" name="provider" value="{{ enabled_providers.0.0 }}">
-        {% else %}
-        <span>ADD NEW MAGNET TO THE CACHE:</span>
-        <select name="provider">
-          <option value="auto" {% if add_provider == "auto" %}selected{% endif %}>Auto</option>
-          {% for p in enabled_providers %}
-          {% if add_provider == p.0 %}
-          <option value="{{ p.0 }}" selected>{{ p.1 }}</option>
-          {% else %}
-          <option value="{{ p.0 }}">{{ p.1 }}</option>
-          {% endif %}
-          {% endfor %}
-        </select>
-        {% endif %}
-      </div>
-      <div id="magnet-input-area">
-        <div
-          id="bulk-magnet-editor"
-          class="bulk-magnet-editor"
-          phx-hook="BuzzBulkMagnetDraft"
-        >
-          <textarea
-            id="bulk-magnet-input"
-            name="magnet"
-            class="bulk-magnet-input"
-            placeholder="magnet:?xt=urn:btih:..."
-            rows="5"
-            wrap="off"
-          ></textarea>
-        </div>
-        <button
-          type="submit"
-          id="resolve-btn"
-          {% if analyzing or not token_configured %}disabled{% endif %}
-          title="{% if not token_configured %}Analyze magnet: requires a valid Real-Debrid token{% endif %}"
-        >{% if analyzing %}Analyzing...{% else %}Analyze{% endif %}</button>
-      </div>
-    </form>
-    {% else %}
-    <div class="add-torrent-header">
-      <span>SELECT FILES TO CACHE ({{ active_provider_label }}):</span>
-    </div>
-    <div class="file-actions m-b-10">
-      <button
-        type="button"
-        class="secondary"
-        phx-click="select_files"
-        phx-value-mode="all"
-      >All</button>
-      <button
-        type="button"
-        class="secondary"
-        phx-click="select_files"
-        phx-value-mode="video"
-      >Videos</button>
-      <button
-        type="button"
-        class="secondary"
-        phx-click="select_files"
-        phx-value-mode="none"
-      >None</button>
-    </div>
-    <div class="file-list" id="file-list">
-      {% for result in analysis_results %}
-      <div class="file-torrent-header">{{ result.filename }}</div>
-      {% for file in result.files %}
-      <div class="file-item">
-        <input
-          type="checkbox"
-          phx-click="toggle_file"
-          phx-value-torrent_id="{{ result.torrent_id }}"
-          phx-value-file_id="{{ file.id }}"
-          {% if file.selected %}checked{% endif %}
-        >
-        <div class="file-info">
-          <span>{{ file.path }}</span>
-          <span class="file-size">{{ file.size }}</span>
-        </div>
-      </div>
-      {% endfor %}
-      {% endfor %}
-    </div>
-    <div class="file-actions">
-      <button
-        id="confirm-btn"
-        phx-click="confirm_cache"
-        phx-disable-with="Caching..."
-        {% if caching or not token_configured %}disabled{% endif %}
-        title="{% if not token_configured %}Cache files: requires a valid Real-Debrid token{% endif %}"
-      >{% if caching %}Caching...{% else %}Cache Selected Files{% endif %}</button>
-      <button
-        type="button"
-        class="secondary"
-        phx-click="cancel_cache"
-        phx-disable-with="..."
-      >Cancel</button>
-    </div>
-    {% endif %}
-  </section>
-
   <div class="table-container relative" id="torrent-table-container" phx-hook="BuzzOverflowMarquee">
-    <div
-      id="processing-overlay"
-      class="{% if not show_overlay %}hidden{% endif %} absolute-fill flex flex-center overlay"
-    >
-      <span class="overlay-msg">processing...</span>
-    </div>
     <table id="torrent-table">
       <thead>
         <tr>
@@ -206,6 +94,179 @@
         </tr>
       </thead>
       <tbody>
+        <tr class="{% if expanded_id == 'add' %}row-expanded{% endif %} ingest-add-row">
+          <td colspan="8">
+            <span
+              class="marquee-clip"
+              data-marquee-clip
+              phx-click="toggle_expand"
+              phx-value-id="add"
+              style="cursor:pointer"
+            >
+              <span class="marquee-label ingest-add-label" data-marquee-label title="Add one or more magnet links to the cache">ADD NEW MAGNET LINKS TO THE CACHE</span>
+            </span>
+          </td>
+        </tr>
+        {% if expanded_id == 'add' %}
+        <tr class="cache-entry-metadata-row">
+          <td colspan="8">
+            <div>
+              <form phx-submit="submit_magnets">
+                <div class="detail-section ingest-add-form">
+                  <div class="ingest-add-provider-group">
+                    <span class="detail-label">Provider</span>
+                    {% if single_provider %}
+                    <input type="hidden" name="provider" value="{{ enabled_providers.0.0 }}">
+                    <span class="ingest-add-provider-label">{{ enabled_providers.0.1 }}</span>
+                    {% else %}
+                    <select name="provider" class="ingest-add-provider">
+                      <option value="auto" {% if add_provider == "auto" %}selected{% endif %}>Auto</option>
+                      {% for p in enabled_providers %}
+                      {% if add_provider == p.0 %}
+                      <option value="{{ p.0 }}" selected>{{ p.1 }}</option>
+                      {% else %}
+                      <option value="{{ p.0 }}">{{ p.1 }}</option>
+                      {% endif %}
+                      {% endfor %}
+                    </select>
+                    {% endif %}
+                  </div>
+                  <div class="file-actions">
+                    <button
+                      type="submit"
+                      phx-disable-with="Queuing..."
+                      {% if not token_configured %}disabled{% endif %}
+                      title="{% if not token_configured %}Add magnets: requires a valid Real-Debrid token{% endif %}"
+                    >Add to Cache</button>
+                  </div>
+                </div>
+                <div
+                  class="bulk-magnet-editor"
+                  phx-hook="BuzzBulkMagnetDraft"
+                  data-draft-token="{{ draft_token }}"
+                >
+                  <textarea
+                    class="bulk-magnet-input"
+                    name="magnet"
+                    placeholder="magnet:?xt=urn:btih:... (one per line)"
+                    rows="5"
+                    wrap="off"
+                  ></textarea>
+                </div>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endif %}
+        {% for entry in ingest_entries %}
+        <tr class="{% if entry.expandable and expanded_id == entry.expand_id %}row-expanded{% endif %} ingest-entry-row ingest-state-{{ entry.state }}">
+          <td class="name trunc-cell" data-value="{{ entry.name }}">
+            <span
+              class="marquee-clip"
+              data-marquee-clip
+              {% if entry.expandable %}
+              phx-click="toggle_expand"
+              phx-value-id="{{ entry.expand_id }}"
+              style="cursor:pointer"
+              {% endif %}
+            >
+              <span class="marquee-label" data-marquee-label title="{{ entry.error }}">{{ entry.name }}</span>
+            </span>
+          </td>
+          <td data-value="{{ entry.state_label }}">
+            <span class="status status-{{ entry.state }}" title="{% if entry.state == 'metadata_pending' %}Waiting on {{ entry.provider }} metadata; buzz keeps checking automatically{% elif entry.error %}{{ entry.error }}{% endif %}">[{{ entry.state_label }}]</span>
+          </td>
+          <td data-value="{{ entry.progress }}">{{ entry.progress }}</td>
+          <td data-value="{{ entry.size }}">{{ entry.size }}</td>
+          <td>{% if entry.state == 'files_ready' or entry.state == 'selecting' or entry.state == 'awaiting_confirmation' %}{{ entry.files }}{% else %}-{% endif %}</td>
+          <td class="comment timestamp">-</td>
+          <td class="yellow" data-value="{{ entry.short_id }}">
+            <code>{{ entry.short_id }}</code>
+          </td>
+          <td>
+            <div class="delete-container">
+              {% if entry.state == 'files_ready' %}
+              <button
+                class="btn-x"
+                phx-click="remove_ingest"
+                phx-value-id="{{ entry.id }}"
+                phx-disable-with="..."
+                title="Remove ingest entry"
+              >[X]</button>
+              {% elif entry.state == 'failed' %}
+              <button
+                class="btn-r"
+                phx-click="retry_ingest"
+                phx-value-id="{{ entry.id }}"
+                phx-disable-with="..."
+                title="Retry ingest"
+              >[R]</button>
+              <button
+                class="btn-x"
+                phx-click="remove_ingest"
+                phx-value-id="{{ entry.id }}"
+                phx-disable-with="..."
+                title="Remove ingest entry"
+              >[X]</button>
+              {% else %}
+              <span class="ingest-row-provider" title="accepted by">{{ entry.provider }}</span>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% if entry.expandable and expanded_id == entry.expand_id %}
+        <tr class="cache-entry-metadata-row">
+          <td colspan="8">
+            <div>
+              <div class="detail-section" aria-label="Ingest file selection">
+                <span class="detail-label">File selection</span>
+                <div class="file-actions" phx-update="ignore">
+                  <button
+                    type="button"
+                    class="secondary"
+                    phx-click="select_ingest_files"
+                    phx-value-mode="all"
+                  >All</button>
+                  <button
+                    type="button"
+                    class="secondary"
+                    phx-click="select_ingest_files"
+                    phx-value-mode="video"
+                  >Videos</button>
+                  <button
+                    type="button"
+                    class="secondary"
+                    phx-click="select_ingest_files"
+                    phx-value-mode="none"
+                  >None</button>
+                  <button
+                    phx-click="confirm_ingest"
+                    phx-value-id="{{ entry.id }}"
+                    phx-disable-with="Confirming..."
+                  >Confirm Selection</button>
+                </div>
+              </div>
+              <div class="file-list">
+                {% for file in ingest_files %}
+                <div class="file-item">
+                  <input
+                    type="checkbox"
+                    phx-click="toggle_ingest_file"
+                    phx-value-file_id="{{ file.id }}"
+                    {% if file.selected %}checked{% endif %}
+                  >
+                  <div class="file-info">
+                    <span>{{ file.path }}</span>
+                    <span class="file-size">{{ file.size }}</span>
+                  </div>
+                </div>
+                {% endfor %}
+              </div>
+            </div>
+          </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
         {% if has_torrents %}
         {% for torrent in torrents %}
         <tr class="{% if expanded_id == torrent.id %}row-expanded{% endif %}{% if torrent.file_selection_pending %} cache-entry-pending{% endif %}">
@@ -285,7 +346,7 @@
         {% if expanded_id == torrent.id %}
         <tr class="cache-entry-metadata-row">
           <td colspan="8">
-            <div class="cache-entry-metadata-panel">
+            <div>
               <div class="detail-section category-actions" aria-label="Category override">
                 <span class="detail-label">Category</span>
                 <button
@@ -514,12 +575,14 @@
         {% endif %}
         {% endfor %}
         {% else %}
+        {% if not ingest_entries %}
         <tr>
           <td colspan="8" class="empty">
             No cached items yet. Wait for the first sync or trigger
             <code>POST /sync</code>.
           </td>
         </tr>
+        {% endif %}
         {% endif %}
       </tbody>
     </table>

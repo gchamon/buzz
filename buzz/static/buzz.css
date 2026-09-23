@@ -1032,7 +1032,7 @@ textarea:focus {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  margin-bottom: 12px;
+  justify-content: space-between;
 }
 
 .identity-section {
@@ -1081,6 +1081,8 @@ button.save-dirty {
 }
 
 .folder-list {
+  max-height: 300px;
+  overflow-y: auto;
   display: grid;
   gap: 6px;
   margin: 10px 0;
@@ -1145,10 +1147,6 @@ tr.cache-entry-metadata-row:hover {
   background: transparent;
 }
 
-.cache-entry-metadata-panel .file-actions {
-  margin-bottom: 10px;
-}
-
 #torrent-table th:nth-child(1),
 #torrent-table td:nth-child(1) {
   width: auto;
@@ -1211,6 +1209,91 @@ tr.cache-entry-metadata-row:hover {
 
 .status-downloading {
   color: var(--orange);
+}
+
+/* --- Page: Cache ingest rows --- */
+.status-queued {
+  color: var(--comment);
+}
+
+.status-submitting {
+  color: var(--cyan);
+}
+
+.status-metadata_pending {
+  color: var(--yellow);
+}
+
+.status-files_ready {
+  color: var(--green);
+}
+
+.status-selecting {
+  color: var(--cyan);
+}
+
+.status-awaiting_confirmation {
+  color: var(--purple);
+}
+
+.status-confirmed {
+  color: var(--green);
+}
+
+.status-failed {
+  color: var(--red);
+}
+
+.ingest-add-label {
+  color: var(--pink);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: bold;
+}
+
+.ingest-add-row td {
+  background: var(--selection);
+}
+
+.ingest-add-form {
+  display: flex;
+  align-items: center;
+}
+
+.ingest-add-provider-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ingest-add-provider {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--comment);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.ingest-add-provider:focus {
+  outline: none;
+  border-color: var(--purple);
+}
+
+.ingest-add-provider-label {
+  color: var(--fg);
+}
+
+.ingest-entry-row.ingest-state-failed .name .marquee-label {
+  color: var(--red);
+}
+
+.ingest-row-provider {
+  color: var(--comment);
+  font-size: 0.8rem;
 }
 
 /* --- Page: Logs --- */

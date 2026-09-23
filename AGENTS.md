@@ -58,7 +58,7 @@ docker run --rm \
   -v "$PWD:/workspace" \
   -w /workspace \
   -e UV_CACHE_DIR=/tmp/uv-cache \
-  ghcr.io/astral-sh/uv:python3.14-alpine \
+  ghcr.io/astral-sh/uv:python3.14-trixie \
   uv run pytest
 ```
 
@@ -189,3 +189,35 @@ record_event("Buzz startup complete")
 #### Personal preferences
 
 Less is more: a cleaner, simpler approach over lots of features and "production ready" code. The idea is to start simple, see what needs improvement and then do it in a second run.
+
+### Versioning and closing work items
+
+On closing (marking `done`) a work item, the closing plan MUST include the
+software version decision. The version is not bumped manually; it is derived
+from git history:
+
+- The baseline is the newest commit that changed `version` in
+  `pyproject.toml` (an explicit version bump).
+- Every non-merge commit after that baseline is a changelog entry. Only
+  conventional commit subjects bump the version: `feat:` (or `feat(scope):`)
+  increments the minor version, `fix:` increments the patch version. All other
+  subjects appear in the changelog but never bump.
+- `maint-scripts/changelog.py` derives the version and regenerates
+  `CHANGELOG.md` retroactively from the commit history. Run it with
+  `--update-pyproject` when the closing commit should carry the bump:
+
+  ```bash
+  uv run python maint-scripts/changelog.py --update-pyproject
+  ```
+
+Run this version derivation and `--update-pyproject` regeneration only when the
+work item is being closed; it is not part of a routine feature commit or push,
+and the `version` field and `CHANGELOG.md` must not be bumped on a push for work
+that is still in progress.
+
+The closing commit for a work item must use a conventional subject
+(`feat:`/`fix:`/`docs:`/`chore:`/`refactor:`/`test:`) describing the work item
+so the version and changelog can be derived correctly. Docs-only work items
+still get a closing commit with a `docs:` subject; they appear in the
+changelog but do not bump the version.
+

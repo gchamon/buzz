@@ -21,6 +21,7 @@ Tests can opt out of either layer with `@pytest.mark.no_memory_cap`.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import os
 import threading
@@ -63,6 +64,7 @@ def _raise_in_thread(thread_id: int, exc: type[BaseException]) -> int:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    """Register the `no_memory_cap` marker."""
     config.addinivalue_line(
         "markers",
         "no_memory_cap: disable the per-test memory guardrails",
@@ -123,9 +125,7 @@ def _memory_guardrail(request: pytest.FixtureRequest):
         # just before `stop.set()` won the lock. A bare bytecode-boundary
         # try/except catches and discards it so it can't leak into the
         # next test.
-        try:
-            pass
-        except OOMError:
+        with contextlib.suppress(OOMError):
             pass
 
     if breach:

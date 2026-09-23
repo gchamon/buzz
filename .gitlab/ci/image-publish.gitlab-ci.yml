@@ -6,6 +6,7 @@ include:
       image_name: buzz
       image_path: .
       dockerfile_name: buzz/Dockerfile
+      build_args: --build-arg BUZZ_GIT_SHA=$CI_COMMIT_SHA
       job_rules:
         - when: always
   - component: gitlab.com/gabriel.chamon/ci-components/docker-push@v2
@@ -19,7 +20,7 @@ include:
 
 container_image_smoke_test:
   stage: security
-  image: quay.io/buildah/stable@sha256:ca4edbaabf71ca330ec9b2714bf8e06c726a6e85ae215cfb1474d2e2c832aacb
+  image: quay.io/buildah/stable@sha256:2d4ddc6de2f3b563716d74d0c8b1b24f29f63cf591a3aa7e1d00b4d33787452f
   needs:
     - job: build_buzz_docker_image
       artifacts: true
