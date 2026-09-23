@@ -161,7 +161,7 @@ ui_views:
         hash: dddd4444
         name: Charade (1963)
         status: downloading
-        progress: 100
+        progress: 64
         bytes: 7516192768
         links: []
         ended: ""
