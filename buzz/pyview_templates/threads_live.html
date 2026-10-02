@@ -61,7 +61,31 @@
             <code title="{{ thread.id }}">{{ thread.short_id }}</code>
           </td>
           <td>
-            {% if thread.startable %}
+            {% if thread.infringing_decision %}
+            <button
+              type="button"
+              class="secondary btn-sm"
+              phx-click="resolve_infringing_decision"
+              phx-value-task_id="{{ thread.id }}"
+              phx-value-action="delete"
+            >Delete</button>
+            {% if torbox_enabled %}
+            <button
+              type="button"
+              class="secondary btn-sm"
+              phx-click="resolve_infringing_decision"
+              phx-value-task_id="{{ thread.id }}"
+              phx-value-action="move"
+            >Move to TorBox</button>
+            {% endif %}
+            <button
+              type="button"
+              class="secondary btn-sm"
+              phx-click="resolve_infringing_decision"
+              phx-value-task_id="{{ thread.id }}"
+              phx-value-action="cancel"
+            >Cancel</button>
+            {% elif thread.startable %}
             <button
               type="button"
               class="secondary btn-sm"

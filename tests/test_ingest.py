@@ -1050,5 +1050,102 @@ class TestRetryAndRemoval(IngestTestCase):
         state.close()
 
 
+class TestIngestCategoryOverride(IngestTestCase):
+    """Per-ingest-entry category overrides keyed by torrent hash."""
+
+    def _ready_entry(self, state):
+        state.submit_magnets([MAGNET])
+        _wait_for_ingest_task(state)
+        return _entry_by_thash(state, HEX_HASH)
+
+    def test_set_ingest_category_stores_hash_keyed_override(self):
+        self.add_provider("real_debrid")
+        state = self.make_state()
+        entry = self._ready_entry(state)
+
+        state.set_ingest_category(entry.id, "shows")
+
+        self.assertEqual(state.category_overrides[HEX_HASH], "shows")
+        self.assertEqual(
+            db.load_category_overrides(state.conn).get(HEX_HASH), "shows"
+        )
+        self.assertEqual(
+            state.ingest_category(entry.id),
+            {"override": "shows", "effective": "movies"},
+        )
+
+        # "auto" clears the override so detection resumes.
+        state.set_ingest_category(entry.id, "auto")
+        self.assertNotIn(HEX_HASH, state.category_overrides)
+        self.assertNotIn(HEX_HASH, db.load_category_overrides(state.conn))
+        state.close()
+
+    def test_set_ingest_category_rejects_unknown_category(self):
+        self.add_provider("real_debrid")
+        state = self.make_state()
+        entry = self._ready_entry(state)
+
+        with self.assertRaises(ValueError):
+            state.set_ingest_category(entry.id, "not-a-category")
+
+        self.assertNotIn(HEX_HASH, state.category_overrides)
+        state.close()
+
+    def test_set_ingest_category_rejects_missing_entry(self):
+        self.add_provider("real_debrid")
+        state = self.make_state()
+
+        with self.assertRaises(ValueError):
+            state.set_ingest_category("missing", "shows")
+        state.close()
+
+    def test_ingest_category_reports_auto_detection(self):
+        self.add_provider("real_debrid")
+        state = self.make_state()
+        entry = self._ready_entry(state)
+        # A show-pattern path makes auto detection pick "shows".
+        entry.files = [
+            {"id": "1", "path": "Show S01E01.mkv", "bytes": 100, "selected": 1},
+        ]
+
+        self.assertEqual(
+            state.ingest_category(entry.id),
+            {"override": "", "effective": "shows"},
+        )
+        # No selected files falls back to the movie-kind default.
+        entry.files = [
+            {"id": "1", "path": "Show S01E01.mkv", "bytes": 100, "selected": 0},
+        ]
+        self.assertEqual(
+            state.ingest_category(entry.id),
+            {"override": "", "effective": "movies"},
+        )
+        state.close()
+
+    def test_ingest_category_override_reaches_cache_entry(self):
+        self.add_provider("real_debrid")
+        state = self.make_state()
+        entry = self._ready_entry(state)
+        # Choose the category before confirmation so the sync can pick it up.
+        state.set_ingest_category(entry.id, "shows")
+
+        state.confirm_ingest_selections({entry.id: ["1"]})
+        deadline = time.monotonic() + 3.0
+        while entry.state != IngestState.CONFIRMED:
+            if time.monotonic() > deadline:
+                self.fail(f"entry stuck in {entry.state}")
+            time.sleep(0.02)
+
+        cache_key = state._cache_key("real_debrid", "T1")
+        info = state.cache[cache_key]["info"]
+        self.assertEqual(info.get("category_override"), "shows")
+        self.assertEqual(state._effective_category_for_info(info), "shows")
+        self.assertEqual(
+            state.torrent_category(cache_key),
+            {"override": "shows", "effective": "shows"},
+        )
+        state.close()
+
+
 if __name__ == "__main__":
     unittest.main()

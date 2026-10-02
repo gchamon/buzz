@@ -250,6 +250,7 @@ if (typeof window !== "undefined") {
         window.buzzBulkMagnetDraft = this._textarea.value;
       };
       this._restore();
+      this._textarea?.focus();
       if (this._textarea) {
         this._textarea.addEventListener("input", this._onInput);
       }

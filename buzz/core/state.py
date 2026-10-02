@@ -359,18 +359,25 @@ class BackgroundTaskPool:
         )
         return True
 
-    def start(self, task_id: str) -> bool:
-        """Start a pending manual task."""
+    def start(
+        self,
+        task_id: str,
+        work: Callable[[str, threading.Event], None] | None = None,
+    ) -> bool:
+        """Start pending manual work, optionally selecting it at acceptance."""
         with self._lock:
             task = self._tasks.get(task_id)
-            if task is None or task.status != "pending" or task.work is None:
+            if task is None or task.status != "pending":
                 return False
+            selected_work = work or task.work
+            if selected_work is None:
+                return False
+            task.work = selected_work
             task.status = "queued"
-            work = task.work
         self._notify_change()
         thread = threading.Thread(
             target=self._run,
-            args=(task_id, work),
+            args=(task_id, selected_work),
             daemon=True,
         )
         thread.start()
@@ -831,6 +838,7 @@ class BuzzState:
         self.builder = LibraryBuilder(config)
         self.category_kinds = dict(self.builder.category_kinds)
         self.lock = threading.RLock()
+        self._infringing_decisions: dict[str, list[InfringingCandidate]] = {}
         self._poller: Poller | None = None
         self.state_dir = config.state_dir
         os.makedirs(self.state_dir, exist_ok=True)
@@ -2915,6 +2923,57 @@ class BuzzState:
         self._refresh_snapshot_from_cache()
         return {"status": "success"}
 
+    def ingest_category(self, entry_id: str) -> dict[str, str]:
+        """Return override and auto-detected category for an ingest entry.
+
+        ``effective`` derives from the entry's currently selected files
+        via the same detection as cached torrents; it never reads the
+        stored override, so the UI can offer it as the ``auto`` choice.
+        """
+        default = self.builder.category_name_for_kind("movie") or "movies"
+        with self.lock:
+            entry = self.ingest.get(str(entry_id or "").strip())
+            if entry is None:
+                return {"override": "", "effective": default}
+            override = self.category_overrides.get(entry.thash, "")
+            selected = [
+                {"path": str(f.get("path") or "")}
+                for f in entry.files
+                if f.get("selected") and str(f.get("path") or "").strip()
+            ]
+        effective = (
+            self.builder._category_for(selected) if selected else default
+        )
+        return {"override": override, "effective": effective}
+
+    def set_ingest_category(
+        self, entry_id: str, category: str | None
+    ) -> OperationResult:
+        """Set or clear a per-ingest-entry category override by hash.
+
+        The override is keyed by the torrent hash like the cached-torrent
+        override, so it survives retries, confirmation, and restarts and
+        is applied automatically once the torrent enters the cache.
+        """
+        normalized = str(category or "").strip()
+        if normalized == "auto":
+            normalized = ""
+        if normalized and normalized not in self.category_kinds:
+            raise ValueError(f"invalid category override: {category}")
+        with self.lock:
+            entry = self.ingest.get(entry_id)
+            if entry is None:
+                raise ValueError(f"ingest entry not found: {entry_id}")
+            if not entry.thash:
+                raise ValueError("ingest entry hash is missing")
+            db.save_category_override(self.conn, entry.thash, normalized or None)
+            if normalized:
+                self.category_overrides[entry.thash] = normalized
+            else:
+                self.category_overrides.pop(entry.thash, None)
+        self._notify_ui_change("ingest", {"entry_id": entry_id})
+        return {"status": "success"}
+
     def toggle_config_favorite(self, section: str) -> bool:
         """Flip the favorite state of a config section, returning the new state."""
         section = section.strip()
@@ -3968,17 +4027,17 @@ class BuzzState:
                     affected_torrents=0,
                 )
                 return
-            task_id = self._register_infringing_cleanup(candidates)
+            decision_id = self._register_infringing_decision(candidates)
             record_event(
                 "infringing file scan complete: "
                 f"{len(candidates)} file(s), "
                 f"{len({item['cache_key'] for item in candidates})} torrent(s); "
-                f"cleanup pending: {task_id}",
+                f"decision pending: {decision_id}",
                 level="warning",
                 event="rd_infringing_scan_complete",
                 flagged_files=len(candidates),
                 affected_torrents=len({item["cache_key"] for item in candidates}),
-                cleanup_task_id=task_id,
+                decision_task_id=decision_id,
             )
 
         return self._submit_background_task(
@@ -3986,6 +4045,59 @@ class BuzzState:
             label="scan_rd_infringing",
             run=run_scan,
         )
+
+    def _register_infringing_decision(
+        self, candidates: list[InfringingCandidate]
+    ) -> str:
+        """Register candidates for one mutually exclusive operator decision."""
+        task_id = self.background_tasks.submit_manual(
+            kind="maintenance",
+            label=(
+                "infringing_decision: "
+                f"{len({str(item['cache_key']) for item in candidates})} "
+                "Real-Debrid torrent(s)"
+            ),
+            work=lambda _task_id, _cancel_event: None,
+        )
+        with self.lock:
+            self._infringing_decisions[task_id] = candidates
+        return task_id
+
+    def resolve_infringing_decision(self, task_id: str, action: str) -> None:
+        """Start exactly one delete, move, or archive-and-delete action."""
+        if action not in {"delete", "move", "cancel"}:
+            raise ValueError(f"invalid infringing decision: {action}")
+        with self.lock:
+            candidates = self._infringing_decisions.get(task_id)
+            if candidates is None:
+                raise ValueError("infringing decision not found or already handled")
+            destination = next(
+                (
+                    provider
+                    for provider, _client in self._ordered_clients()
+                    if provider not in {"real_debrid", "local"}
+                ),
+                "",
+            )
+            if action == "move" and not destination:
+                raise ValueError("no secondary provider is configured")
+            if action == "move":
+                def work(
+                    _running_id: str, cancel_event: threading.Event
+                ) -> None:
+                    self._move_infringing_torrents(
+                        candidates, destination, cancel_event
+                    )
+            else:
+                def work(
+                    _running_id: str, cancel_event: threading.Event
+                ) -> None:
+                    self._cleanup_infringing_torrents(
+                        candidates, cancel_event
+                    )
+            if not self.background_tasks.start(task_id, work):
+                raise ValueError("infringing decision is no longer pending")
+            del self._infringing_decisions[task_id]
 
     def start_background_task(self, task_id: str) -> OperationResult:
         """Start a pending manual background task."""
@@ -4070,22 +4182,6 @@ class BuzzState:
                 )
         return files
 
-    def _register_infringing_cleanup(
-        self,
-        candidates: list[InfringingCandidate],
-    ) -> str:
-        unique = {str(item["cache_key"]): item for item in candidates}
-
-        def run_cleanup(task_id: str, cancel_event: threading.Event) -> None:
-            self._cleanup_infringing_torrents(list(unique.values()), cancel_event)
-
-        return self._submit_background_task(
-            kind="maintenance",
-            label=f"cleanup_rd_infringing: {len(unique)} torrent(s)",
-            run=run_cleanup,
-            manual=True,
-        )
-
     def _cleanup_infringing_torrents(
         self,
         candidates: list[InfringingCandidate],
@@ -4145,6 +4241,94 @@ class BuzzState:
             deleted_torrents=deleted,
         )
 
+    def _move_infringing_torrents(
+        self,
+        candidates: list[InfringingCandidate],
+        destination_provider: str,
+        cancel_event: threading.Event,
+    ) -> None:
+        """Move resolved torrents before deleting their Real-Debrid links."""
+        rd_client = self.clients.get("real_debrid") or self.client
+        if (
+            rd_client is None
+            or self._client_for_provider(destination_provider) is None
+        ):
+            raise ValueError("both Real-Debrid and secondary provider are required")
+
+
+        unique = {str(item["cache_key"]): item for item in candidates}
+        for item in unique.values():
+            raise_if_cancelled(cancel_event)
+            cache_key = str(item["cache_key"])
+            with self.lock:
+                cached = self.cache.get(cache_key)
+                info = cached.get("info") if isinstance(cached, dict) else None
+                magnet = str(cached.get("magnet") or "") if isinstance(cached, dict) else ""
+            if not isinstance(info, dict):
+                continue
+            thash = str(info.get("hash") or "").strip().lower()
+            if not thash:
+                continue
+            migration_candidate: MigrationCandidate = {
+                "cache_key": cache_key,
+                "torrent_id": str(item["torrent_id"]),
+                "hash": thash,
+                "name": str(item["name"]),
+                "magnet": magnet or f"magnet:?xt=urn:btih:{thash}",
+                "selected_paths": self._selected_file_paths(info),
+            }
+            self._commit_provider_migration(
+                "real_debrid",
+                destination_provider,
+                [migration_candidate],
+                cancel_event,
+            )
+            with self.lock:
+                destination_ready = any(
+                    provider == destination_provider
+                    and str(destination_info.get("hash") or "").lower() == thash
+                    for provider, _key, destination_info in self._cache_infos(
+                        list(self.cache.items())
+                    )
+                )
+            if not destination_ready:
+                record_event(
+                    "infringing torrent retained on Real-Debrid after failed move: "
+                    f"{item['name']}",
+                    level="warning",
+                    event="rd_infringing_move_failed",
+                    torrent_id=item["torrent_id"],
+                    destination_provider=destination_provider,
+                    hash=thash,
+                )
+                continue
+            try:
+                rd_client.delete_torrent(str(item["torrent_id"]))
+            except ProviderDeleteError as exc:
+                if not self._is_already_deleted_response(exc):
+                    record_event(
+                        f"failed to remove moved Real-Debrid torrent: {exc.text}",
+                        level="warning",
+                        event="rd_infringing_move_source_delete_failed",
+                        torrent_id=item["torrent_id"],
+                        hash=thash,
+                    )
+                    continue
+            with self.lock:
+                current = self.cache.get(cache_key)
+                if isinstance(current, dict):
+                    source_info = current.get("info")
+                    if isinstance(source_info, dict) and source_info.get("hash"):
+                        self._add_to_archive(
+                            cast(TorrentInfo, source_info),
+                            magnet=current.get("magnet"),
+                        )
+                    if cache_key in self.cache:
+                        del self.cache[cache_key]
+                        self._delete_cache_entry(cache_key)
+        self._notify_ui_change("archive")
+        self._queue_sync_after_task("sync infringing move")
+
     @staticmethod
     def _provider_error_code(code: str) -> str:
         return str(code).strip().split(None, 1)[0]
@@ -4152,7 +4336,6 @@ class BuzzState:
     # ------------------------------------------------------------------
     # Durable magnet ingest
     # ------------------------------------------------------------------
-
     def submit_magnets(
         self, magnets: list[str], provider: str = "auto"
     ) -> list[str]:

@@ -318,6 +318,8 @@ class CacheContext(PageContext):
     expanded_folders: list[CacheFolderItem]
     ingest_entries: list[IngestEntryItem]
     ingest_files: list[IngestFileItem]
+    ingest_category: str
+    ingest_category_override: str
     title_override: dict[str, Any]
     title_override_kind: str
     title_override_active: bool
@@ -335,7 +337,7 @@ class CacheContext(PageContext):
     enabled_providers: list[tuple[str, str]]
     add_provider: str
     category_choices: list[CategoryChoice]
-    single_provider: bool
+    ingest_category_choices: list[CategoryChoice]
 
 
 class ArchiveContext(PageContext):
@@ -396,6 +398,7 @@ class ThreadItem(TypedDict):
     log_severity_title: str
     show_log_severity: bool
     status_group_title: str
+    infringing_decision: bool
 
 
 class ThreadsContext(PageContext):
@@ -869,6 +872,7 @@ class CacheLiveView(_BaseBuzzLiveView):
                 if file["id"] == file_id:
                     file["selected"] = not file["selected"]
                     break
+            self._refresh_ingest_panel(socket)
             return
         if event == "select_ingest_files":
             for file in socket.context["ingest_files"]:
@@ -878,6 +882,10 @@ class CacheLiveView(_BaseBuzzLiveView):
                     file["selected"] = False
                 elif mode == "video":
                     file["selected"] = file["is_video"]
+            self._refresh_ingest_panel(socket)
+            return
+        if event == "set_ingest_category":
+            self._handle_set_ingest_category(socket, id, mode)
             return
         if event == "confirm_ingest":
             self._handle_confirm_ingest(socket, id)
@@ -993,6 +1001,48 @@ class CacheLiveView(_BaseBuzzLiveView):
             console_msg=console_msg,
             console_class=console_class,
             expanded_id=cache_id,
+        )
+
+    def _handle_set_ingest_category(
+        self,
+        socket: ConnectedLiveViewSocket[CacheContext],
+        entry_id: str,
+        category: str,
+    ) -> None:
+        try:
+            self.owner.state.set_ingest_category(entry_id, category)
+            console_msg = "category updated"
+            console_class = console.Level.SUCCESS
+        except Exception as exc:  # noqa: BLE001
+            console_msg = f"category update failed: {exc}"
+            console_class = console.Level.ERROR
+        socket.context = self._preserve(
+            socket,
+            console_msg=console_msg,
+            console_class=console_class,
+            expanded_id=f"ingest:{entry_id}",
+        )
+
+    def _refresh_ingest_panel(
+        self, socket: ConnectedLiveViewSocket[CacheContext]
+    ) -> None:
+        """Re-render after file changes so the auto category label tracks them."""
+        expanded_id = socket.context["expanded_id"]
+        if expanded_id is None or not expanded_id.startswith("ingest:"):
+            return
+        entry_id = expanded_id.removeprefix("ingest:")
+        selected = {
+            file["id"]: file["selected"]
+            for file in socket.context["ingest_files"]
+        }
+        for entry in self.owner.state.ingest_entries():
+            if entry.id != entry_id:
+                continue
+            for file in entry.files:
+                file["selected"] = selected.get(str(file.get("id")), 0)
+        socket.context = self._preserve(
+            socket,
+            expanded_id=expanded_id,
         )
 
     def _handle_set_subtitle_query(
@@ -1301,6 +1351,12 @@ class CacheLiveView(_BaseBuzzLiveView):
         base = self._base_context(console_msg, console_class)
         expanded_files = self._expanded_files(expanded_id)
         expanded_category = self.owner.state.torrent_category(expanded_id)
+        if expanded_id and expanded_id.startswith("ingest:"):
+            ingest_category = self.owner.state.ingest_category(
+                expanded_id.removeprefix("ingest:")
+            )
+        else:
+            ingest_category = {"override": "", "effective": ""}
         expanded_folders = self._expanded_folders(expanded_files)
         title_override_context = self._title_override_context(expanded_id)
         expanded_identity = self._parse_regex_identity(
@@ -1319,6 +1375,17 @@ class CacheLiveView(_BaseBuzzLiveView):
             }
             for definition in self.owner.state.builder.category_definitions
         ]
+        ingest_category_choices = [
+            {
+                "name": definition["name"],
+                "label": definition["name"].replace("_", " ").title(),
+                "kind": definition["kind"],
+                "active": (
+                    ingest_category["override"] == definition["name"]
+                ),
+            }
+            for definition in self.owner.state.builder.category_definitions
+        ]
         return cast(
             CacheContext,
             {
@@ -1332,6 +1399,8 @@ class CacheLiveView(_BaseBuzzLiveView):
                 "expanded_folders": expanded_folders,
                 "ingest_entries": self._ingest_rows(),
                 "ingest_files": self._ingest_files(expanded_id),
+                "ingest_category": ingest_category["effective"],
+                "ingest_category_override": ingest_category["override"],
                 **title_override_context,
                 "parse_regex_placeholder": self._parse_regex_placeholder(
                     expanded_id
@@ -1346,6 +1415,7 @@ class CacheLiveView(_BaseBuzzLiveView):
                 "torrents": torrents,
                 "enabled_providers": enabled_providers,
                 "category_choices": category_choices,
+                "ingest_category_choices": ingest_category_choices,
                 "add_provider": add_provider,
                 "single_provider": len(enabled_providers) == 1,
             },
@@ -2165,26 +2235,13 @@ class ThreadsLiveView(_BaseBuzzLiveView):
         socket: ConnectedLiveViewSocket[ThreadsContext],
         to: str = "",
         task_id: str = "",
+        action: str = "",
     ) -> None:
         if event == EVENT_NAVIGATE:
             await socket.push_navigate(to)
             return
         if event == "scan_rd":
-            try:
-                new_task_id = self.owner.state.submit_infringing_scan()
-                socket.context = self._context(
-                    console_msg=f"Real-Debrid scan queued: {new_task_id}",
-                    console_class=console.Level.RESTART,
-                    selected_thread_id=new_task_id,
-                    logs_newest_first=socket.context["logs_newest_first"],
-                )
-            except Exception as exc:
-                socket.context = self._context(
-                    console_msg=f"scan failed: {exc}",
-                    console_class=console.Level.ERROR,
-                    selected_thread_id=socket.context["selected_thread_id"],
-                    logs_newest_first=socket.context["logs_newest_first"],
-                )
+            self._queue_infringing_scan(socket)
             return
         if event in {"migrate_rd_tb", "migrate_tb_rd"}:
             source_provider = (
@@ -2211,6 +2268,9 @@ class ThreadsLiveView(_BaseBuzzLiveView):
                     selected_thread_id=socket.context["selected_thread_id"],
                     logs_newest_first=socket.context["logs_newest_first"],
                 )
+            return
+        if event == "resolve_infringing_decision":
+            self._handle_infringing_decision(socket, task_id, action)
             return
         if event == "start_thread":
             try:
@@ -2247,12 +2307,7 @@ class ThreadsLiveView(_BaseBuzzLiveView):
                 )
             return
         if event == "invert_thread_log_order":
-            socket.context = self._context(
-                console_msg=socket.context["console_msg"],
-                console_class=socket.context["console_class"],
-                selected_thread_id=socket.context["selected_thread_id"],
-                logs_newest_first=not socket.context["logs_newest_first"],
-            )
+            self._invert_thread_log_order(socket)
             return
         if event == "toggle_thread":
             selected_thread_id = (
@@ -2265,6 +2320,57 @@ class ThreadsLiveView(_BaseBuzzLiveView):
                 logs_newest_first=socket.context["logs_newest_first"],
             )
             return
+
+    def _handle_infringing_decision(
+        self,
+        socket: ConnectedLiveViewSocket[ThreadsContext],
+        task_id: str,
+        action: str,
+    ) -> None:
+        try:
+            self.owner.state.resolve_infringing_decision(task_id, action)
+            socket.context = self._context(
+                console_msg=f"infringing action selected: {action}",
+                console_class=console.Level.RESTART,
+                selected_thread_id=task_id,
+                logs_newest_first=socket.context["logs_newest_first"],
+            )
+        except Exception as exc:
+            socket.context = self._context(
+                console_msg=f"infringing decision failed: {exc}",
+                console_class=console.Level.ERROR,
+                selected_thread_id=socket.context["selected_thread_id"],
+                logs_newest_first=socket.context["logs_newest_first"],
+            )
+
+    def _invert_thread_log_order(
+        self, socket: ConnectedLiveViewSocket[ThreadsContext]
+    ) -> None:
+        socket.context = self._context(
+            console_msg=socket.context["console_msg"],
+            console_class=socket.context["console_class"],
+            selected_thread_id=socket.context["selected_thread_id"],
+            logs_newest_first=not socket.context["logs_newest_first"],
+        )
+
+    def _queue_infringing_scan(
+        self, socket: ConnectedLiveViewSocket[ThreadsContext]
+    ) -> None:
+        try:
+            new_task_id = self.owner.state.submit_infringing_scan()
+            socket.context = self._context(
+                console_msg=f"Real-Debrid scan queued: {new_task_id}",
+                console_class=console.Level.RESTART,
+                selected_thread_id=new_task_id,
+                logs_newest_first=socket.context["logs_newest_first"],
+            )
+        except Exception as exc:
+            socket.context = self._context(
+                console_msg=f"scan failed: {exc}",
+                console_class=console.Level.ERROR,
+                selected_thread_id=socket.context["selected_thread_id"],
+                logs_newest_first=socket.context["logs_newest_first"],
+            )
 
     async def handle_info(
         self,
@@ -2380,6 +2486,10 @@ class ThreadsLiveView(_BaseBuzzLiveView):
             "status": status,
             "status_class": _task_status_class(status),
             "row_class": "thread-row-pending" if status == "pending" else "",
+            "infringing_decision": (
+                status == "pending"
+                and raw_label.startswith("infringing_decision:")
+            ),
             "started_at": str(task.get("started_at") or "-"),
             "finished_at": str(task.get("finished_at") or "-"),
             "error": str(task.get("error") or ""),
@@ -2512,8 +2622,18 @@ class ConfigLiveView(_BaseBuzzLiveView):
         if event != "save":
             return
 
-        overrides = _config_overrides_from_payload(payload or {})
-        result = self.owner.persist_overrides(overrides)
+        try:
+            overrides = _config_overrides_from_payload(payload or {})
+            result = self.owner.persist_overrides(overrides)
+        except (TypeError, ValueError) as exc:
+            socket.context = self._context(
+                is_editing=True,
+                draft_payload=payload or {},
+                language_query=socket.context["language_query"],
+                console_msg=f"save failed: {exc}",
+                console_class=console.Level.ERROR,
+            )
+            return
         if result["restart_required"]:
             console_msg = "saved. restart required for " + ", ".join(
                 result["restart_required_fields"]

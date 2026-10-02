@@ -813,7 +813,7 @@ code {
   align-items: center;
 }
 
-.add-torrent-header select {
+select {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--comment);
@@ -823,9 +823,10 @@ code {
   font-size: 0.85rem;
   text-transform: none;
   letter-spacing: normal;
+  cursor: pointer;
 }
 
-.add-torrent-header select:focus {
+select:focus {
   outline: none;
   border-color: var(--purple);
 }
@@ -1032,7 +1033,6 @@ textarea:focus {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  justify-content: space-between;
 }
 
 .identity-section {
@@ -1244,15 +1244,27 @@ tr.cache-entry-metadata-row:hover {
   color: var(--red);
 }
 
-.ingest-add-label {
-  color: var(--pink);
+.ingest-add-row .ingest-add-label {
+  color: var(--orange);
   text-transform: uppercase;
   letter-spacing: 1px;
   font-weight: bold;
 }
 
-.ingest-add-row td {
-  background: var(--selection);
+tr.ingest-add-row {
+  cursor: pointer;
+  user-select: none;
+}
+
+tr.ingest-add-row td,
+tr.ingest-add-row .marquee-clip,
+tr.ingest-add-row .ingest-add-label {
+  cursor: pointer;
+}
+
+.cache-entry-metadata-row .detail-section.ingest-add-form {
+  justify-content: space-between;
+  width: 100%;
 }
 
 .ingest-add-form {
@@ -1264,23 +1276,6 @@ tr.cache-entry-metadata-row:hover {
   display: flex;
   align-items: center;
   gap: 12px;
-}
-
-.ingest-add-provider {
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--comment);
-  border-radius: 4px;
-  padding: 6px 8px;
-  font-family: inherit;
-  font-size: 0.85rem;
-  text-transform: none;
-  letter-spacing: normal;
-}
-
-.ingest-add-provider:focus {
-  outline: none;
-  border-color: var(--purple);
 }
 
 .ingest-add-provider-label {
@@ -1851,7 +1846,6 @@ div.code-toolbar>.toolbar {
 .config-field input[type="number"],
 .config-field input[type="url"],
 .config-field input[type="password"],
-.config-field select,
 .config-field textarea {
   background: var(--bg);
   color: var(--fg);
@@ -1865,7 +1859,6 @@ div.code-toolbar>.toolbar {
 .config-field input[type="text"]:focus,
 .config-field input[type="number"]:focus,
 .config-field input[type="url"]:focus,
-.config-field input[type="password"]:focus,
 .config-field select:focus,
 .config-field textarea:focus {
   outline: none;

@@ -1087,6 +1087,8 @@ class DavApp:
         )
         if any(any(k.startswith(p) for p in v2_prefixes) for k in overrides):
             overrides["version"] = 2
+        candidate = deep_merge(self.config._base_raw, overrides)
+        DavConfig._from_merged_dict(candidate)
         save_overrides(overrides, self.config._overrides_path)
         previous_effective = to_nested_dict(self.config)
         hot_override_subset = filter_paths(overrides, HOT_RELOADABLE_FIELDS)

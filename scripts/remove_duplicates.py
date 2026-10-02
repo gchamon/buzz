@@ -3,6 +3,7 @@ import argparse
 import json
 import logging
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,13 @@ from buzz.providers import RealDebridProviderClient, TorBoxProviderClient
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+@dataclass(frozen=True)
+class DuplicateTorrent:
+    cache_key: str
+    torrent_id: str
+    torrent_hash: str
+    name: str
 logger = logging.getLogger("cleanup_duplicates")
 
 
@@ -34,8 +42,8 @@ def _find_duplicates(
     state: BuzzState,
     source: str,
     target: str,
-) -> list[tuple[str, str, str, str]]:
-    """Return (cache_key, tid, hash, name) for target torrents that duplicate source hashes."""
+) -> list[DuplicateTorrent]:
+    """Return target torrents that duplicate source hashes."""
     rows = state.conn.execute(
         "SELECT provider, provider_torrent_id, hash, info_json FROM provider_links"
     ).fetchall()
@@ -56,25 +64,28 @@ def _find_duplicates(
             name = info.get("filename") or info.get("name") or tid
             target_items.append((tid, h, name))
 
-    to_delete: list[tuple[str, str, str, str]] = []
+    to_delete: list[DuplicateTorrent] = []
     for tid, h, name in target_items:
         if h in source_hashes:
-            cache_key = state._cache_key(target, tid)
-            to_delete.append((cache_key, tid, h, name))
+            to_delete.append(
+                DuplicateTorrent(state._cache_key(target, tid), tid, h, name)
+            )
     return to_delete
 
 
 def _perform_deletions(
     state: BuzzState,
     clients: dict[str, Any],
-    to_delete: list[tuple[str, str, str, str]],
+    to_delete: list[DuplicateTorrent],
     target: str,
 ) -> None:
     """Delete duplicate torrents from the target provider and local DB."""
     target_client = clients[target]
     total = len(to_delete)
     deleted_count = 0
-    for i, (cache_key, tid, _h, _name) in enumerate(to_delete, 1):
+    for i, duplicate in enumerate(to_delete, 1):
+        cache_key = duplicate.cache_key
+        tid = duplicate.torrent_id
         try:
             target_client.delete_torrent(tid)
             state.conn.execute(
@@ -140,8 +151,11 @@ def main():
 
     if not args.commit:
         logger.info("DRY-RUN: Use --commit to perform deletions.")
-        for _cache_key, tid, h, name in to_delete:
-            logger.info(f"  - Would delete: {name} (id={tid}, hash={h})")
+        for duplicate in to_delete:
+            logger.info(
+                f"  - Would delete: {duplicate.name} "
+                f"(id={duplicate.torrent_id}, hash={duplicate.torrent_hash})"
+            )
         return
 
     confirm = input(f"Are you sure you want to delete {len(to_delete)} torrents from '{args.target}'? [y/N]: ")
