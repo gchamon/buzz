@@ -22,15 +22,10 @@ include:
     rules:
       - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       - when: never
-  - component: gitlab.com/gabriel.chamon/ci-components/changelog-check@v2
-    inputs:
-      image: ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:00facf17b58b02b725155862c5cd637f688f906bf7eb5b5194647886d8805cf3
-      prepare_command: uv sync --group dev
-      check_command: uv run python maint-scripts/changelog.py --check
-      job_rules:
-        - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-          when: always
-        - when: never
+  - local: .gitlab/ci/changelog.gitlab-ci.yml
+    rules:
+      - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      - when: never
   - local: .gitlab/ci/test.gitlab-ci.yml
     rules:
       - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'

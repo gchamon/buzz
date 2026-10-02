@@ -1,0 +1,13 @@
+changelog_check:
+  stage: test
+  image: ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:00facf17b58b02b725155862c5cd637f688f906bf7eb5b5194647886d8805cf3
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - apt-get update && apt-get install -y git
+    - git fetch origin "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
+    - git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - uv sync --group dev
+    - uv run python maint-scripts/changelog.py --check
+  rules:
+    - when: always
