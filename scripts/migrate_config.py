@@ -5,16 +5,24 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 import yaml
 
+
+@dataclass(frozen=True)
+class DirectoryParseState:
+    directory_name: str | None
+    in_filters: bool
+    current_filter: dict[str, str] | None
+
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from buzz.core.constants import DEFAULT_ANIME_PATTERN
-from buzz.core.utils import ensure_regex_delimiters, strip_regex_delimiters
+from buzz.core.constants import DEFAULT_ANIME_PATTERN  # noqa: E402
+from buzz.core.utils import ensure_regex_delimiters, strip_regex_delimiters  # noqa: E402
 
 DEFAULT_HOOK = "sh /app/scripts/media_update.sh"
 
@@ -29,9 +37,7 @@ def parse_zurg_config(raw: str) -> dict:
         }
     }
     top_section: str | None = None
-    directory_name: str | None = None
-    in_filters = False
-    current_filter: dict[str, str] | None = None
+    parser_state = DirectoryParseState(None, False, None)
 
     for line in raw.splitlines():
         stripped = line.strip()
@@ -44,14 +50,12 @@ def parse_zurg_config(raw: str) -> dict:
             key = stripped[:-1]
             if key == "directories":
                 top_section = "directories"
-                directory_name = None
-                in_filters = False
-                current_filter = None
+                parser_state = DirectoryParseState(None, False, None)
                 continue
 
         if top_section == "directories":
-            directory_name, in_filters, current_filter = _parse_zurg_directory_line(
-                config, line, stripped, indent, directory_name, in_filters, current_filter
+            parser_state = _parse_zurg_directory_line(
+                config, line, stripped, indent, parser_state
             )
 
         if indent == 0 and ":" in stripped:
@@ -66,36 +70,37 @@ def _parse_zurg_directory_line(
     line: str,
     stripped: str,
     indent: int,
-    directory_name: str | None,
-    in_filters: bool,
-    current_filter: dict[str, str] | None,
-) -> tuple[str | None, bool, dict[str, str] | None]:
-    """Parse a single line within the 'directories' section of a Zurg config."""
+    state: DirectoryParseState,
+) -> DirectoryParseState:
+    """Parse a single line within the 'directories' section."""
+    directory_name = state.directory_name
+    in_filters = state.in_filters
+    current_filter = state.current_filter
     if indent == 2 and stripped.endswith(":"):
         candidate = stripped[:-1]
         if candidate in {"anime", "shows", "movies"}:
-            return candidate, False, None
+            return DirectoryParseState(candidate, False, None)
 
     if directory_name in {"anime", "shows", "movies"}:
         if indent == 4 and stripped == "filters:":
-            return directory_name, True, None
+            return DirectoryParseState(directory_name, True, None)
         if indent <= 2:
-            return None, False, None
-
+            return DirectoryParseState(None, False, None)
         if in_filters:
-            return (
+            return DirectoryParseState(
                 directory_name,
                 True,
-                _parse_zurg_filter_line(config, stripped, indent, directory_name, current_filter),
+                _parse_zurg_filter_line(
+                    config, stripped, indent, directory_name, current_filter
+                ),
             )
-
         if indent == 4 and ":" in stripped:
             key, value = stripped.split(":", 1)
             directories = _as_dict(config["directories"])
             directory_config = _as_dict(directories.get(directory_name, {}))
             directory_config[key.strip()] = value.strip()
 
-    return directory_name, in_filters, current_filter
+    return DirectoryParseState(directory_name, in_filters, current_filter)
 
 
 def _parse_zurg_filter_line(

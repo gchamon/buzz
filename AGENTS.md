@@ -194,30 +194,55 @@ Less is more: a cleaner, simpler approach over lots of features and "production 
 
 On closing (marking `done`) a work item, the closing plan MUST include the
 software version decision. The version is not bumped manually; it is derived
-from git history:
+from the merge request's commit history relative to its target branch:
 
-- The baseline is the newest commit that changed `version` in
-  `pyproject.toml` (an explicit version bump).
-- Every non-merge commit after that baseline is a changelog entry. Only
-  conventional commit subjects bump the version: `feat:` (or `feat(scope):`)
-  increments the minor version, `fix:` increments the patch version. All other
-  subjects appear in the changelog but never bump.
-- `maint-scripts/changelog.py` derives the version and regenerates
-  `CHANGELOG.md` retroactively from the commit history. Run it with
-  `--update-pyproject` when the closing commit should carry the bump:
-
-  ```bash
-  uv run python maint-scripts/changelog.py --update-pyproject
-  ```
-
-Run this version derivation and `--update-pyproject` regeneration only when the
-work item is being closed; it is not part of a routine feature commit or push,
-and the `version` field and `CHANGELOG.md` must not be bumped on a push for work
-that is still in progress.
+- The baseline version is the `version` field in `pyproject.toml` on the
+  target branch (default: `main`; pass `--target-branch <ref>` for release
+  branches). In merge-request CI, source and target are read from the
+  GitLab branch-name variables and resolved as `origin/<branch>` refs.
+- Every non-merge commit in `TARGET..SOURCE` is a changelog entry. The
+  version applies the single highest conventional bump in that set, as the
+  squash commit would: any `feat:` (or `feat(scope):`) raises the minor
+  version by one (resetting the patch); otherwise any `fix:` raises the
+  patch version by one. All other subjects appear in the changelog but
+  never bump. Commits already merged into the target branch never count.
+- `maint-scripts/changelog.py` derives the version, regenerates
+  `CHANGELOG.md`, and writes the derived version into `pyproject.toml`;
+  `--check` verifies `pyproject.toml`, `CHANGELOG.md`, and `uv.lock` are
+  in sync without writing anything.
 
 The closing commit for a work item must use a conventional subject
-(`feat:`/`fix:`/`docs:`/`chore:`/`refactor:`/`test:`) describing the work item
-so the version and changelog can be derived correctly. Docs-only work items
-still get a closing commit with a `docs:` subject; they appear in the
-changelog but do not bump the version.
+(`feat:`/`fix:`/`docs:`/`chore:`/`refactor:`/`test:`) describing the work item.
+Docs-only work items still get a closing commit with a `docs:` subject; they
+appear in the changelog but do not bump the version.
+
+After creating the closing commit, generate the release metadata and amend it
+into that same commit so the branch has exactly one closing commit:
+
+```bash
+uv run python maint-scripts/changelog.py
+uv lock
+git add pyproject.toml CHANGELOG.md uv.lock
+git commit --amend --no-edit
+```
+
+`--target-branch main` is the local default; use `--target-branch
+<release-branch>` when the merge request targets something else. Then
+verify with
+
+```bash
+uv run python maint-scripts/changelog.py --check
+```
+
+which must pass before pushing. Generated release metadata (a `version`
+change, `CHANGELOG.md`, `uv.lock`) must never be committed as a separate
+`feat:`/`fix:` commit. Merge-request CI fetches the live source and target
+branches, resolves them from the GitLab branch-name variables, and runs
+the same read-only `--check`; it blocks the pipeline on mismatched
+metadata and never edits the branch.
+
+Run this version derivation only when the work item is being closed; it is not
+part of a routine feature commit or push, and the `version` field,
+`CHANGELOG.md`, and `uv.lock` must not be bumped on a push for work that is
+still in progress.
 

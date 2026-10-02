@@ -14,6 +14,7 @@ import socket
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
@@ -24,11 +25,31 @@ import yaml
 from PIL import Image, ImageFilter, ImageStat
 from playwright.sync_api import Page, ViewportSize, sync_playwright
 
-from buzz.core.events import registry
-from buzz.core.ingest import IngestEntry, IngestState
-from buzz.core.state import BackgroundTask
-from buzz.dav_app import DavApp
-from buzz.models import DavConfig, TaskStatus
+
+@dataclass(frozen=True)
+class CacheEntry:
+    cache_key: str
+    data: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ProviderLink:
+    provider: str
+    provider_torrent_id: str
+    thash: str
+
+
+@dataclass(frozen=True)
+class ScreenshotServer:
+    server: uvicorn.Server
+    thread: threading.Thread
+    port: int
+
+from buzz.core.events import registry  # noqa: E402
+from buzz.core.ingest import IngestEntry, IngestState  # noqa: E402
+from buzz.core.state import BackgroundTask  # noqa: E402
+from buzz.dav_app import DavApp  # noqa: E402
+from buzz.models import DavConfig, TaskStatus  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -96,8 +117,6 @@ def main() -> None:
             background_size[1],
             palette,
         )
-        background = _render_background(props, palette, background_size)
-        background.save(output_dir / "background.png")
         LOGGER.info("wrote background: %s", output_dir / "background.png")
         hyprland_style = _load_hyprland_style(props)
         LOGGER.info(
@@ -118,7 +137,10 @@ def main() -> None:
             app = DavApp(config)
             _seed_app(app, props)
             LOGGER.info("starting local screenshot server")
-            server, thread, port = _start_server(app)
+            screenshot_server = _start_server(app)
+            server = screenshot_server.server
+            thread = screenshot_server.thread
+            port = screenshot_server.port
             LOGGER.info("screenshot server listening on http://127.0.0.1:%s", port)
             try:
                 raw_dir = temp_dir / "raw"
@@ -513,7 +535,7 @@ def _cache_file(item: dict[str, Any], index: int, torrent_name: str) -> dict[str
     }
 
 
-def _cache_entry(defaults: dict[str, Any], item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def _cache_entry(defaults: dict[str, Any], item: dict[str, Any]) -> CacheEntry:
     entry = defaults | item
     name = str(entry["name"])
     files = [
@@ -555,7 +577,7 @@ def _cache_entry(defaults: dict[str, Any], item: dict[str, Any]) -> tuple[str, d
         info["provider"] = provider
     if entry.get("original_name"):
         info["original_filename"] = str(entry["original_name"])
-    return cache_key, {"signature": {}, "info": info}
+    return CacheEntry(cache_key, {"signature": {}, "info": info})
 
 
 def _default_cache_entries() -> list[dict[str, Any]]:
@@ -662,8 +684,8 @@ def _cache_entries(props: dict[str, Any]) -> dict[str, dict[str, Any]]:
     entries: dict[str, dict[str, Any]] = {}
     for index, item in enumerate(items):
         default = defaults[index] if index < len(defaults) else {}
-        cache_key, entry = _cache_entry(default, item)
-        entries[cache_key] = entry
+        cache_entry = _cache_entry(default, item)
+        entries[cache_entry.cache_key] = cache_entry.data
     return entries
 
 
@@ -840,24 +862,19 @@ def _archive_entries(props: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return entries
 
 
-def _provider_link_rows(props: dict[str, Any]) -> list[tuple[str, str, str]]:
-    rows: list[tuple[str, str, str]] = []
+def _provider_link_rows(props: dict[str, Any]) -> list[ProviderLink]:
+    rows: list[ProviderLink] = []
     for thash, entry in _archive_entries(props).items():
         for provider_entry in _as_list(entry.get("providers")):
             if not isinstance(provider_entry, dict):
                 continue
-            rows.append(
-                (
-                    str(provider_entry.get("provider", "")),
-                    str(provider_entry.get("provider_torrent_id", "")),
-                    thash,
-                )
+            provider = str(provider_entry.get("provider", ""))
+            provider_torrent_id = str(
+                provider_entry.get("provider_torrent_id", "")
             )
-    return [
-        (provider, provider_torrent_id, thash)
-        for provider, provider_torrent_id, thash in rows
-        if provider and provider_torrent_id
-    ]
+            if provider and provider_torrent_id:
+                rows.append(ProviderLink(provider, provider_torrent_id, thash))
+    return rows
 
 
 def _seed_provider_links(app: DavApp, props: dict[str, Any]) -> None:
@@ -883,7 +900,10 @@ def _seed_provider_links(app: DavApp, props: dict[str, Any]) -> None:
                     "2026-06-15T12:00:00Z",
                 ),
             )
-        for provider, provider_torrent_id, thash in rows:
+        for row in rows:
+            provider = row.provider
+            provider_torrent_id = row.provider_torrent_id
+            thash = row.thash
             app.state.conn.execute(
                 "INSERT OR REPLACE INTO provider_links "
                 "(provider, provider_torrent_id, hash, status, progress, "
@@ -1020,7 +1040,7 @@ def _seed_logs(props: dict[str, Any]) -> None:
         registry.record_raw(event)
 
 
-def _start_server(app: DavApp) -> tuple[uvicorn.Server, threading.Thread, int]:
+def _start_server(app: DavApp) -> ScreenshotServer:
     port = _free_port()
     config = uvicorn.Config(
         app.app,
@@ -1037,7 +1057,7 @@ def _start_server(app: DavApp) -> tuple[uvicorn.Server, threading.Thread, int]:
         time.sleep(0.05)
     if not server.started:
         raise RuntimeError("timed out waiting for screenshot server")
-    return server, thread, port
+    return ScreenshotServer(server, thread, port)
 
 
 def _free_port() -> int:

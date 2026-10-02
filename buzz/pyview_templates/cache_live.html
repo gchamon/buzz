@@ -94,15 +94,13 @@
         </tr>
       </thead>
       <tbody>
-        <tr class="{% if expanded_id == 'add' %}row-expanded{% endif %} ingest-add-row">
+        <tr
+          class="{% if expanded_id == 'add' %}row-expanded{% endif %} ingest-add-row"
+          phx-click="toggle_expand"
+          phx-value-id="add"
+        >
           <td colspan="8">
-            <span
-              class="marquee-clip"
-              data-marquee-clip
-              phx-click="toggle_expand"
-              phx-value-id="add"
-              style="cursor:pointer"
-            >
+            <span class="marquee-clip" data-marquee-clip>
               <span class="marquee-label ingest-add-label" data-marquee-label title="Add one or more magnet links to the cache">ADD NEW MAGNET LINKS TO THE CACHE</span>
             </span>
           </td>
@@ -218,6 +216,27 @@
         <tr class="cache-entry-metadata-row">
           <td colspan="8">
             <div>
+              <div class="detail-section category-actions" aria-label="Ingest category">
+                <span class="detail-label">Category</span>
+                <button
+                  type="button"
+                  class="secondary {% if not ingest_category_override %}auto-category{% endif %}"
+                  phx-click="set_ingest_category"
+                  phx-value-id="{{ entry.id }}"
+                  phx-value-mode="auto"
+                  title="Automatic category: {{ ingest_category }}"
+                >Auto: {{ ingest_category }}</button>
+                {% for choice in ingest_category_choices %}
+                <button
+                  type="button"
+                  class="secondary {% if choice.active %}active{% endif %}"
+                  phx-click="set_ingest_category"
+                  phx-value-id="{{ entry.id }}"
+                  phx-value-mode="{{ choice.name }}"
+                  title="Category kind: {{ choice.kind }}"
+                >{{ choice.label }}</button>
+                {% endfor %}
+              </div>
               <div class="detail-section" aria-label="Ingest file selection">
                 <span class="detail-label">File selection</span>
                 <div class="file-actions" phx-update="ignore">

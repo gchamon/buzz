@@ -1,8 +1,10 @@
 pytest:
   stage: test
   image: ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:00facf17b58b02b725155862c5cd637f688f906bf7eb5b5194647886d8805cf3
+  variables:
+    BUZZ_TEST_MEM_CAP_MB: "384"
   script:
-    - apt-get update && apt-get install -y libatomic1
+    - apt-get update && apt-get install -y git libatomic1
     - uv sync --group dev
     - uv run pytest --cov=buzz --cov-report=xml --cov-report=term
   rules:

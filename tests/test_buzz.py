@@ -2316,7 +2316,7 @@ class BuzzStateTests(unittest.TestCase):
                 state.background_tasks.manual[0][:2],
                 (
                     "maintenance",
-                    "cleanup_rd_infringing: 1 torrent(s)",
+                    "infringing_decision: 1 Real-Debrid torrent(s)",
                 ),
             )
 
@@ -2324,15 +2324,10 @@ class BuzzStateTests(unittest.TestCase):
         class FakeTaskPool:
             def __init__(self):
                 self.submitted = []
-                self.manual = []
 
             def submit(self, kind, label, work, **_kwargs):
                 self.submitted.append((kind, label, work))
                 return f"task-{len(self.submitted)}"
-
-            def submit_manual(self, kind, label, work, **_kwargs):
-                self.manual.append((kind, label, work))
-                return "cleanup-task"
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(
@@ -2383,11 +2378,7 @@ class BuzzStateTests(unittest.TestCase):
                 },
             ]
 
-            task_id = state._register_infringing_cleanup(candidates)
-            _kind, _label, cleanup = state.background_tasks.manual[0]
-            cleanup("test-task-id", threading.Event())
-
-            self.assertEqual(task_id, "cleanup-task")
+            state._cleanup_infringing_torrents(candidates, threading.Event())
             self.assertEqual(provider.deleted_ids, ["RD1"])
             self.assertNotIn("RD1", state.cache)
             self.assertIn("hash1", state.archive)
@@ -2400,6 +2391,135 @@ class BuzzStateTests(unittest.TestCase):
                 ["sync"],
             )
 
+
+    def test_infringing_move_deletes_source_only_after_destination_is_ready(self):
+        for destination_error in (None, RuntimeError("destination failed")):
+            with self.subTest(destination_error=destination_error):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    config = Config(
+                        token="rdtoken",
+                        torbox_token="tbtoken",
+                        provider_priority=("real_debrid", "torbox"),
+                        state_dir=tmpdir,
+                        hook_command="",
+                        curator_url="",
+                    )
+                    rd = self.FakeProvider()
+                    torbox = self.FakeProvider(
+                        add_error=destination_error,
+                        torrent_infos={
+                            "NEW_TORRENT": {
+                                "hash": "hash1",
+                                "filename": "Movie",
+                                "status": "downloaded",
+                                "files": [
+                                    {
+                                        "id": "1",
+                                        "path": "/Movie.bad.mkv",
+                                        "bytes": 1,
+                                        "selected": 1,
+                                    }
+                                ],
+                                "links": ["tb-stream"],
+                            }
+                        },
+                    )
+                    state = BuzzState(
+                        config,
+                        client={"real_debrid": rd, "torbox": torbox},
+                    )
+                    state._queue_sync_after_task = MagicMock()
+                    state.cache = {
+                        "RD1": {
+                            "signature": {},
+                            "info": {
+                                "id": "RD1",
+                                "hash": "hash1",
+                                "filename": "Movie",
+                                "status": "downloaded",
+                                "provider_torrent_id": "RD1",
+                                "files": [
+                                    {
+                                        "id": "1",
+                                        "path": "/Movie.bad.mkv",
+                                        "bytes": 1,
+                                        "selected": 1,
+                                    }
+                                ],
+                            },
+                            "magnet": "magnet:?xt=urn:btih:hash1",
+                        }
+                    }
+
+                    state._move_infringing_torrents(
+                        [
+                            {
+                                "cache_key": "RD1",
+                                "torrent_id": "RD1",
+                                "source_url": "rd-stream",
+                                "path": "Movie.bad.mkv",
+                                "name": "Movie",
+                            }
+                        ],
+                        "torbox",
+                        threading.Event(),
+                    )
+
+                    if destination_error is None:
+                        self.assertEqual(rd.deleted_ids, ["RD1"])
+                        self.assertNotIn("RD1", state.cache)
+                        self.assertIn("torbox:NEW_TORRENT", state.cache)
+                        self.assertIn("hash1", state.archive)
+                    else:
+                        self.assertEqual(rd.deleted_ids, [])
+                        self.assertIn("RD1", state.cache)
+                        self.assertNotIn("hash1", state.archive)
+
+    def test_infringing_decision_accepts_one_action_and_archives_cancelled_item(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                token="token",
+                state_dir=tmpdir,
+                hook_command="",
+                curator_url="",
+            )
+            provider = self.FakeProvider()
+            state = BuzzState(config, client={"real_debrid": provider})
+            state._queue_sync_after_task = MagicMock()
+            state.cache = {
+                "RD1": {
+                    "signature": {},
+                    "info": {
+                        "id": "RD1",
+                        "hash": "hash1",
+                        "filename": "Movie",
+                        "files": [],
+                    },
+                    "magnet": "magnet:?xt=urn:btih:hash1",
+                }
+            }
+            state._save_cache(state.cache)
+            decision_id = state._register_infringing_decision(
+                [
+                    {
+                        "cache_key": "RD1",
+                        "torrent_id": "RD1",
+                        "source_url": "rd-stream",
+                        "path": "Movie.mkv",
+                        "name": "Movie",
+                    }
+                ]
+            )
+
+            state.resolve_infringing_decision(decision_id, "cancel")
+            task = _wait_for_task(state, decision_id)
+
+            self.assertEqual(task["status"], "complete", task.get("error"))
+            self.assertEqual(provider.deleted_ids, ["RD1"])
+            self.assertNotIn("RD1", state.cache)
+            self.assertIn("hash1", state.archive)
+            with self.assertRaisesRegex(ValueError, "already handled"):
+                state.resolve_infringing_decision(decision_id, "delete")
     def test_provider_migration_scan_registers_manual_commit(self):
         class FakeTaskPool:
             def __init__(self):
@@ -7378,6 +7498,13 @@ class DavAppTests(unittest.TestCase):
                 cancel_event=threading.Event(),
                 status="pending",
             ),
+            "infringing-decision": BackgroundTask(
+                id="infringing-decision",
+                kind="maintenance",
+                label="infringing_decision: 1 Real-Debrid torrent(s)",
+                cancel_event=threading.Event(),
+                status="pending",
+            ),
         }
 
         response = self.client.get("/threads")
@@ -7410,6 +7537,10 @@ class DavAppTests(unittest.TestCase):
         self.assertIn('class="thread-error trunc-cell"', body)
         self.assertIn("thread-row-pending", body)
         self.assertIn("data-marquee-clip", body)
+        self.assertIn('phx-click="resolve_infringing_decision"', body)
+        self.assertIn('phx-value-action="delete"', body)
+        self.assertIn('phx-value-action="cancel"', body)
+        self.assertNotIn(">Move to TorBox</button>", body)
 
     def test_threads_page_shows_migrate_buttons_only_when_both_providers_enabled(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -7424,6 +7555,15 @@ class DavAppTests(unittest.TestCase):
             with patch("buzz.dav_app.DavApp._build_provider_client", return_value=None), \
                  patch("buzz.dav_app._fetch_opensubtitles_languages", return_value=[]):
                 app = DavApp(config)
+                app.state.background_tasks._tasks = {
+                    "infringing-decision": BackgroundTask(
+                        id="infringing-decision",
+                        kind="maintenance",
+                        label="infringing_decision: 1 Real-Debrid torrent(s)",
+                        cancel_event=threading.Event(),
+                        status="pending",
+                    )
+                }
                 with TestClient(app.app) as client:
                     response = client.get("/threads")
                 body = response.text
@@ -7434,6 +7574,8 @@ class DavAppTests(unittest.TestCase):
         self.assertIn("MIGRATE RD-&gt;TB", body)
         self.assertIn('phx-click="migrate_tb_rd"', body)
         self.assertIn("MIGRATE TB-&gt;RD", body)
+        self.assertIn("Move to TorBox", body)
+        self.assertIn('phx-value-action="move"', body)
 
     def test_threads_page_renders_accept_for_pending_manual_thread(self):
         self.state.background_tasks._tasks = {
@@ -7486,6 +7628,25 @@ class DavAppTests(unittest.TestCase):
         self.assertEqual(socket.context["selected_thread_id"], "scan-task")
         self.assertEqual(socket.context["console_class"], "service-status-yellow")
 
+
+    def test_threads_view_resolves_infringing_action(self):
+        view = ThreadsLiveView(self.dav_app)
+        socket = SimpleNamespace(context=view._context())
+        self.state.resolve_infringing_decision = MagicMock()
+
+        asyncio.run(
+            view.handle_event(
+                "resolve_infringing_decision",
+                cast(Any, socket),
+                task_id="decision-1",
+                action="move",
+            )
+        )
+
+        self.state.resolve_infringing_decision.assert_called_once_with(
+            "decision-1", "move"
+        )
+        self.assertEqual(socket.context["selected_thread_id"], "decision-1")
     def test_threads_view_migration_buttons_queue_scans(self):
         view = ThreadsLiveView(self.dav_app)
         socket = SimpleNamespace(context=view._context())
@@ -9170,6 +9331,208 @@ class DavAppTests(unittest.TestCase):
             self.assertIn("openSubtitles language refresh finished", messages)
 
 
+class IngestCategoryUiTests(DavAppTests):
+    """Ingest panel category override UI: rendering and events."""
+
+    def _add_custom_category(self):
+        builder = self.state.builder
+        builder.category_definitions = builder.category_definitions + (
+            {"name": "documentaries", "kind": "movie"},
+        )
+        builder.category_kinds = {
+            definition["name"]: definition["kind"]
+            for definition in builder.category_definitions
+        }
+        self.state.category_kinds = dict(builder.category_kinds)
+        self.state.category_names = tuple(builder.category_kinds)
+
+    def _ready_entry(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        self.state.ingest["e1"] = IngestEntry(
+            id="e1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.FILES_READY,
+            created_at=1.0,
+            display_name="Movie One",
+            accepted_provider="real_debrid",
+            files=[
+                {"id": "1", "path": "Movie.mkv", "bytes": 200, "selected": 1},
+            ],
+        )
+
+    def test_ingest_panel_renders_category_choices(self):
+        from pyview.meta import PyViewMeta
+
+        from buzz.ui_live import _load_template
+
+        self._add_custom_category()
+        self._ready_entry()
+
+        view = CacheLiveView(self.dav_app)
+        context = view._context(expanded_id="ingest:e1")
+        body = str(_load_template("cache_live.html").render(context, PyViewMeta()))
+
+        self.assertIn('aria-label="Ingest category"', body)
+        self.assertIn('phx-click="set_ingest_category"', body)
+        self.assertIn('phx-value-mode="auto"', body)
+        self.assertIn("Auto: movies", body)
+        for mode in ("movies", "shows", "anime", "documentaries"):
+            self.assertIn(f'phx-value-mode="{mode}"', body)
+
+    def test_set_ingest_category_stores_hash_keyed_override(self):
+        self._add_custom_category()
+        self._ready_entry()
+
+        view = CacheLiveView(self.dav_app)
+        socket = SimpleNamespace(context=view._context(expanded_id="ingest:e1"))
+
+        asyncio.run(
+            view.handle_event(
+                "set_ingest_category",
+                cast(Any, socket),
+                id="e1",
+                mode="documentaries",
+            )
+        )
+
+        self.assertEqual(self.state.category_overrides["a" * 40], "documentaries")
+        self.assertEqual("ingest:e1", socket.context["expanded_id"])
+        self.assertEqual(socket.context["console_msg"], "category updated")
+        self.assertEqual(socket.context["console_class"], "service-status-green")
+        self.assertTrue(
+            any(
+                choice["name"] == "documentaries" and choice["active"]
+                for choice in socket.context["ingest_category_choices"]
+            )
+        )
+
+    def test_set_ingest_category_rejects_unknown_category(self):
+        self._ready_entry()
+
+        view = CacheLiveView(self.dav_app)
+        socket = SimpleNamespace(context=view._context(expanded_id="ingest:e1"))
+
+        asyncio.run(
+            view.handle_event(
+                "set_ingest_category",
+                cast(Any, socket),
+                id="e1",
+                mode="not-a-category",
+            )
+        )
+
+        self.assertNotIn("a" * 40, self.state.category_overrides)
+        self.assertEqual(
+            socket.context["console_msg"],
+            "category update failed: invalid category override: not-a-category",
+        )
+        self.assertEqual(socket.context["console_class"], "service-status-red")
+
+    def test_ingest_file_selection_renders_auto_category_label(self):
+        from buzz.core.ingest import IngestEntry, IngestState
+
+        self.state.ingest["e1"] = IngestEntry(
+            id="e1",
+            batch_id="b1",
+            thash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            state=IngestState.FILES_READY,
+            created_at=1.0,
+            display_name="Show",
+            accepted_provider="real_debrid",
+            files=[
+                {
+                    "id": "1",
+                    "path": "Show.S01E01.Pilot.mkv",
+                    "bytes": 200,
+                    "selected": 1,
+                },
+                {"id": "2", "path": "Sample.nfo", "bytes": 10, "selected": 0},
+            ],
+        )
+
+        view = CacheLiveView(self.dav_app)
+        socket = SimpleNamespace(context=view._context(expanded_id="ingest:e1"))
+
+        asyncio.run(
+            view.handle_event("select_ingest_files", cast(Any, socket), mode="all")
+        )
+        self.assertEqual("shows", socket.context["ingest_category"])
+
+        asyncio.run(
+            view.handle_event("select_ingest_files", cast(Any, socket), mode="none")
+        )
+        self.assertEqual("movies", socket.context["ingest_category"])
+
+        asyncio.run(
+            view.handle_event("select_ingest_files", cast(Any, socket), mode="video")
+        )
+        self.assertEqual("shows", socket.context["ingest_category"])
+
+    def test_cache_template_add_row_owns_expand_event(self):
+        body = self.client.get("/cache").text
+
+        label = "ADD NEW MAGNET LINKS TO THE CACHE"
+        row_start = body.index(label)
+        row_tag_start = body.rindex("<tr", 0, row_start)
+        row_end = body.index("</tr>", row_start)
+        row = body[row_tag_start:row_end]
+        self.assertIn("ingest-add-row", row)
+        self.assertIn('phx-click="toggle_expand"', row)
+        self.assertIn('phx-value-id="add"', row)
+
+        inner_start = body.index('class="marquee-clip" data-marquee-clip', row_tag_start)
+        inner_end = body.index("</span>", inner_start)
+        self.assertNotIn("phx-click", body[inner_start:inner_end])
+
+    def test_stylesheet_consolidates_dropdown_and_layout_rules(self):
+        css = Path("buzz/static/buzz.css").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "select {\n  background: var(--bg);\n",
+            css,
+        )
+        self.assertIn("  cursor: pointer;\n}\n\nselect:focus {", css)
+        self.assertIn("select:focus {\n  outline: none;", css)
+        self.assertNotIn(".ingest-add-provider {", css)
+        self.assertNotIn(".ingest-add-provider:focus", css)
+        self.assertEqual(1, css.count(".detail-section {"))
+        self.assertNotIn(
+            ".detail-section {\n"
+            "  align-items: center;\n"
+            "  display: flex;\n"
+            "  flex-wrap: wrap;\n"
+            "  gap: 10px;\n"
+            "  justify-content: space-between;\n",
+            css,
+        )
+        self.assertIn(
+            ".category-actions {\n  align-items: center;\n  display: flex;",
+            css,
+        )
+        self.assertIn(
+            ".ingest-add-row .ingest-add-label {\n  color: var(--orange);",
+            css,
+        )
+        self.assertIn(
+            "tr.ingest-add-row {\n  cursor: pointer;\n  user-select: none;",
+            css,
+        )
+        self.assertIn(
+            "tr.ingest-add-row td,\n"
+            "tr.ingest-add-row .marquee-clip,\n"
+            "tr.ingest-add-row .ingest-add-label {\n  cursor: pointer;",
+            css,
+        )
+        self.assertIn(
+            ".cache-entry-metadata-row .detail-section.ingest-add-form {\n"
+            "  justify-content: space-between;\n  width: 100%;",
+            css,
+        )
+
 class FetchOpenSubtitlesLanguagesTests(unittest.TestCase):
     def test_fetch_sends_api_key_header(self):
         from buzz.dav_app import _fetch_opensubtitles_languages
@@ -9978,6 +10341,119 @@ class ConfigUITests(unittest.TestCase):
             self.assertNotIn("provider", written)
             self.assertNotIn("subtitles", written)
             self.assertEqual(written["server"]["port"], 7777)
+
+    def test_persist_overrides_validates_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            overrides_path = Path(tmpdir) / "buzz.overrides.yml"
+            base_path.write_text(
+                (
+                    "version: 1\n"
+                    "provider:\n"
+                    "  token: testtoken\n"
+                    f"state_dir: {tmpdir}\n"
+                    "categories:\n"
+                    "  documentaries: movie\n"
+                ),
+                encoding="utf-8",
+            )
+            overrides_path.write_text(
+                "logging:\n  verbose: true\n",
+                encoding="utf-8",
+            )
+            config = Config.load(str(base_path))
+            rd_patcher = patch(
+                "buzz.dav_app.DavApp._build_provider_client",
+                return_value=DavAppTests.FakeProvider(),
+            )
+            languages_patcher = patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                return_value=[],
+            )
+            rd_patcher.start()
+            languages_patcher.start()
+            self.addCleanup(rd_patcher.stop)
+            self.addCleanup(languages_patcher.stop)
+            app = DavApp(config)
+
+            with self.assertRaises(ValueError):
+                app.persist_overrides(
+                    {"categories": {"adult": "movies"}}
+                )
+
+            self.assertEqual(
+                overrides_path.read_text(encoding="utf-8"),
+                "logging:\n  verbose: true\n",
+            )
+            self.assertEqual(
+                app.config.categories,
+                {"documentaries": "movie"},
+            )
+            self.assertEqual(
+                app.saved_config.categories,
+                {"documentaries": "movie"},
+            )
+
+    def test_config_save_keeps_edit_mode_on_invalid_override(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir) / "buzz.yml"
+            overrides_path = Path(tmpdir) / "buzz.overrides.yml"
+            base_path.write_text(
+                (
+                    "version: 1\n"
+                    "provider:\n"
+                    "  token: testtoken\n"
+                    f"state_dir: {tmpdir}\n"
+                    "categories:\n"
+                    "  documentaries: movie\n"
+                ),
+                encoding="utf-8",
+            )
+            overrides_path.write_text(
+                "logging:\n  verbose: true\n",
+                encoding="utf-8",
+            )
+            config = Config.load(str(base_path))
+            rd_patcher = patch(
+                "buzz.dav_app.DavApp._build_provider_client",
+                return_value=DavAppTests.FakeProvider(),
+            )
+            languages_patcher = patch(
+                "buzz.dav_app._fetch_opensubtitles_languages",
+                return_value=[],
+            )
+            rd_patcher.start()
+            languages_patcher.start()
+            self.addCleanup(rd_patcher.stop)
+            self.addCleanup(languages_patcher.stop)
+            app = DavApp(config)
+
+            from buzz.ui_live import ConfigLiveView
+
+            view = ConfigLiveView(owner=app)
+            socket = SimpleNamespace(context=view._context(is_editing=True))
+            payload = {"categories": ["adult: movies"]}
+            asyncio.run(
+                view.handle_event("save", cast(Any, socket), payload=payload)
+            )
+
+            self.assertTrue(socket.context["is_editing"])
+            self.assertEqual(
+                socket.context["draft_payload"]["categories"],
+                ["adult: movies"],
+            )
+            self.assertEqual(
+                socket.context["console_msg"],
+                "save failed: invalid category kind for adult: movies",
+            )
+            self.assertEqual(
+                socket.context["console_class"],
+                "service-status-red",
+            )
+            self.assertEqual(
+                overrides_path.read_text(encoding="utf-8"),
+                "logging:\n  verbose: true\n",
+            )
 
 class UIRedirectAppTests(unittest.TestCase):
     """Tests for the HTTP-side UI redirect app used in TLS mode."""
